@@ -1,0 +1,78 @@
+FULL_MEASURE ROW CONSOLIDATION FIX
+==================================
+
+PROBLEM:
+--------
+The full_measure() command was writing TWO separate rows to the CSV file:
+1. One row from measure_k2450() with Hall voltage/field data
+2. One row from lockin_measure() with Lock-in X/Y/R/Theta data
+
+This resulted in incomplete data representation - each measurement had only partial information.
+
+SOLUTION:
+---------
+Modified the measurement workflow to consolidate all data into a SINGLE combined row:
+
+1. Updated measure_k2450(skip_write=False) 
+   - Added optional parameter skip_write
+   - When True, suppresses automatic CSV row write
+   - Used internally by full_measure() to prevent intermediate writes
+
+2. Updated lockin_measure(skip_write=False)
+   - Added optional parameter skip_write
+   - When True, suppresses automatic CSV row write
+   - Used internally by full_measure() to prevent intermediate writes
+
+3. Refactored full_measure()
+   - Calls measure_k2450(..., skip_write=True) to collect Hall data without writing
+   - Calls lockin_measure(..., skip_write=True) to collect LockIn data without writing
+   - Manually creates combined data_point with ALL fields:
+     * Hall data: Hall_Voltage, Hall_Field, Meas_Current
+     * LockIn data: LockIn_R, LockIn_Theta, LockIn_X, LockIn_Y
+     * Settings: LockIn_Frequency, LockIn_Sensitivity, LockIn_R_lockin, etc.
+     * Environment: Helmholtz_Current, Helmholtz_Field, Temp, In-plane_Field
+   - Calls write_data_row() ONCE with measurement_type="Full"
+
+BEHAVIOR:
+---------
+Before: full_measure() writes 2 rows (one with Hall only, one with LockIn only)
+After:  full_measure() writes 1 row (with Hall + LockIn combined, NaN for missing values)
+
+BACKWARD COMPATIBILITY:
+-----------------------
+standalone measure_k2450() still works as before (writes own row)
+standalone lockin_measure() still works as before (writes own row)
+Only full_measure() uses the new skip_write parameter internally
+
+CSV OUTPUT EXAMPLE:
+-------------------
+Single row from full_measure will have:
+{
+  "Time": 0.5,
+  "Hall_Voltage": 0.00245,
+  "Hall_Field": 245.3,
+  "Meas_Current": 0.001,
+  "Helmholtz_Current": 1.5,
+  "Helmholtz_Field": 150.0,
+  "Temp": 50.0,
+  "In-plane_Field": 10000.0,
+  "Channel": "a",
+  "LockIn_R": 0.000523,
+  "LockIn_Theta": 45.2,
+  "LockIn_X": 0.000370,
+  "LockIn_Y": 0.000370,
+  "LockIn_Frequency": 1234.5,
+  "LockIn_Sensitivity": 1.0,
+  "LockIn_R_lockin": 1000.0,
+  "LockIn_Output_Voltage": 0.001,
+  "LockIn_Output_Current": 0.000001,
+  "LockIn_Time_Constant": 0.1,
+  "Sample_Resistance": 523.0
+}
+
+VALIDATION:
+-----------
+✅ No syntax errors in Try_CurrentSuorce.py
+✅ Maintains NaN handling for missing values
+✅ Backward compatible with standalone measure_k2450() and lockin_measure()
+✅ Test script: test_full_measure_row.txt demonstrates expected usage

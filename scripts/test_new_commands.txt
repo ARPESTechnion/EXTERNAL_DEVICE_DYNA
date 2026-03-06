@@ -1,0 +1,56 @@
+# Test Script for New/Changed Commands (Version 2.0+)
+# Fast testing - no long stabilization waits
+# Tests: parameter overrides, set_lockin commands, wait_for no_event, scan loops
+
+# Test 1: measure_hall_field with parameter overrides
+measure_hall_field current=1.5
+measure_hall_field current=2.0 nplc=5
+measure_hall_field voltage_range=10V nplc=10 compliance_v=0.5
+
+# Test 2: set_lockin_time_constant and set_lockin_filter
+set_lockin_time_constant 0.3
+set_lockin_filter 12
+
+# Test 3: measure_lockin with parameter overrides
+measure_lockin current=1e-6
+measure_lockin what=X,Y,R avg=5
+measure_lockin what=X,Y avg=3
+measure_lockin current=1e-6 avg=10 use_autorange=true use_autophase=true
+
+# Test 4: wait_for with no_event (fast countdown test)
+wait_for no_event 3
+
+# Test 5: full_measure with parameter overrides
+full_measure a time_between=0.1
+full_measure a hall_current=1.5 lockin_current=1e-6
+full_measure b hall_nplc=5 lockin_avg=5 time_between=0.2
+full_measure a hall_voltage_range=10V lockin_use_autorange=false
+full_measure b lockin_what=X,Y,R lockin_avg=3
+
+# Test 6: Another quick wait to test countdown
+wait_for no_event 2
+
+# Test 7: Set different lock-in parameters and measure
+set_lockin_time_constant 1.0
+set_lockin_filter 24
+measure_lockin avg=3 sample_delay=0.05
+
+# Test 8: scan_helmholtz_field with loop body (small range, fast)
+scan_helmholtz_field 0 100 50 5 linear
+  measure_hall_field current=1.0
+  measure_lockin avg=3
+
+# Test 9: full_measure with comprehensive parameter override
+full_measure a hall_current=2.0 hall_nplc=10 hall_voltage_range=1V lockin_current=1e-6 lockin_avg=5 lockin_use_autophase=true time_between=0.15
+
+# Test 10: Return to default settings
+set_lockin_time_constant 0.3
+set_lockin_filter 6
+measure_lockin
+
+# Test 11: Edge case - partial lockin measurements (test NaN handling)
+measure_lockin what=X,Y
+measure_lockin what=R
+full_measure a lockin_what=X,R
+
+# End of test script - Should PASS validation

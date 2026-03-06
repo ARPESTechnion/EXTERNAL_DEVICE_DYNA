@@ -1,0 +1,59 @@
+# Validation Test - This script will FAIL validation with many errors
+# Open Try_CurrentSource.py, paste this in the script editor, and try to run
+# You should see detailed error messages preventing execution
+
+# Error 1: Unknown command
+fake_command test
+
+# Error 2: Helmholtz current too high (3000 Oe = 4.39A > 3A)
+set_helmholtz_field 3000 10
+
+# Error 3: Helmholtz rate too high (150 Oe/s = 219 mA/s > 100 mA/s)  
+set_helmholtz_field 1000 150
+
+# Error 4: Temperature too low
+set_dyna_temp 1.0 5 fast_settle
+
+# Error 5: Temperature too high
+set_dyna_temp 450 5 no_overshoot
+
+# Error 6: Temperature rate too high (60 > 50 K/min)
+set_dyna_temp 300 60 fast_settle
+
+# Error 7: PPMS field too high (200000 > 140000 Oe)
+set_dyna_field 200000 10 linear
+
+# Error 8: PPMS field rate too high (60 > 50 Oe/s)
+set_dyna_field 1000 60 linear
+
+# Error 9: Time constant not in TAU_TABLE
+set_lockin_time_constant 2.5
+
+# Error 10: Invalid filter slope (must be 6, 12, 18, or 24)
+set_lockin_filter 18.5
+
+# Error 11: Hall current too high (15 > 10 mA)
+measure_hall_field current=15
+
+# Error 12: Hall compliance too high (2.0 > 1.0 V)
+measure_hall_field compliance_v=2.0
+
+# Error 13: NPLC too high (15 > 10)
+measure_hall_field nplc=15
+
+# Error 14: Invalid channel
+full_measure c
+
+# Error 15: Invalid voltage range
+measure_hall_field voltage_range=5V
+
+# Error 16: Invalid lockin parameter
+measure_lockin what=X,Y,Z,R
+
+# Error 17: Invalid approach
+set_dyna_temp 300 5 wrong_approach
+
+# Error 18: Invalid wait event
+wait_for invalid_event 5
+
+# END - This script should show ~18 validation errors

@@ -1,0 +1,57 @@
+# Test script for configure_channel command
+# This demonstrates reconfiguring channel routing during script execution
+
+# Initialize data file for this test
+initialize_data_file filename=test_configure_channel.csv
+
+# Test 1: Basic channel reconfiguration
+# Start with default channel a configuration (1,2,3,4)
+add_note note 1
+close_channel a
+wait_for no_event 1
+add_note note 2
+measure_lockin
+open_all_channels
+
+# Reconfigure channel a to use inputs 5-8
+configure_channel a 5 6 7 8
+add_note Channel a reconfigured to inputs 5-8
+close_channel a
+wait_for no_event 1
+open_all_channels
+
+# Test 2: Swap channel a and b routing
+configure_channel a 1 2 3 4
+configure_channel b 5 2 7 4
+add_note Swapped channel a and b routing
+
+# Close channel a (now using 5-8)
+close_channel a
+wait_for no_event 1
+measure_lockin
+open_all_channels
+
+# Close channel b (now using 1-4)
+close_channel b
+wait_for no_event 1
+measure_lockin
+open_all_channels
+
+# Test 3: Restore original configuration
+configure_channel a 1 2 3 4
+configure_channel b 5 6 7 8
+add_note Restored original configuration
+
+# Test 4: Full measurement with reconfigured channels
+# This would work if instruments are connected
+configure_channel a 1 2 3 4
+set_helmholtz_field 100 5
+wait_for helmholtz 2
+full_measure a
+full_measure b
+add_note Test completed successfully
+
+
+
+
+

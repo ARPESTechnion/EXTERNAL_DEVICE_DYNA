@@ -1,0 +1,7 @@
+# test Hall continuous_measure 
+enable_hall_output current=1.0 compliance_v=10
+sweep_helmholtz_field -100 100 10 gap_time=0.3
+  continuous_measure_hall_field current=1.0 nplc=1.0 compliance_v=10 voltage_range=auto filter_count=5 tbm=0.5
+disable_hall_output
+
+continuous_measure_hall_field current=1.0 nplc=1.0 compliance_v=10 voltage_range=auto filter_count=5 tbm=0.5

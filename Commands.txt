@@ -1,0 +1,1142 @@
+================================================================================
+                    MEASUREMENT SYSTEM COMMAND REFERENCE
+                     Try_CurrentSuorce.py Script Commands
+================================================================================
+
+This document describes all available commands for the script editor.
+
+================================================================================
+SECTION 1: BASIC CONTROL COMMANDS
+================================================================================
+
+test
+  Description: Test command to verify script parser is working
+  Arguments: None
+  Example: test
+
+wait_for <event1> [event2] [event3] ... <additional_time_s>
+  Description: Wait for one or more events before proceeding, then wait for additional time
+  Syntax: wait_for <events...> <additional_time>  where last token is duration
+  Arguments:
+    event1, event2, ... - One or more events: "temp", "field", "helmholtz", "no_event", or "all"
+    additional_time_s   - Extra wait time after events complete (float, in seconds)
+  
+  Event Details (executed sequentially in order specified):
+    temp           - Wait for PPMS temperature to stabilize (PPMS only, no Helmholtz check)
+    field          - Wait for PPMS field to hold (PPMS only, no Helmholtz check)
+    helmholtz      - Wait for Helmholtz current to stabilize (no PPMS polling)
+    no_event       - Skip checks and do a simple time delay (still abort-responsive)
+    all            - Expands to: ['temp', 'field', 'helmholtz'] (all three sequentially)
+  
+  Sequential Execution:
+    - Multiple events are processed in the order specified
+    - Each event completes fully before the next event begins
+    - Example: "wait_for temp field 5" waits for temp, then field, then additional 5s
+    - Cannot mix 'no_event' with other events (it skips all checks)
+  
+  PPMS State Unknown Handling:
+    - If PPMS reports field or temp value as 'nan' (indicating magnet problem or unknown state),
+      the wait command treats it as STABLE and continues (rather than waiting indefinitely)
+    - Example response from PPMS when field is unknown: ('0', ' nan', ' 1')
+    - The timestamp when the field/temp became 'nan' is recorded in the data file Notes column
+    - Example note: "PPMS field state unknown (field=nan) at 2026-02-18 14:23:45"
+    - Scripts continue running with measurements recorded
+  
+  Helmholtz Stability Check:
+    - temp: Only checks PPMS temperature, does NOT verify Helmholtz
+    - field: Only checks PPMS field, does NOT verify Helmholtz
+    - helmholtz: Checks that Helmholtz current matches target (within 1% tolerance)
+    - Purpose: Verify the independent Helmholtz system is stable (PPMS cannot control this)
+  
+  Valid Examples:
+    wait_for temp 5              # Wait for temp to stabilize, then 5 more seconds
+    wait_for field 10            # Wait for field to hold, then 10 more seconds
+    wait_for helmholtz 8         # Wait for Helmholtz current to stabilize, then 8s
+    wait_for temp field 5        # Wait for temp, then field, then 5s (sequential)
+    wait_for temp field helmholtz 2  # Wait for all three in sequence, then 2s
+    wait_for all 5               # Wait for all three (temp, field, helmholtz) in sequence, then 5s
+    wait_for no_event 10         # Simple 10-second delay without checks (abort still interrupts)
+  
+  Invalid Examples (will cause script validation error):
+    wait_for temp                # ERROR: Missing duration (last token must be number)
+    wait_for 5                   # ERROR: No events specified
+    wait_for temp no_event 5     # ERROR: Cannot mix 'no_event' with other events
+    wait_for invalid_event 5     # ERROR: Unknown event name
+    wait_for temp field          # ERROR: No duration (last token must be number)
+
+
+================================================================================
+SECTION 2: HELMHOLTZ FIELD CONTROL
+================================================================================
+
+set_helmholtz_field <field_Oe> <rate_Oe/s>
+  Description: Set Helmholtz coil field to a specific value
+  Arguments:
+    field_Oe      - Target field in Oersteds (float)
+    rate_Oe/s     - Ramp rate in Oe/s (float)
+  Calibration: 2 × 341.71 G/A = 683.42 G per Ampere
+  Example: set_helmholtz_field 100 5.0
+
+scan_helmholtz_field <start_Oe> <end_Oe> <step_Oe> <rate_Oe/s> <approach>
+  Description: Scan Helmholtz field with loop body
+  Arguments:
+    start_Oe      - Starting field (float)
+    end_Oe        - Ending field (float)
+    step_Oe       - Step size (float)
+    rate_Oe/s     - Ramp rate (float)
+    approach      - Currently not used
+  Loop Body: Indented commands that run at each step
+  Example:
+    scan_helmholtz_field 0 500 50 5 linear
+      measure_hall_field
+      measure_lockin
+
+sweep_helmholtz_field <start_Oe> <end_Oe> <rate_Oe/s> [gap_time=SECONDS]
+  Description: Continuously sweep Helmholtz field with repeated measurements
+  Arguments:
+    start_Oe      - Starting field in Oersteds (float)
+    end_Oe        - Ending field in Oersteds (float)
+    rate_Oe/s     - Continuous ramp rate in Oe/s (float)
+    gap_time      - Delay between loop executions in seconds (float, default: 0 = execute as fast as possible)
+  
+  Execution Pattern (3-stage):
+    1. INITIAL STAGE: Set Helmholtz to start value, wait for stability (1% current tolerance)
+       → Execute indented loop commands ONCE
+    2. SWEEP STAGE: Begin continuous ramp from start to end
+       → Repeatedly execute indented loop commands every gap_time seconds during the ramp
+       → If gap_time=0, execute as fast as possible without delay
+    3. FINAL STAGE: Reach stable endpoint
+       → Execute indented loop commands ONCE more
+  
+  Loop Body: Indented commands that run at each stage
+  Stability Check: Helmholtz current matches target within ±1%
+  
+  Features:
+    - Continuous field ramp (not step-based like scan_helmholtz_field)
+    - Repeated measurements at configurable intervals during ramp
+    - Gap time controls measurement frequency (0 = fastest, >0 = fixed delay)
+    - Measurements capture average Helmholtz field during each measurement function duration
+  
+  Example:
+    # Sweep field continuously, measure every 2 seconds
+    sweep_helmholtz_field 0 500 5 gap_time=2
+      measure_lockin
+    
+    # Sweep field as fast as possible
+    sweep_helmholtz_field -300 300 10 gap_time=0
+      full_measure a
+
+================================================================================
+SECTION 3: DYNA (PPMS) TEMPERATURE CONTROL
+================================================================================
+
+set_dyna_temp <temp_K> <rate_K/min> <approach>
+  Description: Set PPMS temperature to a specific value
+  Arguments:
+    temp_K        - Target temperature in Kelvin (float)
+    rate_K/min    - Temperature ramp rate (float)
+    approach      - One of: "fast_settle", "no_overshoot"
+  Example: set_dyna_temp 300 5 no_overshoot
+
+scan_dyna_temp <start_K> <end_K> <step_K> <rate_K/min> <approach>
+  Description: Scan PPMS temperature with loop body
+  Arguments:
+    start_K       - Starting temperature (float)
+    end_K         - Ending temperature (float)
+    step_K        - Step size (float)
+    rate_K/min    - Ramp rate (float)
+    approach      - One of: "fast_settle", "no_overshoot"
+  Loop Body: Indented commands that run at each temperature
+  Example:
+    scan_dyna_temp 300 400 20 5 no_overshoot
+      full_measure a current=1e-6 resistance=10e3
+
+sweep_dyna_temp <start_K> <end_K> <rate_K/min> [gap_time=SECONDS]
+  Description: Continuously sweep PPMS temperature with repeated measurements
+  Arguments:
+    start_K       - Starting temperature in Kelvin (float)
+    end_K         - Ending temperature in Kelvin (float)
+    rate_K/min    - Continuous ramp rate in K/min (float)
+    gap_time      - Delay between loop executions in seconds (float, default: 0 = execute as fast as possible)
+  
+  Execution Pattern (3-stage):
+    1. INITIAL STAGE: Set temperature to start value, wait for stability (PPMS status=1)
+       → Execute indented loop commands ONCE
+    2. SWEEP STAGE: Begin continuous ramp from start to end
+       → Repeatedly execute indented loop commands every gap_time seconds during the ramp
+       → If gap_time=0, execute as fast as possible without delay
+    3. FINAL STAGE: Reach stable endpoint
+       → Execute indented loop commands ONCE more
+  
+  Loop Body: Indented commands that run at each stage
+  Stability Check: PPMS temperature holding (status=1)
+  
+  Features:
+    - Continuous temperature ramp (not step-based like scan_dyna_temp)
+    - Repeated measurements at configurable intervals during ramp
+    - Gap time controls measurement frequency (0 = fastest, >0 = fixed delay)
+    - Measurements capture average temperature during each measurement function duration
+  
+  Example:
+    # Sweep temperature continuously, measure every 3 seconds
+    sweep_dyna_temp 300 350 5 gap_time=3
+      full_measure a
+    
+    # Sweep temperature as fast as possible, measure lock-in signal
+    sweep_dyna_temp 200 400 10 gap_time=0
+      measure_lockin
+
+================================================================================
+SECTION 4: DYNA (PPMS) MAGNETIC FIELD CONTROL
+================================================================================
+
+set_dyna_field <field_Oe> <rate_Oe/s> <approach>
+  Description: Set PPMS in-plane magnetic field to a specific value
+  Arguments:
+    field_Oe      - Target in-plane field in Oersteds (float)
+    rate_Oe/s     - Field ramp rate (float, max 50 Oe/s)
+    approach      - One of: "linear", "no_overshoot", "oscillate"
+  Example: set_dyna_field 1000 10 no_overshoot
+
+scan_dyna_field <start_Oe> <end_Oe> <step_Oe> <rate_Oe/s> <approach>
+  Description: Scan PPMS in-plane field with loop body
+  Arguments:
+    start_Oe      - Starting field (float)
+    end_Oe        - Ending field (float)
+    step_Oe       - Step size (float)
+    rate_Oe/s     - Ramp rate (float)
+    approach      - One of: "linear", "no_overshoot", "oscillate"
+  Loop Body: Indented commands that run at each field value
+  Example:
+    scan_dyna_field 0 2000 200 20 no_overshoot
+      full_measure a
+
+sweep_dyna_field <start_Oe> <end_Oe> <rate_Oe/s> [gap_time=SECONDS]
+  Description: Continuously sweep PPMS in-plane field with repeated measurements
+  Arguments:
+    start_Oe      - Starting field in Oersteds (float)
+    end_Oe        - Ending field in Oersteds (float)
+    rate_Oe/s     - Continuous ramp rate in Oe/s (float, max 50 Oe/s)
+    gap_time      - Delay between loop executions in seconds (float, default: 0 = execute as fast as possible)
+  
+  Execution Pattern (3-stage):
+    1. INITIAL STAGE: Set field to start value, wait for stability (PPMS status=1 or 4)
+       → Execute indented loop commands ONCE
+    2. SWEEP STAGE: Begin continuous ramp from start to end
+       → Repeatedly execute indented loop commands every gap_time seconds during the ramp
+       → If gap_time=0, execute as fast as possible without delay
+    3. FINAL STAGE: Reach stable endpoint
+       → Execute indented loop commands ONCE more
+  
+  Loop Body: Indented commands that run at each stage
+  Stability Check: PPMS field holding (status=1 or 4)
+  
+  Features:
+    - Continuous field ramp (not step-based like scan_dyna_field)
+    - Repeated measurements at configurable intervals during ramp
+    - Gap time controls measurement frequency (0 = fastest, >0 = fixed delay)
+    - Measurements capture average field during each measurement function duration
+    - Respects maximum ramp rate of 50 Oe/s set by PPMS hardware
+  
+  Example:
+    # Sweep field continuously, measure every 5 seconds
+    sweep_dyna_field 0 2000 20 gap_time=5
+      full_measure a
+    
+    # Sweep field as fast as possible, measure Hall effect
+    sweep_dyna_field -1000 1000 50 gap_time=0
+      measure_hall_field
+
+================================================================================
+SECTION 5: HALL BAR MEASUREMENTS
+================================================================================
+
+measure_hall_field [current=I] [nplc=N] [compliance_v=V] [voltage_range=RANGE] [filter_count=N] [tbm=S]
+  Description: Measure Hall bar voltage and calculate magnetic field
+  Arguments (optional):
+    current=I        - Measurement current in mA (default: from GUI)
+    nplc=N           - Number of power line cycles (default: from GUI)
+    compliance_v=V   - Voltage compliance in volts (default: from GUI)
+    voltage_range=RANGE - "1V", "10V", "10mV", "100mV", or "auto" (default: from GUI)
+    filter_count=N   - 50/60 Hz noise filter count (default: from GUI)
+    tbm=S            - Time before measurement: sleep after enabling current (s) (default: from GUI)
+  Output File: Data_YYYYMMDD_XXX.csv as "Hall" measurement type
+  Channels: Uses Keithley2450 with specified or GUI settings
+  Calibration: Uses Hall_V2Gauss setting (default 10000/215 G/V)
+  Notes:
+    - Parameters with defaults use GUI values if not specified
+    - All parameters optional; if omitted, uses corresponding GUI widget value
+    - Specify only the parameters you want to override
+    - TBM (time before measurement): Allows current to settle before voltage measurement
+  Examples:
+    measure_hall_field                                                    # Use all GUI defaults
+    measure_hall_field current=1.5                                        # Override current only
+    measure_hall_field current=1.5 nplc=10 voltage_range=10V            # Override multiple parameters
+    measure_hall_field nplc=5 compliance_v=0.1 tbm=0.5                  # Different compliance and 0.5s settling time
+
+continuous_measure_hall_field [current=I] [nplc=N] [compliance_v=V] [voltage_range=RANGE] [filter_count=N] [tbm=S]
+  Description: Continuous-style Hall measurement without per-call source disable/enable
+  Arguments (optional):
+    current=I        - Measurement current in mA (default: from GUI)
+    nplc=N           - Number of power line cycles (default: from GUI)
+    compliance_v=V   - Voltage compliance in volts (default: from GUI)
+    voltage_range=RANGE - Numeric value, optional V/mV suffix, or "auto" (default: from GUI)
+    filter_count=N   - 50/60 Hz noise filter count (default: from GUI)
+    tbm=S            - Time before measurement after enabling source (s, default: from GUI)
+  Behavior:
+    - If Hall output is OFF when command starts: enable output, wait tbm, then measure
+    - If Hall output is already ON: measure immediately (no tbm wait)
+    - Does not disable output at the end
+  Output File: Data_YYYYMMDD_XXX.csv as "Hall" measurement type
+  Examples:
+    continuous_measure_hall_field
+    continuous_measure_hall_field nplc=1 filter_count=5
+    continuous_measure_hall_field current=1.0 compliance_v=2 tbm=0.2
+
+enable_hall_output [current=I] [compliance_v=V]
+  Description: Enable Keithley2450 Hall source output
+  Arguments (optional):
+    current=I        - Source current in mA (default: from GUI)
+    compliance_v=V   - Voltage compliance in volts (default: from GUI)
+  Behavior:
+    - Applies current/compliance settings then enables source
+    - Keeps output enabled until disable_hall_output or other cleanup path
+  Example:
+    enable_hall_output current=1.0 compliance_v=2.0
+
+disable_hall_output
+  Description: Disable Keithley2450 Hall source output
+  Example:
+    disable_hall_output
+
+correct_hall_field (internal, not directly called in scripts)
+  Description: Iteratively correct Helmholtz current to achieve target Hall field
+  Used by: set_ppms_field_and_fix_hall, scan_ppms_field_and_fix_hall
+  Tolerance: ±1% by default
+  Max Iterations: 10
+  Note: Script will pause with error if tolerance not achieved
+
+================================================================================
+SECTION 6: LOCK-IN AMPLIFIER MEASUREMENTS
+================================================================================
+
+measure_lockin [what=PARAMS] [current=I] [series_resistance=R] [avg=N] [start_sens=IDX] [use_autorange=BOOL] [use_autophase=BOOL] [sample_delay=S]
+  Description: Perform SR830 lock-in measurement with optional parameter control
+  Arguments (optional):
+    what=PARAMS      - Comma-separated parameters: "X", "Y", "R", "Theta" (default: from GUI)
+    current=I        - Excitation current in Amps (default: from GUI)
+    series_resistance=R - Series resistance in Ohms (default: from GUI)
+    avg=N            - Number of samples to average (default: from GUI Averaging field)
+    start_sens=IDX   - Starting sensitivity index 0-26 (default: 10)
+    use_autorange=BOOL - "true" or "false" for autorange (default: true)
+    use_autophase=BOOL - "true" or "false" for autophase (default: true)
+    sample_delay=S   - Sample delay in seconds (default: 0.05)
+  Output File: Data_YYYYMMDD_XXX.csv as "LockIn" measurement type
+  Features:
+    - Automatic time constant and filter setting from GUI dropdowns
+    - Automatic phase alignment if use_autophase=true
+    - Automatic gain (sensitivity) adjustment if use_autorange=true
+    - Statistical averaging (configurable via GUI Averaging field or avg parameter)
+    - Calculates sample resistance: R / I_excitation
+  Output Parameters: X, Y, R, Theta (phase), plus all settings
+  Notes:
+    - Parameters with defaults use GUI values if not specified
+    - Time Constant: GUI dropdown selects TAU_TABLE index (human-readable values shown)
+    - Filter Slope: GUI dropdown selects 6/12/18/24 dB/oct
+    - Sensitivity: GUI dropdown selects sensitivity index 0-26
+    - Averaging: GUI Averaging field sets default number of samples (override with avg=N)
+    - Specify only the parameters you want to override
+  Examples:
+    measure_lockin                                                    # Use all GUI defaults + auto tau/filter
+    measure_lockin current=1e-6                                      # Override current only
+    measure_lockin current=1e-6 avg=5 use_autorange=false            # Custom current and averaging, disable autorange
+    measure_lockin what=X,Y,R avg=20 sample_delay=0.1               # Custom output parameters and averaging
+
+continuous_measure_lockin [what=PARAMS] [avg=N] [sample_delay=S] [excitation=on|off|keep]
+  Description: Continuous-style lock-in measurement without settling, autorange, or autophase
+  Arguments (optional):
+    what=PARAMS      - Comma-separated parameters: "X", "Y", "R", "Theta" (default: from GUI)
+    avg=N            - Number of samples to average (default: from GUI)
+    sample_delay=S   - Sample delay in seconds (default: 0.05)
+    excitation=...   - "on" to enable output, "off" to disable, "keep" to leave unchanged (default: keep)
+  Behavior:
+    - Does not change sensitivity or excitation current
+    - Does not wait for settling time
+    - Writes a CSV row like measure_lockin
+  Output File: Data_YYYYMMDD_XXX.csv as "LockIn" measurement type
+  Examples:
+    continuous_measure_lockin avg=10 sample_delay=0.02
+    continuous_measure_lockin what=X,Y,R excitation=keep
+
+================================================================================
+SECTION 7: COMBINED MEASUREMENTS
+================================================================================
+
+full_measure <channel> [time_between=S] [hall_current=I] [hall_nplc=N] [hall_compliance=V] [hall_voltage_range=RANGE] [hall_filter=N] [lockin_what=PARAMS] [lockin_current=I] [lockin_series_resistance=R] [lockin_avg=N] [lockin_start_sens=IDX] [lockin_use_autorange=BOOL] [lockin_use_autophase=BOOL] [lockin_sample_delay=S] [current=I] [resistance=R]
+  Description: Perform complete Hall + LockIn measurement in one operation
+  Sequence:
+    1. Measure Hall field (Keithley2450) with optional Hall parameters
+    2. Close specified channel in switch
+    3. Wait time_between seconds
+    4. Run LockIn measurement (SR830) with optional LockIn parameters
+    5. Open all channels
+    6. Write single CSV row with all data
+  
+  Required Arguments:
+    channel          - Channel to close: one of "a".."h"
+  
+  Optional Arguments (Hall measurements):
+    hall_current=I   - Measurement current in mA (default: from GUI)
+    hall_nplc=N      - Number of power line cycles (default: from GUI)
+    hall_compliance=V - Voltage compliance in volts (default: from GUI)
+    hall_voltage_range=RANGE - Voltage range: "1V", "10V", "10mV", "100mV", or "auto" (default: from GUI)
+    hall_filter=N    - 50/60 Hz noise filter count (default: from GUI)
+  
+  Optional Arguments (LockIn measurements):
+    lockin_what=PARAMS - Comma-separated output: "X", "Y", "R", "Theta" (default: from GUI)
+    lockin_current=I   - Excitation current in Amps (default: from GUI)
+    lockin_series_resistance=R - Series resistance in Ohms (default: from GUI)
+    lockin_avg=N     - Number of samples to average (default: 10)
+    lockin_start_sens=IDX - Starting sensitivity index 0-26 (default: 10)
+    lockin_use_autorange=BOOL - "true" or "false" (default: true)
+    lockin_use_autophase=BOOL - "true" or "false" (default: true)
+    lockin_sample_delay=S - Sample delay in seconds (default: 0.05)
+  
+  Optional Arguments (Timing & Backward Compatibility):
+    time_between=S   - Wait time in seconds between Hall and LockIn (default: 0.05)
+    current=I        - Backward compatibility for lockin_current (use lockin_current= instead)
+    resistance=R     - Backward compatibility for lockin_series_resistance (use lockin_series_resistance= instead)
+  
+  Output File: Data_YYYYMMDD_XXX.csv as "Full" measurement type
+  Output: Single CSV row containing all Hall and LockIn parameters
+  Notes:
+    - Parameters with defaults use GUI values if not specified
+    - Hall time constant and filter NOT overridable (fixed from GUI at measurement time)
+    - LockIn time constant and filter automatically set from GUI values at measurement time
+    - Specify only the parameters you want to override
+  
+  Examples:
+    full_measure a                                                                    # Use all GUI defaults
+    full_measure c                                                                    # Measure a configured non-default channel
+    full_measure a time_between=0.1                                                 # Just change wait time
+    full_measure a hall_current=1.5 lockin_current=1e-6 lockin_avg=5                # Override Hall and LockIn current
+    full_measure b hall_voltage_range=10V lockin_use_autorange=false lockin_start_sens=15 # Custom ranges and sensitivity
+    full_measure a time_between=0.05 hall_nplc=10 lockin_avg=20 lockin_sample_delay=0.1   # Comprehensive parameter override
+
+================================================================================
+SECTION 8: ADVANCED: HALL FIELD CORRECTION WITH PPMS
+================================================================================
+
+set_ppms_field_and_fix_hall <field_Oe> <target_hall_G> [helmholtz_rate=0.1]
+  Description: Set PPMS field AND automatically correct Helmholtz for Hall stability
+  Sequence:
+    1. Set PPMS in-plane field using dyna.set_field()
+    2. Wait for PPMS field to stabilize (status=0 "holding")
+    3. Iteratively adjust Helmholtz current to fix Hall field to target
+  Arguments:
+    field_Oe       - Target in-plane field (Oe)
+    target_hall_G  - Target Hall field (Gauss) to maintain via Helmholtz
+    helmholtz_rate - Helmholtz ramp rate (G/s, default 0.1)
+  Tolerance: ±1%
+  Max Iterations: 10 (for Hall field correction)
+  Notes:
+    - PPMS has ~1% perpendicular component that affects Hall reading
+    - Helmholtz coil corrects for this perpendicular component
+    - If correction fails: script pauses, error logged, partial data saved
+  Example:
+    set_ppms_field_and_fix_hall 1000 100.5
+
+scan_ppms_field_and_fix_hall <start_Oe> <end_Oe> <step_Oe> <target_hall_G> [rate=10.0]
+  Description: Scan PPMS field, correcting Hall field at each point, optionally execute commands at each step
+  Arguments:
+    start_Oe       - Starting in-plane field (float)
+    end_Oe         - Ending in-plane field (float)
+    step_Oe        - Step size (float)
+    target_hall_G  - Target Hall field at each step (float)
+    rate           - PPMS field ramp rate (Oe/s, default 10.0)
+  
+  Loop Commands (optional):
+    Indented commands execute at each field point
+    Pattern: Same as scan_dyna_field (indented body syntax)
+    Available commands: measure_hall_field, measure_lockin, full_measure, wait_for, etc.
+  
+  Workflow at Each Step:
+    1. Set PPMS in-plane field to current setpoint
+    2. Wait for PPMS field to stabilize
+    3. Iteratively adjust Helmholtz current to maintain target Hall field (±1%)
+    4. Execute all indented loop_commands at this field point
+    5. Continue to next field point
+  
+  Tolerance: ±1% Hall field correction
+  Max Iterations: 10 (for Hall field correction at each step)
+  
+  Notes:
+    - PPMS has ~1% perpendicular component that affects Hall reading
+    - Helmholtz coil corrects for this perpendicular component independently
+    - If correction fails at a step: logs error, skips measurements at that point, continues to next step
+    - Unlike early versions, this DOES perform measurements if loop_commands specified
+  
+  Examples:
+    # Just field correction, no measurements
+    scan_ppms_field_and_fix_hall 0 2000 200 100 rate=10.0
+    
+    # Field correction with measurements at each step
+    scan_ppms_field_and_fix_hall 0 2000 200 100 rate=20
+      measure_hall_field
+      full_measure a
+    
+    # With explicit timing and parameter control
+    scan_ppms_field_and_fix_hall -2000 2000 200 100 rate=10
+      wait_for dyna_ready 2
+      full_measure a lockin_current=1e-6 lockin_avg=10
+
+================================================================================
+SECTION 9: LOCK-IN PARAMETER CONTROL
+================================================================================
+
+set_lockin_time_constant <seconds>
+  Description: Set SR830 time constant in seconds
+  Argument:
+    seconds        - Time constant in seconds (float)
+  Conversion:
+    - Converts from human-readable seconds to SR830 TAU_TABLE index
+    - Warns if exact match not found (>10% difference)
+    - Uses closest matching TAU_TABLE entry
+  Valid seconds values (TAU_TABLE):
+    10µs, 30µs, 100µs, 300µs, 1ms, 3ms, 10ms, 30ms, 100ms, 300ms,
+    1s, 3s, 10s, 30s, 100s, 300s, 1ks, 3ks (indices 0-19)
+  Notes:
+    - Converts 1ks to 1000s, 3ks to 3000s internally
+    - Used automatically in measure_lockin if GUI tau changed before measurement
+    - Can be called before measure_lockin to set specific time constant
+  Examples:
+    set_lockin_time_constant 0.3      # Set to 300ms
+    set_lockin_time_constant 1.0      # Set to 1 second
+    set_lockin_time_constant 3.0      # Set to 3 seconds
+
+set_lockin_filter <db_octave>
+  Description: Set SR830 filter slope in dB/octave
+  Argument:
+    db_octave      - Filter slope: 6, 12, 18, or 24 dB/octave (int or float)
+  Conversion:
+    - 6 dB/oct → index 0
+    - 12 dB/oct → index 1
+    - 18 dB/oct → index 2
+    - 24 dB/oct → index 3
+  Notes:
+    - Affects 99% settling time and measurement speed
+    - Higher dB/oct = stronger filtering = slower response, lower noise
+    - Used automatically in measure_lockin if GUI filter changed before measurement
+    - Can be called before measure_lockin to set specific filter slope
+  Examples:
+    set_lockin_filter 6               # Light filtering, fast response
+    set_lockin_filter 12              # Moderate filtering
+    set_lockin_filter 24              # Strong filtering, best noise rejection
+
+set_lockin_frequency <frequency_hz>
+  Description: Set SR830 reference frequency in Hertz
+  Argument:
+    frequency_hz   - Reference frequency in Hz (float)
+  Behavior:
+    - Sets the SR830 reference frequency to the specified value
+    - Updates the GUI frequency display to match the new value
+    - Used to match lock-in measurement to excitation signal frequency
+  Notes:
+    - Default frequency: 668.4 Hz (configurable in GUI)
+    - Frequency range depends on SR830 model (typically 0.1 Hz to 100 kHz)
+    - Changes apply to subsequent measure_lockin commands
+    - GUI frequency field automatically updated to show current value
+  Examples:
+    set_lockin_frequency 1234.5       # Set to 1234.5 Hz
+    set_lockin_frequency 668.4        # Set to default frequency
+    set_lockin_frequency 500.0        # Set to 500 Hz
+
+set_lockin_current <current_A> [series_resistance=R]
+  Description: Set SR830 excitation current using the external series resistor
+  Arguments:
+    current_A       - Excitation current in Amps (float)
+    series_resistance=R - Series resistance in Ohms (default: GUI R_lockin value)
+  Behavior:
+    - Computes output voltage: V = I * R (clamped to 4 mV minimum)
+    - Updates the GUI current field to match
+    - Does not change sensitivity or other lock-in settings
+  Notes:
+    - current_A=0 results in minimum 4 mV output voltage
+    - Use before continuous_measure_lockin or measure_lockin when you want fixed excitation
+  Examples:
+    set_lockin_current 3e-3
+    set_lockin_current 5e-6 series_resistance=10000
+
+auto_gain
+  Description: Run SR830 auto-gain using best available driver method
+  Behavior: Tries quick_autorange, then safe_auto_gain, then auto_gain fallback
+  Note: Automatically used by measure_lockin; can be called manually if needed
+  Example: auto_gain
+
+auto_phase
+  Description: Run SR830 safe automatic phase adjustment
+  Used by: measure_lockin (automatically), or manual adjustment
+  Example: auto_phase
+
+auto_reserve
+  Description: Run SR830 safe automatic reserve adjustment
+  Used by: Optimizes headroom and noise performance in dynamic range
+  Example: auto_reserve
+
+================================================================================
+SECTION 10: SWITCH & CHANNEL CONTROL
+================================================================================
+
+open_all_channels
+  Description: Open all channels in the electronic switch
+  Effect: Disconnects Hall bar from measurement circuit
+  Note: Called automatically by full_measure after LockIn measurement
+  Example: open_all_channels
+
+close_channel <channel>
+  Description: Close a measurement channel in the electronic switch
+  Arguments:
+    channel        - Channel name: "a".."h"
+  Note: Channel settings (I+, V+, V-, I-) must be configured in GUI
+  Example: close_channel a
+
+configure_channel <channel> <I+> <V+> <V-> <I->
+  Description: Reconfigure a channel's switch routing numbers dynamically
+  Arguments:
+    channel        - Channel name: "a".."h"
+    I+             - Routing number for I+ (1-8, must be unique within channel)
+    V+             - Routing number for V+ (1-8, must be unique within channel)
+    V-             - Routing number for V- (1-8, must be unique within channel)
+    I-             - Routing number for I- (1-8, must be unique within channel)
+  
+  Behavior:
+    1. Opens all switch channels first
+    2. Updates channel configuration in GUI switch tab spinboxes
+    3. Validates routing numbers are 1-8 and unique within channel
+    4. Warns if routing numbers overlap with other channels (allows but logs warning)
+    5. Writes configuration note to data file: "Reconfigured channel X: I+=N, V+=N, V-=N, I-=N"
+  
+  Validation:
+    - All routing numbers must be integers between 1-8
+    - No duplicate routing numbers within a single channel configuration
+    - Cross-channel overlaps generate warning but are allowed (for sequential measurements)
+  
+  Use Cases:
+    - Switch between different sample wirings without physically reconnecting
+    - Swap routing across any configured channels (a..h) to measure different samples
+    - Reconfigure mid-script to measure multiple samples with different physical connections
+  
+  Notes:
+    - GUI spinboxes automatically update to reflect new configuration
+    - Current switch state is closed (all channels open) before reconfiguration
+    - Configuration note automatically appears in CSV Notes column for traceability
+    - Settings do not persist across GUI restarts (configure in each script as needed)
+  
+  Examples:
+    # Swap channel a and b routing
+    configure_channel a 5 6 7 8
+    configure_channel b 1 2 3 4
+    full_measure a
+    full_measure b
+    
+    # Reconfigure channel a to use different switch inputs
+    configure_channel a 2 3 4 5
+    add_note Sample mounted at position 2
+    full_measure a
+    
+    # Sequential measurement with reconfiguration
+    configure_channel a 1 2 3 4
+    full_measure a
+    configure_channel a 5 6 7 8
+    full_measure a
+
+================================================================================
+SECTION 11: FILE MANAGEMENT
+================================================================================
+
+run_saved_script <filename>
+  Description: Load and execute another script file
+  Arguments:
+    filename      - Path to .txt script file
+  Notes:
+    - Relative paths are resolved from the including script directory
+    - Validation is applied to nested scripts before execution
+    - Recursion cycles are blocked; excessive nesting is rejected
+  Example: run_saved_script subscript.txt
+
+  initialize_data_file [directory=DIR] [filename=FILE] [append=BOOL]
+  Description: Create a new CSV data file in Data_Route/
+  Arguments (optional):
+    directory=DIR   - Custom directory path (default: Data_Route/)
+    filename=FILE   - Custom filename (default: auto-increment Data_YYYYMMDD_XXX.csv)
+    append=BOOL     - Append to existing file if it exists (default: false)
+  
+  Auto-increment: When filename not specified, auto-increments Data_YYYYMMDD_001.csv, etc.
+  
+  File Exists Behavior:
+    - If append=true and file exists: Opens existing file in append mode, writes timestamp
+      note "Data appended at YYYY-MM-DD HH:MM:SS" to Notes column, then continues writing
+    - If append=true but existing file header is incompatible: Creates numbered variant instead
+    - If append=false (default) and file exists: Creates numbered variant (filename_001.csv,
+      filename_002.csv, etc.) to avoid overwriting
+  
+  Notes: 
+    - Called automatically on first measurement, can be called manually
+    - Append mode preserves existing data and adds continuation marker
+    - Numbered variants ensure no data loss when append=false
+  
+  Examples:
+    initialize_data_file                                    # Auto-increment in default directory
+    initialize_data_file directory=/tmp                    # Auto-increment in /tmp/
+    initialize_data_file filename=custom_data.csv          # Custom name in default directory
+    initialize_data_file directory=/tmp filename=test.csv # Custom name in custom directory
+    initialize_data_file filename=experiment.csv append=true  # Append to existing experiment.csv
+    initialize_data_file filename=test.csv append=false    # Create test_001.csv if test.csv exists
+
+add_note <text>
+  Description: Add a note/annotation to next CSV measurement row
+  Argument:
+    text           - Note text (all text after "add_note " is used)
+  Behavior:
+    - Appends to internal note buffer for next measurement
+    - Note appears in CSV "Notes" column
+    - Multiple notes are stacked with '; ' separators
+    - Automatically cleared after measurement is written
+    - Useful for annotating measurement conditions, anomalies, etc.
+  Notes:
+    - Text can contain spaces; entire remainder of line is the note
+    - Note clears after EACH write_data_row call (auto-clearing)
+    - Can be called multiple times; all notes are preserved in order
+    - Empty notes appear as blank CSV cells
+  Examples:
+    add_note Sample appears normal
+    # Now perform measurement - "Sample appears normal" will appear in Notes column
+    measure_hall_field
+    
+    add_note Helmholtz field correction failed - manual adjustment needed
+    measure_lockin    # Note appears in CSV
+    
+    # Can combine with wait_for
+    add_note Stable at 250K
+    wait_for temp_stable 2
+    full_measure a
+
+================================================================================
+SECTION 12: SCRIPT STRUCTURE & COMMENTS
+================================================================================
+
+Comment Lines
+  Syntax: # Any text after # is ignored
+  Example: # This is a comment
+
+Indentation
+  Purpose: Marks loop bodies for scan commands
+  Rules:
+    - scan_dyna_field, scan_dyna_temp, scan_helmholtz_field, scan_ppms_field_and_fix_hall require indented body
+    - Indentation is 2+ spaces or 1+ tabs
+    - All indented lines execute at each loop iteration
+    - Nested loops are supported up to 5 levels deep (6+ levels cause validation error)
+  Example:
+    scan_dyna_field 0 1000 100 10 linear
+      measure_hall_field
+      measure_lockin
+
+================================================================================
+SECTION 13: DATA FILE FORMAT
+================================================================================
+
+Automatic Data File Creation
+  Location: Data_Route/ subdirectory or custom directory (from initialize_data_file)
+  Naming: Data_YYYYMMDD_XXX.csv (auto-increments) or custom name
+  Headers: Automatically created with all column names and units
+  Measurement Types: "Hall", "LockIn", "Full", and metadata rows like "SessionInfo"
+
+CSV Columns
+  Time(s)                - Elapsed time from script start
+  Temp(K)                - PPMS temperature (NaN if measured Hall only)
+  Field(Oe)              - PPMS in-plane field (NaN if measured Hall only)
+  Helmholtz_Current(A)   - Applied Helmholtz current
+  Helmholtz_Field(G)     - Calculated Helmholtz field (683.42 G/A)
+  Hall_Voltage(V)        - Hall bar voltage (NaN if measured LockIn only)
+  Hall_Field(G)          - Calculated Hall field (NaN if measured LockIn only)
+  Channel                - Logical measurement channel label ("a".."h")
+  LockIn_X(V)            - Lock-in X value for the row's channel
+  LockIn_X_Error(V)      - Lock-in X standard deviation for the row's channel
+  LockIn_Y(V)            - Lock-in Y value for the row's channel
+  LockIn_Y_Error(V)      - Lock-in Y standard deviation for the row's channel
+  LockIn_R(V)            - Lock-in magnitude for the row's channel
+  LockIn_R_Error(V)      - Lock-in magnitude standard deviation for the row's channel
+  LockIn_Theta(deg)      - Lock-in phase for the row's channel
+  LockIn_Theta_Error(deg)- Lock-in phase standard deviation for the row's channel
+  Frequency(Hz)          - Lock-in reference frequency
+  Sensitivity(V)         - Lock-in full-scale sensitivity
+  Resistor(Ohm)          - Lock-in series resistor value
+  Output_Voltage(V)      - Lock-in excitation voltage
+  Output_Current(A)      - Lock-in excitation current
+  Time_Constant(s)       - Lock-in time constant in seconds
+  Sample_Resistance(Ohm) - Sample resistance for the row's channel
+  Sample_Resistance_Error(Ohm) - Resistance standard deviation for the row's channel
+  Measurement_Type       - Row type (e.g., Hall, LockIn, Full, SessionInfo)
+  Notes                  - User/script notes and automatic append/config markers
+
+  Normalized Row Behavior:
+    - Each measurement row carries a single channel label in Channel.
+    - Lock-in/resistance values are stored once (no duplicated a/b-only columns).
+    - In append mode, header must exactly match current schema; incompatible headers create numbered variant.
+  Sample_Resistance(Ohm) - Calculated: R / I_excitation
+  Measurement_Type       - "Hall", "LockIn", "Full", "SessionInfo", etc.
+  Notes                  - Annotation text from add_note command (or empty)
+
+NaN Handling
+  - Missing values written as np.nan (blank in CSV)
+  - Hall measurements: LockIn columns = NaN
+  - LockIn measurements: Hall columns = NaN
+  - Full measurements: All columns populated
+
+================================================================================
+SECTION 14: EXAMPLE SCRIPTS
+================================================================================
+
+Example 1: Simple Hall Field Scan
+  # Scan Helmholtz field and measure Hall effect
+  scan_helmholtz_field 0 500 50 5 linear
+    measure_hall_field
+
+Example 2: Lock-In Measurement Loop
+  # Scan PPMS temperature and measure resistance
+  scan_dyna_temp 300 350 10 2 fast_settle
+    wait_for temp_stable 2
+    measure_lockin
+
+Example 3: Full Measurement with Field Correction and Custom Parameters
+  # Set PPMS field with Hall correction, custom measurement parameters
+  set_ppms_field_and_fix_hall 1000 100
+  full_measure a hall_current=1.5 lockin_current=1e-6 lockin_avg=5
+
+Example 4: Complete Transport Measurement with Annotations
+  # Temperature scan with full Hall + LockIn measurements
+  scan_dyna_temp 300 400 20 5 no_overshoot
+    wait_for temp_stable 3
+    set_helmholtz_field 200 2
+    add_note Sample stable at target temperature
+    full_measure a
+
+Example 5: PPMS Field Scan with Hall Stability and Loop Commands
+  # Scan PPMS field while maintaining Hall field via Helmholtz
+  # Execute measurements at each field point
+  scan_ppms_field_and_fix_hall -2000 2000 200 100 rate=20
+    wait_for dyna_ready 1
+    add_note Field stabilized, performing measurements
+    full_measure a lockin_current=1e-6
+    full_measure b lockin_current=1e-6
+
+Example 6: Custom Data File with Lock-In Parameter Control
+  # Create custom output file with specific lock-in settings
+  initialize_data_file directory=/home/data filename=transport_2025_02_16.csv
+  set_lockin_time_constant 1.0
+  set_lockin_filter 12
+  measure_lockin what=X,Y,R avg=20
+  measure_lockin what=X,Y,R avg=20
+
+Example 7: Temperature Scan with Dynamic Lock-In Parameters
+  # Scan temperature with adaptive measurement settings
+  scan_dyna_temp 300 400 10 3 no_overshoot
+    wait_for temp_stable 2
+    add_note Measuring at target temperature
+    set_lockin_time_constant 0.3
+    measure_lockin avg=5 use_autorange=true
+    full_measure a lockin_avg=5
+
+Example 8: Multi-Sample Measurement with Channel Reconfiguration
+  # Measure two different samples wired to different switch inputs
+  # Sample 1 wired to switch inputs 1-4
+  # Sample 2 wired to switch inputs 5-8
+  initialize_data_file filename=multi_sample_comparison.csv
+  
+  # Measure first sample on channel a
+  configure_channel a 1 2 3 4
+  add_note Measuring Sample 1 (inputs 1-4)
+  set_helmholtz_field 100 5
+  wait_for helmholtz_field 2
+  full_measure a lockin_avg=10
+  
+  # Reconfigure channel a to second sample
+  configure_channel a 5 6 7 8
+  add_note Measuring Sample 2 (inputs 5-8)
+  full_measure a lockin_avg=10
+  
+  # Temperature scan on both samples
+  scan_dyna_temp 300 350 10 2 no_overshoot
+    wait_for temp_stable 2
+    configure_channel a 1 2 3 4
+    full_measure a
+    configure_channel a 5 6 7 8
+    full_measure a
+
+Example 9: Continuous Field Sweep with Repeated Measurements
+  # Continuously sweep in-plane field while measuring transport properties
+  initialize_data_file filename=field_sweep_transport.csv
+  set_dyna_temp 250 2 no_overshoot
+  wait_for temp 2
+  
+  # Sweep field continuously, measure every 5 seconds during ramp
+  sweep_dyna_field 0 2000 20 gap_time=5
+    full_measure a lockin_avg=10
+  
+  # Reverse sweep from 2000 Oe back to 0
+  sweep_dyna_field 2000 0 20 gap_time=5
+    full_measure a lockin_avg=10
+
+Example 10: Continuous Temperature Sweep with Lock-In Monitoring
+  # Continuously sweep temperature while monitoring resistance via lock-in
+  initialize_data_file filename=temperature_sweep_lockin.csv
+  set_helmholtz_field 500 5
+  wait_for helmholtz 2
+  
+  # Sweep temperature continuously, measure lock-in signal every 3 seconds
+  sweep_dyna_temp 300 400 5 gap_time=3
+    measure_lockin what=X,Y,R,Theta avg=5
+  
+  # Allow cool-down
+  sweep_dyna_temp 400 300 2 gap_time=0
+    # No measurements during cool-down (gap_time=0 for fast execution)
+
+Example 11: Continuous Helmholtz Field Sweep with Hall Effect
+  # Continuously sweep Helmholtz field to study Hall effect correction
+  initialize_data_file filename=helmholtz_sweep_hall.csv
+  set_dyna_temp 250 2 no_overshoot
+  wait_for temp 2
+  set_dyna_field 1000 10 no_overshoot
+  wait_for dyna_ready 2
+  
+  # Sweep Helmholtz continuously, measure Hall effect every 2 seconds
+  sweep_helmholtz_field -300 300 5 gap_time=2
+    measure_hall_field current=1.5 nplc=10
+
+Example 12: Complex Multi-Parameter Sweep Sequence
+  # Advanced: Coordinate multiple parameters with continuous sweeps
+  initialize_data_file filename=complex_sweep_sequence.csv
+  
+  # Temperature sweep 1: Field constant
+  set_dyna_field 1000 10 no_overshoot
+  wait_for dyna_ready 2
+  add_note Temperature sweep at fixed field 1000 Oe
+  sweep_dyna_temp 300 350 3 gap_time=2
+    full_measure a lockin_avg=5
+  
+  # Field sweep 1: Temperature constant
+  set_dyna_temp 325 2 no_overshoot
+  wait_for temp 2
+  add_note Field sweep at fixed temperature 325 K
+  sweep_dyna_field 500 1500 15 gap_time=3
+    full_measure a lockin_avg=5
+  
+  # Combined sweep simulation: Sequential ramps
+  add_note Sequential field and temperature ramp
+  sweep_dyna_field 1500 2000 20 gap_time=2
+    sweep_dyna_temp 325 340 2 gap_time=0
+      # Nested sweep: temperature ramps while field ramps
+
+================================================================================
+TROUBLESHOOTING
+================================================================================
+
+Script Errors
+  - Check script syntax in editor before running
+  - Comments start with #
+  - Indentation marks loop bodies (required for scan_* and scan_ppms_field_and_fix_hall)
+  - Command parameters must match types (float for numbers, string for names)
+  - Key=value parameters: no spaces around equals sign (e.g., current=1.5, not current = 1.5)
+
+Measurement Errors
+  - Hall measurement error: Check Keithley2450 connection
+  - LockIn error: Check SR830 connection, autorange/autophase settings
+  - PPMS error: Check DynaClass connection, field rate limits
+  - Helmholtz stability warning: Output still ramping, may indicate coil heating or instability
+
+Data File Issues
+  - Automatic files in Data_Route/ with auto-increment naming (or custom via initialize_data_file)
+  - CSV format can be opened in Excel/LibreOffice for analysis
+  - NaN values appear as blank cells in spreadsheet applications
+  - Notes column populated from add_note command; empty if no note specified
+
+Time Constant Conversion Issues
+  - set_lockin_time_constant accepts seconds (e.g., 0.3, 1.0, 3.0)
+  - Internally converts to TAU_TABLE index 0-19
+  - If exact match not found, uses closest value and warns in log
+  - Common values: 0.3 (300ms), 1.0 (1s), 3.0 (3s), 10.0 (10s)
+
+Filter Slope Conversion Issues
+  - set_lockin_filter accepts dB/octave: 6, 12, 18, or 24
+  - Converts to indices: 0, 1, 2, or 3 respectively
+  - Invalid values fallback to closest valid value with warning
+
+================================================================================
+REFERENCE TABLES
+================================================================================
+
+Temperature Approach Modes (for set_dyna_temp, scan_dyna_temp)
+  fast_settle    - Fast approach, some overshoot possible
+  no_overshoot   - Slow, careful approach with no overshoot
+
+Field Approach Modes (for set_dyna_field, scan_dyna_field)
+  linear         - Linear ramp
+  no_overshoot   - No overshoot approach
+  oscillate      - Oscillatory approach
+
+Helmholtz Coil Calibration
+  Coils: Two separate coils, each 341.71 G/A
+  Total: 2 × 341.71 = 683.42 G/A
+  Max Current: ±3 A (±2050 G field)
+
+Hall Bar Calibration (Default)
+  V2Gauss: 10000/215 G/V ≈ 46.51 G/V
+  Offset: 0 V (configured in GUI)
+  Formula: Hall_Field = (Voltage - Offset) × V2Gauss
+
+Lock-In Time Constants (TAU_TABLE)
+  Index  | Seconds  | Common Name
+  0      | 0.00001  | 10 µs
+  1      | 0.00003  | 30 µs
+  2      | 0.0001   | 100 µs
+  3      | 0.0003   | 300 µs
+  4      | 0.001    | 1 ms
+  5      | 0.003    | 3 ms
+  6      | 0.01     | 10 ms
+  7      | 0.03     | 30 ms
+  8      | 0.1      | 100 ms
+  9      | 0.3      | 300 ms (GUI default)
+  10     | 1.0      | 1 s
+  11     | 3.0      | 3 s
+  12     | 10.0     | 10 s
+  13     | 30.0     | 30 s
+  14     | 100.0    | 100 s
+  15     | 300.0    | 300 s
+  16     | 1000.0   | 1 ks (1000 s)
+  17     | 3000.0   | 3 ks (3000 s)
+
+Lock-In Filter Slopes
+  Index | dB/octave | 99% Settling Time (at 1s time constant)
+  0     | 6         | ~50 × τ
+  1     | 12        | ~75 × τ
+  2     | 18        | ~100 × τ
+  3     | 24        | ~150 × τ (GUI default)
+
+Lock-In Sensitivity Scale (SENS_TABLE)
+  Value In [Volts]                             | Index
+  2e-9,   5e-9,   10e-9,  20e-9,  50e-9        | i = 0–4
+  100e-9, 200e-9, 500e-9,                      | i = 5–7
+  1e-6,   2e-6,   5e-6,                        | i = 8–10
+  10e-6,  20e-6,  50e-6,                       | i = 11–13
+  100e-6, 200e-6, 500e-6,                      | i = 14–16
+  1e-3,   2e-3,   5e-3,                        | i = 17–19
+  10e-3,  20e-3,  50e-3,                       | i = 20–22
+  100e-3, 200e-3, 500e-3, 1.0                  | i = 23–26  
+
+GUI Default | Index 10 (typically 5 µV)
+
+Hall Bar Voltage Range (Keithley 2450)
+  "100mV"     | 100 mV full scale (±100 mV)
+  "1V"        | 1 V full scale (±1 V)
+  "10V"       | 10 V full scale (±10 V)
+  "auto"      | Automatic range selection (recommended)
+
+Lock-In Settings (Default Values)
+  Frequency: 668.4 Hz (configured in GUI)
+  Time Constant: 300 ms (index 9, configurable)
+  Filter Slope: 24 dB/oct (index 3, configurable)
+  Sensitivity: 50 µV (index 10, auto-adjusted by autorange)
+  Output Current: 100 nA (configured in GUI)
+  Output Voltage: Calculated from I × (R_series + R_sample)
+
+================================================================================
+VERSION HISTORY
+================================================================================
+
+Version 2.4 (2026-02-25) - Continuous Sweep Commands with Dual-Point Averaging
+  - sweep_dyna_field: New command for continuous in-plane field sweep
+    * Syntax: sweep_dyna_field <start_Oe> <end_Oe> <rate_Oe/s> [gap_time=SECONDS]
+    * Continuous ramp from start to end (not step-based)
+    * Three-stage execution: initial stability → repeated during ramp → final stability
+    * Gap_time controls loop execution frequency during ramp (0 = fastest, >0 = fixed delay)
+    * Respects PPMS 50 Oe/s maximum rate
+  
+  - sweep_dyna_temp: New command for continuous temperature sweep
+    * Syntax: sweep_dyna_temp <start_K> <end_K> <rate_K/min> [gap_time=SECONDS]
+    * Continuous ramp from start to end (not step-based)
+    * Three-stage execution: initial stability → repeated during ramp → final stability
+    * Gap_time controls loop execution frequency during ramp (0 = fastest, >0 = fixed delay)
+  
+  - sweep_helmholtz_field: New command for continuous Helmholtz field sweep
+    * Syntax: sweep_helmholtz_field <start_Oe> <end_Oe> <rate_Oe/s> [gap_time=SECONDS]
+    * Continuous ramp from start to end (not step-based)
+    * Three-stage execution: initial stability → repeated during ramp → final stability
+    * Gap_time controls loop execution frequency during ramp (0 = fastest, >0 = fixed delay)
+    * Uses 1% current tolerance for stability checking
+  
+  - Dual-Point Measurement Averaging: All measurement functions now capture parameters at
+    measurement function entry and exit, then average for CSV output
+    * Applies to: full_measure(), measure_k2450() (Hall), measure_lockin()
+    * Parameters averaged: Temp(K), In-plane_Field(Oe), Helmholtz_Current(A), Helmholtz_Field(G)
+    * Purpose: Captures parameter drift during potentially long-running measurements
+    * Improves data accuracy when parameters change during measurement duration (5-30s)
+
+Version 2.3 (2026-02-24) - Lock-In Frequency Control
+  - set_lockin_frequency: New command to set SR830 reference frequency
+    * Syntax: set_lockin_frequency <frequency_hz>
+    * Sets SR830 reference frequency to specified value in Hertz
+    * Automatically updates GUI frequency display to reflect new value
+    * Used to match lock-in measurement to excitation signal frequency
+    * Applied to subsequent measure_lockin commands
+
+Version 2.4 (2026-03-06) - Multi-Channel + Normalized CSV Schema
+  - Channel model expanded from fixed a/b to logical channels a..h
+    * close_channel/full_measure/configure_channel accept channel names a..h
+    * configure_channel validates pin range 1..8 with per-channel uniqueness
+  - CSV schema normalized for channel-aware rows
+    * Added Channel column and generic LockIn_* / Sample_Resistance columns
+    * Removed duplicated per-column a/b lock-in fields from primary schema
+    * Append mode requires strict schema header match; incompatible files auto-branch to numbered variants
+
+Version 2.2 (2026-02-23) - Dynamic Channel Configuration
+  - configure_channel: New command for runtime reconfiguration of switch routing
+    * Syntax: configure_channel <channel> <I+> <V+> <V-> <I->
+    * Dynamically remap switch routing numbers (1-8) for channels a and b
+    * Validates routing uniqueness within channel, warns on cross-channel overlap
+    * Opens all channels before reconfiguration to ensure clean state
+    * Updates GUI spinboxes automatically to reflect new configuration
+    * Logs configuration change to CSV Notes column for traceability
+    * Enables measuring multiple samples with different wirings in single script
+    * Use case: Quick switching between sample wiring setups per measurement script
+
+Version 2.1 (2026-02-17) - File Management Enhancement
+  - initialize_data_file: Added append parameter for flexible file handling
+    * append=true: Appends to existing file with timestamp note in Notes column
+    * append=true + incompatible header: creates numbered variant for safety
+    * append=false (default): Creates numbered variant (filename_001.csv, etc.) if file exists
+    * Prevents accidental data loss and enables session continuation
+
+Version 2.0 (2025-02-17) - Enhanced Script Parameter Control
+  - initialize_data_file: Added directory and filename optional parameters
+  - measure_hall_field: Added 5 optional parameters (current, nplc, compliance, voltage_range, filter)
+  - measure_lockin: Added 8 optional parameters with GUI default resolution and automatic tau/filter setting
+  - full_measure: Expanded to 19 parameters (5 Hall + 8 LockIn + time_between + 2 backward compat)
+  - scan_ppms_field_and_fix_hall: Added loop_commands parameter for measurements at each field point
+  - wait_for: Added "no_event" option and Helmholtz stability checking for field_stable/dyna_ready
+  - auto_gain: Uses quick_autorange with safe_auto_gain/auto_gain fallback for driver parity
+  - auto_reserve: Added new command for safe reserve adjustment
+  - set_lockin_time_constant: New command - converts seconds to TAU_TABLE index
+  - set_lockin_filter: New command - converts dB/oct to filter index
+  - add_note: New command - annotates CSV rows with measurement notes
+  - Removed set_data_file: Replaced by initialize_data_file directory/filename parameters
+  - Removed GUI save_results button: Focus on auto-increment CSV files
+  - Helmholtz stability verification: All field stability events now check current drift >1%
+  - Conversion utilities: _seconds_to_tau_index() and _db_to_filter_index() for parameter conversion
+
+Version 1.0 (2025-02-16)
+  - Initial command reference
+  - Support for all measurement types
+  - Hall field correction with PPMS
+  - Full data file management
+
+================================================================================

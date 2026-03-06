@@ -1,0 +1,5 @@
+# Very simple test
+scan_dyna_field -140000 140000 10000 50 linear
+  sweep_helmholtz_field -500 500 100 gap_time=2
+    continuous_measure_hall_field current=2 compliance_v=20 tbm=1
+  disable_hall_output

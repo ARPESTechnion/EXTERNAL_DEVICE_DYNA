@@ -1,0 +1,8 @@
+
+initialize_data_file filename=test_full_measure.csv append=false
+
+full_measure a time_between=0.1
+full_measure b time_between=0.1
+
+
+

@@ -1,0 +1,18 @@
+# Additional measurements sub-script
+# This demonstrates LockIn and switch operations
+
+# Close channel for Hall measurement
+close_channel a
+
+# Perform Hall measurement
+measure_hall_field
+
+# Auto-gain and auto-phase for LockIn
+auto_gain
+auto_phase
+
+# Measure with LockIn
+measure_lockin
+
+# Open all channels
+open_all_channels

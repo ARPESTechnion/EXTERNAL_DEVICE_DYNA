@@ -1,0 +1,38 @@
+# Example script demonstrating all implemented functions
+# This script performs a complete measurement sequence
+
+# Set data file for results
+set_data_file hall_vs_field_scan.csv
+
+# Initial setup - set temperature and wait for stabilization
+set_dyna_temp 300 5 fast
+wait_for temp_stable 5
+
+# Set initial field to zero
+set_dyna_field 0 10 linear
+wait_for field_stable 2
+
+# Scan Helmholtz field while measuring Hall voltage
+scan_helmholtz_field 0 500 50 5 linear
+    measure_hall_field
+    measure_lockin
+
+# Now scan Dyna field at fixed Helmholtz field
+set_helmholtz_field 200 5
+scan_dyna_field -1000 1000 200 10 linear
+    measure_hall_field
+    measure_lockin
+
+# Temperature scan at fixed fields
+set_dyna_field 500 10 linear
+set_helmholtz_field 100 5
+scan_dyna_temp 300 400 25 3 fast
+    measure_hall_field
+    measure_lockin
+
+# Run a sub-script for additional measurements
+run_saved_script additional_measurements.txt
+
+# Final cleanup - return to zero field
+set_dyna_field 0 10 linear
+set_helmholtz_field 0 5

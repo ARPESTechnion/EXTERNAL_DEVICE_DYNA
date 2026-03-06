@@ -1,0 +1,31 @@
+initialize_data_file filename=TS2_vander_pau append=false
+set_dyna_temp 295 15 fast_settle
+# wait_for temp 15
+set_dyna_field -14500 50 linear
+wait_for field temp 15
+scan_dyna_field -14500 -100000 500 50 linear
+  configure_channel a 1 2 3 4
+  wait_for no_event 0.1
+  close_channel a
+  measure_lockin current=3e-3 series_resistance=1000 avg=20 start_sens=15 use_autophase=false         configure_channel a 1 3 2 4
+  wait_for no_event 0.1
+  close_channel a
+  measure_lockin current=3e-3 series_resistance=1000 avg=20 start_sens=15 use_autophase=false
+  configure_channel a 4 2 3 1
+  wait_for no_event 0.1
+  close_channel a
+  measure_lockin current=3e-3 series_resistance=1000 avg=20 start_sens=15 use_autophase=false
+  configure_channel a 4 3 2 1
+  wait_for no_event 0.1
+  close_channel a
+  measure_lockin current=3e-3 series_resistance=1000 avg=20 start_sens=15 use_autophase=false
+  configure_channel a 1 2 4 3
+  wait_for no_event 0.1
+  close_channel a
+  measure_lockin current=3e-3 series_resistance=1000 avg=20 start_sens=15 use_autophase=false
+  configure_channel a 3 2 4 1
+  wait_for no_event 0.1
+  close_channel a
+  measure_lockin current=3e-3 series_resistance=1000 avg=20 start_sens=15 use_autophase=false
+set_dyna_field 0 50 linear
+wait_for field 15

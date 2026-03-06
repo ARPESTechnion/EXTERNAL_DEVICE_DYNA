@@ -1,0 +1,13 @@
+#initialize_data_file filename=custom_data.csv
+add_note test
+set_dyna_field 200 25 linear
+# set_dyna_temp 300 10 fast_settle
+# wait_for field temp 3
+set_lockin_time_constant 0.1
+set_lockin_frequency 17
+sweep_dyna_temp 300 285 1 gap_time=2
+  close_channel a
+  measure_lockin
+  measure_hall_field
+  full_measure a
+  open_all_channels
