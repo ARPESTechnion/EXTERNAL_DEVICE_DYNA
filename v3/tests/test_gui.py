@@ -40,6 +40,8 @@ from v3.core.data_manager import DataManager
 from v3.core.measurements import MeasurementContext
 from v3.core.ui_events import (
     UIEventBus,
+    W_DYNA_CHAMBER,
+    W_DYNA_CHAMBER_STATUS,
     W_DYNA_TEMP,
     W_DYNA_TEMP_STATUS,
     W_DYNA_FIELD,
@@ -232,6 +234,74 @@ class TestDynaTabEvents:
         assert "Stable" in tab.temp_display.cget("text")
         assert "Ramping" in tab.field_display.cget("text")
 
+    def test_chamber_state_update(self, root):
+        from v3.gui.dyna_tab import DynaTab
+        frame = ttk.Frame(root)
+        app = MagicMock()
+        app.connect_instrument = MagicMock()
+        app.disconnect_instrument = MagicMock()
+        tab = DynaTab(frame, app)
+        tab.create_widgets()
+        tab.on_event(W_DYNA_CHAMBER, 1)
+        tab.on_event(W_DYNA_CHAMBER_STATUS, "Purge and Seal")
+        text = tab.chamber_display.cget("text")
+        assert "Purge and Seal" in text
+        assert "(1)" not in text
+
+    def test_manual_set_chamber_dispatches_command(self, root):
+        from v3.gui.dyna_tab import DynaTab
+
+        frame = ttk.Frame(root)
+        app = MagicMock()
+        app.connect_instrument = MagicMock()
+        app.disconnect_instrument = MagicMock()
+        app.bus = MagicMock()
+        app.ui_bus = UIEventBus()
+        app.auto_log_enabled = tk.BooleanVar(value=False)
+        app.data_mgr = MagicMock()
+        app.data_mgr.log_dir = "."
+        app.data_mgr.auto_log_filename = None
+        app.data_mgr.is_auto_log_open = False
+        app.set_auto_log_directory = MagicMock()
+        app.set_auto_logging_enabled = MagicMock()
+
+        tab = DynaTab(frame, app)
+        tab.create_widgets()
+        tab.chamber_mode.set("High Vacuum")
+
+        tab._on_set_chamber()
+
+        app.bus.execute.assert_called_once_with(INST_DYNA, "set_chamber", 5)
+
+    def test_manual_set_temp_aborts_when_safety_declined(self, root):
+        from v3.gui.dyna_tab import DynaTab
+
+        frame = ttk.Frame(root)
+        app = MagicMock()
+        app.connect_instrument = MagicMock()
+        app.disconnect_instrument = MagicMock()
+        app.confirm_dyna_low_temp_transition = MagicMock(return_value=False)
+        app.bus = MagicMock()
+        app.ui_bus = UIEventBus()
+        app.auto_log_enabled = tk.BooleanVar(value=False)
+        app.data_mgr = MagicMock()
+        app.data_mgr.log_dir = "."
+        app.data_mgr.auto_log_filename = None
+        app.data_mgr.is_auto_log_open = False
+        app.set_auto_log_directory = MagicMock()
+        app.set_auto_logging_enabled = MagicMock()
+
+        tab = DynaTab(frame, app)
+        tab.create_widgets()
+        tab.set_temp.set(280.0)
+        tab.temp_rate.set(5.0)
+        tab.temp_mode.set("fast_settle")
+
+        tab._on_set_temp()
+
+        app.confirm_dyna_low_temp_transition.assert_called_once_with(280.0, source="manual")
+        app.bus.execute.assert_not_called()
+
 
 class TestResultsTabEvents:
     def test_log_message(self, root):
@@ -304,6 +374,26 @@ class TestResultsTabEvents:
 
         assert "Tracking" in tab.results_dyna_temp.cget("text")
         assert "Stable" in tab.results_dyna_field.cget("text")
+
+    def test_dyna_chamber_update(self, root):
+        from v3.gui.results_tab import ResultsTab
+        frame = ttk.Frame(root)
+        app = MagicMock()
+        app.parser = MagicMock()
+        app.validator = MagicMock()
+        app.script_filename = tk.StringVar(value="test.txt")
+        app.bus = InstrumentBus()
+        app.data_mgr = MagicMock()
+        app.data_mgr.get_results.return_value = []
+        tab = ResultsTab(frame, app)
+        tab.create_widgets()
+
+        tab.on_event(W_DYNA_CHAMBER, 2)
+        tab.on_event(W_DYNA_CHAMBER_STATUS, "Vent and Seal")
+
+        text = tab.results_dyna_chamber.cget("text")
+        assert "Vent and Seal" in text
+        assert "(2)" not in text
 
 
 class TestLockInTabEvents:
@@ -394,6 +484,92 @@ class TestSwitchTabEvents:
         tab.on_event(W_SWITCH_STATUS, "Ch A: I+=1 V+=2")
         assert "Ch A" in tab.status_label.cget("text")
 
+    def test_duplicate_mapping_summary_uses_lowest_channel(self, root):
+        from v3.gui.switch_tab import SwitchTab
+
+        frame = ttk.Frame(root)
+        app = MagicMock()
+        app.connect_instrument = MagicMock()
+        app.disconnect_instrument = MagicMock()
+        app.root = root
+        app.ui_bus = UIEventBus()
+        app.instrument_connected = {"switch": True}
+        app.channels = ["a", "b", "c"]
+        app.channel_configs = {
+            "a": {"I+": tk.IntVar(value=1), "V+": tk.IntVar(value=2), "V-": tk.IntVar(value=3), "I-": tk.IntVar(value=4)},
+            "b": {"I+": tk.IntVar(value=1), "V+": tk.IntVar(value=2), "V-": tk.IntVar(value=3), "I-": tk.IntVar(value=4)},
+            "c": {"I+": tk.IntVar(value=5), "V+": tk.IntVar(value=6), "V-": tk.IntVar(value=7), "I-": tk.IntVar(value=8)},
+        }
+        app.bus = InstrumentBus()
+        switch = MagicMock()
+        switch.closed_channels = {"1", "2", "3", "4"}
+        app.bus.connect(INST_SWITCH, switch)
+
+        tab = SwitchTab(frame, app)
+        tab.create_widgets()
+
+        summary = tab._switch_state_summary()
+        assert summary.startswith("Switch: Channel A Closed")
+        assert "duplicate mapping" in summary
+
+    def test_controls_do_not_include_configure_button(self, root):
+        from v3.gui.switch_tab import SwitchTab
+
+        frame = ttk.Frame(root)
+        app = MagicMock()
+        app.connect_instrument = MagicMock()
+        app.disconnect_instrument = MagicMock()
+        app.channels = ["a", "b"]
+        app.channel_configs = {
+            "a": {"I+": tk.IntVar(value=1), "V+": tk.IntVar(value=2), "V-": tk.IntVar(value=3), "I-": tk.IntVar(value=4)},
+            "b": {"I+": tk.IntVar(value=5), "V+": tk.IntVar(value=6), "V-": tk.IntVar(value=7), "I-": tk.IntVar(value=8)},
+        }
+        app.ui_bus = UIEventBus()
+        app.bus = InstrumentBus()
+        app.instrument_connected = {"switch": False}
+
+        tab = SwitchTab(frame, app)
+        tab.create_widgets()
+
+        def _iter_widgets(widget):
+            yield widget
+            for child in widget.winfo_children():
+                yield from _iter_widgets(child)
+
+        button_texts = [
+            widget.cget("text")
+            for widget in _iter_widgets(tab.parent)
+            if isinstance(widget, ttk.Button)
+        ]
+        assert "Configure" not in button_texts
+
+    def test_swapped_i_channels_do_not_collapse_to_lowest(self, root):
+        from v3.gui.switch_tab import SwitchTab
+
+        frame = ttk.Frame(root)
+        app = MagicMock()
+        app.connect_instrument = MagicMock()
+        app.disconnect_instrument = MagicMock()
+        app.root = root
+        app.ui_bus = UIEventBus()
+        app.instrument_connected = {"switch": True}
+        app.active_channel = "b"
+        app.channels = ["a", "b"]
+        app.channel_configs = {
+            "a": {"I+": tk.IntVar(value=1), "V+": tk.IntVar(value=2), "V-": tk.IntVar(value=4), "I-": tk.IntVar(value=5)},
+            "b": {"I+": tk.IntVar(value=5), "V+": tk.IntVar(value=2), "V-": tk.IntVar(value=4), "I-": tk.IntVar(value=1)},
+        }
+        app.bus = InstrumentBus()
+        switch = MagicMock()
+        switch.closed_channels = {"1", "2", "4", "5"}
+        app.bus.connect(INST_SWITCH, switch)
+
+        tab = SwitchTab(frame, app)
+        tab.create_widgets()
+
+        summary = tab._switch_state_summary()
+        assert summary.startswith("Switch: Channel B Closed")
+
 
 class TestHallTabEvents:
     def test_result_update(self, root):
@@ -458,6 +634,39 @@ class TestScriptRunner:
         result = _arange(5, 5, 0)
         assert result == [5]
 
+    def test_set_dyna_temp_aborts_when_safety_declined(self, ui_bus):
+        from v3.gui.script_runner import _dispatch
+        from v3.core.experiment_engine import StopRequested
+        from v3.core.script_parser import ParsedCommand
+
+        engine = MagicMock(spec=ExperimentEngine)
+        engine.stop_event = threading.Event()
+        ctx = MagicMock(spec=MeasurementContext)
+        ctx.ui_bus = ui_bus
+
+        app = MagicMock()
+        app.instrument_connected = {"dyna": True}
+        app.confirm_dyna_low_temp_transition = MagicMock(return_value=False)
+
+        cmd = ParsedCommand(
+            name="set_dyna_temp",
+            args=["250", "5", "fast_settle"],
+            line_number=1,
+            raw="set_dyna_temp 250 5 fast_settle",
+        )
+
+        with patch("v3.gui.script_runner.set_dyna_temp") as set_temp_mock:
+            with pytest.raises(StopRequested):
+                _dispatch(engine, ctx, cmd, app)
+
+        app.confirm_dyna_low_temp_transition.assert_called_once()
+        called_temp = app.confirm_dyna_low_temp_transition.call_args.args[0]
+        called_source = app.confirm_dyna_low_temp_transition.call_args.kwargs.get("source")
+        assert called_temp == pytest.approx(250.0)
+        assert called_source == "script:set_dyna_temp"
+        set_temp_mock.assert_not_called()
+        engine.request_stop.assert_called_once()
+
 
 # ======================================================================
 # Integration-level: MeasureApp construction (headless)
@@ -507,3 +716,35 @@ class TestMeasureAppInit:
             tab.create_widgets()
 
         assert len(tabs) == 6
+
+
+class TestMeasureAppCloseSafety:
+    def test_confirm_close_skips_prompt_when_helmholtz_zero(self):
+        from v3.gui.app import MeasureApp
+
+        app = MeasureApp.__new__(MeasureApp)
+        app.instrument_connected = {"helmholtz": True}
+        app.helmholtz = MagicMock()
+        app.helmholtz.actual_current_a = 0.0
+        app.helmholtz.actual_current_b = 0.0
+
+        with patch("v3.gui.app.messagebox.askyesno") as ask:
+            result = app._confirm_close_with_nonzero_helmholtz_current()
+
+        assert result is True
+        ask.assert_not_called()
+
+    def test_confirm_close_prompts_when_helmholtz_nonzero(self):
+        from v3.gui.app import MeasureApp
+
+        app = MeasureApp.__new__(MeasureApp)
+        app.instrument_connected = {"helmholtz": True}
+        app.helmholtz = MagicMock()
+        app.helmholtz.actual_current_a = 0.012
+        app.helmholtz.actual_current_b = 0.0
+
+        with patch("v3.gui.app.messagebox.askyesno", return_value=False) as ask:
+            result = app._confirm_close_with_nonzero_helmholtz_current()
+
+        assert result is False
+        ask.assert_called_once()

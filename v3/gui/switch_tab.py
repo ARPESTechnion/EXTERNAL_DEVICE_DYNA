@@ -8,14 +8,16 @@ open/close controls, connection status, and device photo annotation.
 from __future__ import annotations
 
 import json
+import re
 import tkinter as tk
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 from typing import TYPE_CHECKING, Any
 
-from v3.core.constants import INST_SWITCH
+from v3.core.constants import INST_SWITCH, LOGICAL_CHANNELS
 from v3.core.ui_events import (
     W_LED_SWITCH,
+    W_INSTRUMENT_ERROR,
     W_SWITCH_CONNECTED,
     W_SWITCH_STATUS,
 )
@@ -52,13 +54,16 @@ class SwitchTab(BaseTab):
         self.annotations_file = ANNOTATIONS_FILE
         self._channel_config_frame: ttk.LabelFrame | None = None
         self.close_channel_combo: ttk.Combobox | None = None
+        self.clone_source_combo: ttk.Combobox | None = None
+        self.clone_target_combo: ttk.Combobox | None = None
         self.clone_source_var = tk.StringVar(value="a")
         self.clone_target_var = tk.StringVar(value="b")
         self.template_var = tk.StringVar(value="Sequential 1-4")
         self._template_presets: dict[str, dict[str, int]] = {
             "Sequential 1-4": {"I+": 1, "V+": 2, "V-": 3, "I-": 4},
             "Sequential 5-8": {"I+": 5, "V+": 6, "V-": 7, "I-": 8},
-            "Mirror I/V": {"I+": 1, "V+": 4, "V-": 3, "I-": 2},
+            "Mirror I": {},
+            "Mirror V": {},
         }
 
     def create_widgets(self) -> None:
@@ -75,12 +80,14 @@ class SwitchTab(BaseTab):
         self.parent.grid_rowconfigure(1, weight=1)
         self.parent.grid_columnconfigure(0, weight=1)
         self.parent.grid_columnconfigure(1, weight=1)
+        body.grid_columnconfigure(1, weight=1)
+        body.grid_rowconfigure(0, weight=1)
 
         left = ttk.Frame(body, padding=10)
-        left.pack(side="left", fill="y")
+        left.grid(row=0, column=0, sticky="nw")
 
-        right = ttk.Frame(body, padding=10, width=380)
-        right.pack(side="left", fill="both", expand=False)
+        right = ttk.Frame(body, padding=(10, 0, 10, 10), width=700)
+        right.grid(row=0, column=1, sticky="nw")
 
         self._build_channel_config(left)
         self._build_controls(left)
@@ -120,16 +127,19 @@ class SwitchTab(BaseTab):
         values = list(self.app.channels)
         if self.close_channel_combo is not None:
             self.close_channel_combo.configure(values=values)
+        if self.clone_source_combo is not None:
+            self.clone_source_combo.configure(values=values)
+        if self.clone_target_combo is not None:
+            self.clone_target_combo.configure(values=list(LOGICAL_CHANNELS))
 
         if self.close_channel_var.get() not in values and values:
             self.close_channel_var.set(values[0])
         if self.clone_source_var.get() not in values and values:
             self.clone_source_var.set(values[0])
-        if self.clone_target_var.get() not in values:
-            if len(values) > 1:
-                self.clone_target_var.set(values[1])
-            elif values:
-                self.clone_target_var.set(values[0])
+        if self.clone_target_var.get() not in LOGICAL_CHANNELS:
+            fallback = next((ch for ch in LOGICAL_CHANNELS if ch != self.clone_source_var.get()), None)
+            if fallback is not None:
+                self.clone_target_var.set(fallback)
 
     # ------------------------------------------------------------------
     # Control buttons
@@ -150,7 +160,6 @@ class SwitchTab(BaseTab):
         )
         self.close_channel_combo.pack(side="left", padx=5)
 
-        ttk.Button(bf, text="Configure", command=self._on_configure).pack(side="left", padx=5)
         ttk.Button(bf, text="Open All", command=self._on_open_all).pack(side="left", padx=5)
         ttk.Button(bf, text="Close Channel", command=self._on_close).pack(side="left", padx=5)
 
@@ -161,6 +170,8 @@ class SwitchTab(BaseTab):
         row1.pack(fill="x", padx=5, pady=3)
         ttk.Button(row1, text="Add Configuration", command=self._on_add_configuration).pack(side="left", padx=3)
         ttk.Button(row1, text="Remove Selected", command=self._on_remove_configuration).pack(side="left", padx=3)
+        ttk.Button(row1, text="Load Configurations", command=self._on_load_configurations).pack(side="left", padx=3)
+        ttk.Button(row1, text="Export Configurations", command=self._on_export_configurations).pack(side="left", padx=3)
 
         row2 = ttk.Frame(manage)
         row2.pack(fill="x", padx=5, pady=3)
@@ -177,9 +188,23 @@ class SwitchTab(BaseTab):
         row3 = ttk.Frame(manage)
         row3.pack(fill="x", padx=5, pady=3)
         ttk.Label(row3, text="Clone").pack(side="left")
-        ttk.Combobox(row3, textvariable=self.clone_source_var, values=self.app.channels, state="readonly", width=5).pack(side="left", padx=4)
+        self.clone_source_combo = ttk.Combobox(
+            row3,
+            textvariable=self.clone_source_var,
+            values=self.app.channels,
+            state="readonly",
+            width=5,
+        )
+        self.clone_source_combo.pack(side="left", padx=4)
         ttk.Label(row3, text="→").pack(side="left")
-        ttk.Combobox(row3, textvariable=self.clone_target_var, values=self.app.channels, state="readonly", width=5).pack(side="left", padx=4)
+        self.clone_target_combo = ttk.Combobox(
+            row3,
+            textvariable=self.clone_target_var,
+            values=list(LOGICAL_CHANNELS),
+            state="readonly",
+            width=5,
+        )
+        self.clone_target_combo.pack(side="left", padx=4)
         ttk.Button(row3, text="Clone", command=self._on_clone_configuration).pack(side="left", padx=4)
 
         self._refresh_channel_selectors()
@@ -196,6 +221,37 @@ class SwitchTab(BaseTab):
 
         self.switch_led = make_led(sf)
         self.switch_led.pack(anchor="w", padx=5, pady=2)
+
+        ttk.Label(sf, text="Status:", style="SectionTitle.TLabel").pack(
+            anchor="w", padx=5, pady=(6, 2)
+        )
+        self.status_text = tk.Text(
+            sf,
+            height=3,
+            width=50,
+            state="disabled",
+            font=("Courier", 9),
+            background="#f0f0f0",
+            relief="sunken",
+        )
+        self.status_text.pack(fill="x", padx=5, pady=(0, 5))
+
+    def _append_status(self, message: str, *, is_error: bool = False) -> None:
+        prefix = "Error" if is_error else "Info"
+        self.status_text.configure(state="normal")
+        self.status_text.insert("end", f"{prefix}: {message}\n")
+        self.status_text.see("end")
+        line_count = int(self.status_text.index("end-1c").split(".")[0])
+        if line_count > 200:
+            self.status_text.delete("1.0", f"{line_count - 200}.0")
+        self.status_text.configure(state="disabled")
+
+    def _report_switch_error(self, message: str) -> None:
+        post_error = getattr(self.app, "post_instrument_error", None)
+        if callable(post_error):
+            post_error("switch", message)
+        else:
+            self._append_status(message, is_error=True)
 
     # ------------------------------------------------------------------
     # Event handling
@@ -217,6 +273,9 @@ class SwitchTab(BaseTab):
         elif widget_id == W_SWITCH_CONNECTED:
             if self._conn_header:
                 self._conn_header.set_connected(bool(value))
+        elif widget_id == W_INSTRUMENT_ERROR:
+            if isinstance(value, dict) and str(value.get("instrument")) == "switch":
+                self._append_status(str(value.get("message", "Unknown error")), is_error=True)
 
     def _pulse_switch_widget_led(self, duration_ms: int = 500) -> None:
         set_led(self.switch_led, True)
@@ -276,44 +335,42 @@ class SwitchTab(BaseTab):
                 or f"140{pin}" in closed
             )
 
+        active = str(getattr(self.app, "active_channel", "") or "").strip().lower()
+        if active in self.app.channel_configs:
+            active_cfg = self.app.channel_configs[active]
+            active_pins = [str(active_cfg[key].get()) for key in ("I+", "V+", "V-", "I-")]
+            if all(_pin_is_closed(pin) for pin in active_pins):
+                same_cfg = [ch.upper() for ch in self._channels_with_same_config(active)]
+                duplicate_message = ""
+                if len(same_cfg) > 1:
+                    duplicate_message = f" (duplicate mapping: {', '.join(same_cfg)})"
+                elif self._duplicate_config_groups():
+                    duplicate_message = " (warning: duplicate channel configurations)"
+                return f"Switch: Channel {active.upper()} Closed{duplicate_message}"
+
         closed_channels: list[str] = []
         for ch in self.app.channels:
             cfg = self.app.channel_configs[ch]
             pins = [str(cfg[key].get()) for key in ("I+", "V+", "V-", "I-")]
-            is_closed = any(_pin_is_closed(pin) for pin in pins)
+            # A logical channel is treated as active only when all four pins are closed.
+            is_closed = all(_pin_is_closed(pin) for pin in pins)
             if is_closed:
                 closed_channels.append(ch.upper())
 
         if not closed_channels:
             return "Switch: All Open"
-        if len(closed_channels) == 1:
-            return f"Switch: Channel {closed_channels[0]} Closed"
-        return "Switch: Multiple channels closed"
+
+        canonical = min(closed_channels)
+        duplicate_message = ""
+        same_cfg = [ch.upper() for ch in self._channels_with_same_config(canonical.lower())]
+        if len(same_cfg) > 1:
+            duplicate_message = f" (duplicate mapping: {', '.join(same_cfg)})"
+        elif self._duplicate_config_groups():
+            duplicate_message = " (warning: duplicate channel configurations)"
+        return f"Switch: Channel {canonical} Closed{duplicate_message}"
 
     def _post_switch_summary(self) -> None:
         self.app.ui_bus.post(W_SWITCH_STATUS, self._switch_state_summary())
-
-    def _on_configure(self) -> None:
-        """Configure the selected switch channel."""
-        try:
-            ch = self.close_channel_var.get()
-            cfg = self.app.channel_configs[ch]
-            ip = cfg["I+"].get()
-            vp = cfg["V+"].get()
-            vm = cfg["V-"].get()
-            im = cfg["I-"].get()
-
-            from v3.core.measurements import configure_channel
-            ctx = self.app.make_context()
-            configure_channel(ctx, ch, ip, vp, vm, im)
-
-            self.app.active_channel = ch
-            self._pulse_switch_led()
-            self._post_switch_summary()
-            self._refresh_channel_selectors()
-            self.app.ui_bus.post_log(f"Switch channel {ch} configured: I+={ip} V+={vp} V-={vm} I-={im}")
-        except Exception as exc:
-            self.app.ui_bus.post_log(f"Configure error: {exc}")
 
     def _on_add_configuration(self) -> None:
         try:
@@ -340,15 +397,156 @@ class SwitchTab(BaseTab):
         try:
             channel = self.close_channel_var.get().strip().lower()
             cfg = self.app.channel_configs[channel]
-            preset = self._template_presets.get(self.template_var.get())
-            if preset is None:
-                raise ValueError("Unknown template")
-            for pin, value in preset.items():
-                cfg[pin].set(int(value))
+            selected_template = self.template_var.get()
+
+            if selected_template == "Mirror I":
+                ip = int(cfg["I+"].get())
+                im = int(cfg["I-"].get())
+                cfg["I+"].set(im)
+                cfg["I-"].set(ip)
+            elif selected_template == "Mirror V":
+                vp = int(cfg["V+"].get())
+                vm = int(cfg["V-"].get())
+                cfg["V+"].set(vm)
+                cfg["V-"].set(vp)
+            else:
+                preset = self._template_presets.get(selected_template)
+                if preset is None:
+                    raise ValueError("Unknown template")
+                for pin, value in preset.items():
+                    cfg[pin].set(int(value))
+
             self._render_channel_config_rows()
             self.app.ui_bus.post_log(f"Applied template '{self.template_var.get()}' to channel {channel}.")
         except Exception as exc:
             self.app.ui_bus.post_log(f"Template apply error: {exc}")
+
+    def _on_export_configurations(self) -> None:
+        try:
+            if not self.app.channels:
+                raise ValueError("No active channel configurations")
+
+            default_dir, default_name = self._suggest_export_target("_config", ".txt")
+
+            file_path = filedialog.asksaveasfilename(
+                title="Export Switch Configurations",
+                defaultextension=".txt",
+                filetypes=[("Text files", "*.txt"), ("All files", "*.*")],
+                initialdir=str(default_dir),
+                initialfile=default_name,
+            )
+            if not file_path:
+                return
+
+            lines: list[str] = ["Switch Channel Configurations", "============================", ""]
+            for ch in self.app.channels:
+                cfg = self.app.channel_configs[ch]
+                lines.append(
+                    f"{ch.upper()}: I+={int(cfg['I+'].get())}, "
+                    f"V+={int(cfg['V+'].get())}, "
+                    f"V-={int(cfg['V-'].get())}, "
+                    f"I-={int(cfg['I-'].get())}"
+                )
+
+            Path(file_path).write_text("\n".join(lines) + "\n", encoding="utf-8")
+            self.app.ui_bus.post_log(f"Switch configurations exported: {Path(file_path).name}")
+            messagebox.showinfo("Export Successful", f"Configurations saved to:\n{file_path}")
+        except Exception as exc:
+            self.app.ui_bus.post_log(f"Export configurations error: {exc}")
+            messagebox.showerror("Export Error", f"Failed to export configurations: {exc}")
+
+    def _parse_config_line(self, line: str) -> tuple[str, dict[str, int]] | None:
+        pattern = (
+            r"^\s*([A-Ha-h])\s*:\s*I\+\s*=\s*(\d+)\s*,\s*"
+            r"V\+\s*=\s*(\d+)\s*,\s*V-\s*=\s*(\d+)\s*,\s*I-\s*=\s*(\d+)\s*$"
+        )
+        match = re.match(pattern, line)
+        if match is None:
+            return None
+
+        channel = match.group(1).lower()
+        ip, vp, vm, im = (int(match.group(i)) for i in range(2, 6))
+        for pin in (ip, vp, vm, im):
+            if pin < 1 or pin > 8:
+                raise ValueError(f"Pin number out of range in line: {line}")
+
+        return channel, {"I+": ip, "V+": vp, "V-": vm, "I-": im}
+
+    def _on_load_configurations(self) -> None:
+        try:
+            default_dir, _ = self._suggest_export_target("_config", ".txt")
+            file_path = filedialog.askopenfilename(
+                title="Load Switch Configurations",
+                filetypes=[("Text files", "*.txt"), ("All files", "*.*")],
+                initialdir=str(default_dir),
+            )
+            if not file_path:
+                return
+
+            lines = Path(file_path).read_text(encoding="utf-8").splitlines()
+            loaded_order: list[str] = []
+            loaded_cfg: dict[str, dict[str, int]] = {}
+
+            for raw_line in lines:
+                parsed = self._parse_config_line(raw_line)
+                if parsed is None:
+                    continue
+                channel, cfg = parsed
+                if channel not in loaded_order:
+                    loaded_order.append(channel)
+                loaded_cfg[channel] = cfg
+
+            if not loaded_cfg:
+                raise ValueError("No valid channel configuration lines were found in the selected file")
+
+            # Ensure mandatory channels exist even if file does not include them.
+            for mandatory in ("a", "b"):
+                if mandatory not in loaded_cfg and mandatory in self.app.channel_configs:
+                    existing = self.app.channel_configs[mandatory]
+                    loaded_cfg[mandatory] = {
+                        "I+": int(existing["I+"].get()),
+                        "V+": int(existing["V+"].get()),
+                        "V-": int(existing["V-"].get()),
+                        "I-": int(existing["I-"].get()),
+                    }
+                    loaded_order.insert(0 if mandatory == "a" else min(1, len(loaded_order)), mandatory)
+
+            target_channels = [ch for ch in loaded_order if ch in LOGICAL_CHANNELS]
+
+            # Remove channels not present in loaded file (except mandatory channels).
+            for channel in list(self.app.channels):
+                if channel not in target_channels and channel not in {"a", "b"}:
+                    self.app.remove_channel_config(channel)
+
+            # Add missing loaded channels.
+            for channel in target_channels:
+                if channel not in self.app.channel_configs:
+                    self.app.add_channel_config(channel=channel)
+
+            # Apply loaded pin mapping.
+            for channel in target_channels:
+                if channel not in self.app.channel_configs:
+                    continue
+                cfg_vars = self.app.channel_configs[channel]
+                cfg_vals = loaded_cfg[channel]
+                cfg_vars["I+"].set(int(cfg_vals["I+"]))
+                cfg_vars["V+"].set(int(cfg_vals["V+"]))
+                cfg_vars["V-"].set(int(cfg_vals["V-"]))
+                cfg_vars["I-"].set(int(cfg_vals["I-"]))
+
+            self._render_channel_config_rows()
+            self._refresh_channel_selectors()
+            self._post_switch_summary()
+            self.app.ui_bus.post_log(
+                f"Loaded {len(target_channels)} channel configuration(s) from {Path(file_path).name}."
+            )
+            messagebox.showinfo(
+                "Load Successful",
+                f"Loaded {len(target_channels)} channel configuration(s) from:\n{file_path}",
+            )
+        except Exception as exc:
+            self.app.ui_bus.post_log(f"Load configurations error: {exc}")
+            messagebox.showerror("Load Error", f"Failed to load configurations: {exc}")
 
     def _on_clone_configuration(self) -> None:
         try:
@@ -356,8 +554,20 @@ class SwitchTab(BaseTab):
             dst = self.clone_target_var.get().strip().lower()
             if src == dst:
                 raise ValueError("Source and target channels must be different")
-            self.app.clone_channel_config(src, dst)
+
+            if src not in self.app.channel_configs:
+                raise ValueError(f"Unknown source channel '{src}'")
+
+            if dst not in LOGICAL_CHANNELS:
+                raise ValueError(f"Invalid target channel '{dst}'. Allowed: {', '.join(LOGICAL_CHANNELS)}")
+
+            if dst in self.app.channel_configs:
+                self.app.clone_channel_config(src, dst)
+            else:
+                self.app.add_channel_config(channel=dst, clone_from=src)
+
             self._render_channel_config_rows()
+            self._refresh_channel_selectors()
             self.app.ui_bus.post_log(f"Cloned channel config: {src} -> {dst}.")
         except Exception as exc:
             self.app.ui_bus.post_log(f"Clone configuration error: {exc}")
@@ -370,8 +580,10 @@ class SwitchTab(BaseTab):
             open_all_channels(ctx)
             self.app.active_channel = None
             self._post_switch_summary()
+            self._append_status("All switch channels opened.")
             self.app.ui_bus.post_log("All switch channels opened.")
         except Exception as exc:
+            self._report_switch_error(str(exc))
             self.app.ui_bus.post_log(f"Open all error: {exc}")
 
     def _on_close(self) -> None:
@@ -397,11 +609,43 @@ class SwitchTab(BaseTab):
                 for pin in (ip, vp, vm, im):
                     close_channel(ctx, pin)
 
-            self.app.active_channel = ch
+            canonical_channel = min(self._channels_with_same_config(ch), key=lambda item: item.lower())
+            self.app.active_channel = canonical_channel
             self._post_switch_summary()
-            self.app.ui_bus.post_log(f"Switch channel {ch} closed.")
+            if canonical_channel != ch:
+                self._append_status(
+                    f"Channel {ch} closed (normalized to {canonical_channel})."
+                )
+                self.app.ui_bus.post_log(
+                    f"Switch channel {ch} closed (status normalized to {canonical_channel})."
+                )
+            else:
+                self._append_status(f"Channel {ch} closed.")
+                self.app.ui_bus.post_log(f"Switch channel {ch} closed.")
         except Exception as exc:
+            self._report_switch_error(str(exc))
             self.app.ui_bus.post_log(f"Close channel error: {exc}")
+
+    def _channel_signature(self, channel: str) -> tuple[int, int, int, int]:
+        cfg = self.app.channel_configs[channel]
+        return (
+            int(cfg["I+"].get()),
+            int(cfg["V+"].get()),
+            int(cfg["V-"].get()),
+            int(cfg["I-"].get()),
+        )
+
+    def _channels_with_same_config(self, channel: str) -> list[str]:
+        if channel not in self.app.channel_configs:
+            return [channel]
+        signature = self._channel_signature(channel)
+        return [ch for ch in self.app.channels if self._channel_signature(ch) == signature]
+
+    def _duplicate_config_groups(self) -> list[list[str]]:
+        groups: dict[tuple[int, int, int, int], list[str]] = {}
+        for ch in self.app.channels:
+            groups.setdefault(self._channel_signature(ch), []).append(ch)
+        return [channels for channels in groups.values() if len(channels) > 1]
 
     # ==================================================================
     # Device Photo Annotation (matching V2)
@@ -409,19 +653,11 @@ class SwitchTab(BaseTab):
     def _build_photo_annotation(self, parent: ttk.Frame) -> None:
         """Build the device photo annotation panel on the right side."""
         ttk.Label(parent, text="Device Photo Annotation",
-              style="SectionTitleLarge.TLabel").pack(pady=(0, 10))
-
-        # Photo control buttons
-        photo_btn_frame = ttk.Frame(parent)
-        photo_btn_frame.pack(fill="x", pady=5)
-        ttk.Button(photo_btn_frame, text="Load Photo",
-                   command=self._load_device_photo).pack(side="left", padx=2)
-        ttk.Button(photo_btn_frame, text="Export Annotated",
-                   command=self._export_annotated_photo).pack(side="left", padx=2)
+              style="SectionTitleLarge.TLabel").pack(anchor="w", pady=(0, 4))
 
         # Label control frame
         label_ctrl_frame = ttk.LabelFrame(parent, text="Label Controls", padding=5)
-        label_ctrl_frame.pack(fill="x", pady=5)
+        label_ctrl_frame.pack(fill="x", pady=(0, 5))
 
         # Color selector
         self.label_color = tk.StringVar(value="white")
@@ -470,12 +706,20 @@ class SwitchTab(BaseTab):
         canvas_frame = ttk.LabelFrame(parent, text="Photo Preview", padding=5)
         canvas_frame.pack(fill="both", expand=True, pady=5)
 
-        self.photo_canvas = tk.Canvas(canvas_frame, bg="gray20", height=300, width=320)
+        self.photo_canvas = tk.Canvas(canvas_frame, bg="gray20", height=480, width=640)
         self.photo_canvas.pack(fill="both", expand=True)
         self.photo_canvas.bind("<Button-1>", self._on_canvas_click)
         self.photo_canvas.bind("<B1-Motion>", self._on_canvas_drag)
         self.photo_canvas.bind("<ButtonRelease-1>", self._on_canvas_release)
         self.photo_canvas.bind("<Button-3>", self._on_canvas_right_click)
+
+        # Photo control buttons under preview
+        photo_btn_frame = ttk.Frame(parent)
+        photo_btn_frame.pack(fill="x", pady=(6, 2))
+        ttk.Button(photo_btn_frame, text="Load Photo",
+               command=self._load_device_photo).pack(side="left", padx=2)
+        ttk.Button(photo_btn_frame, text="Export Annotated",
+               command=self._export_annotated_photo).pack(side="left", padx=2)
 
     def _load_device_photo(self) -> None:
         """Load a device photo from file."""
@@ -495,12 +739,28 @@ class SwitchTab(BaseTab):
         try:
             self.device_photo_path = Path(file_path)
             self.photo_image = Image.open(self.device_photo_path)
-            self.photo_image.thumbnail((320, 300), Image.Resampling.LANCZOS)
+            self.photo_image.thumbnail((640, 480), Image.Resampling.LANCZOS)
             self._load_annotations()
             self._redraw_photo_canvas()
             self.app.ui_bus.post_log(f"Photo loaded: {self.device_photo_path.name}")
         except Exception as e:
             messagebox.showerror("Photo Load Error", f"Failed to load photo: {e}")
+
+    def _suggest_export_target(self, suffix: str, extension: str) -> tuple[Path, str]:
+        data_mgr = getattr(self.app, "data_mgr", None)
+        data_file = getattr(data_mgr, "data_filename", None) if data_mgr is not None else None
+
+        if data_file is not None:
+            data_path = Path(data_file)
+            base_dir = data_path.parent
+            base_stem = data_path.stem
+        else:
+            fallback_dir = Path(getattr(data_mgr, "data_dir", Path.cwd())) if data_mgr is not None else Path.cwd()
+            base_dir = fallback_dir
+            base_stem = "Data"
+
+        filename = f"{base_stem}{suffix}{extension}"
+        return base_dir, filename
 
     def _redraw_photo_canvas(self) -> None:
         """Redraw canvas with photo and labels."""
@@ -646,6 +906,11 @@ class SwitchTab(BaseTab):
                     btn.configure(style="Accent.TButton")
                 except Exception:
                     pass  # style may not exist
+            else:
+                try:
+                    btn.configure(style="TButton")
+                except Exception:
+                    pass
 
     def _save_annotations(self) -> None:
         """Save annotations to JSON file."""
@@ -687,10 +952,14 @@ class SwitchTab(BaseTab):
             messagebox.showinfo("No Photo", "Please load a photo first.")
             return
 
+        default_dir, default_name = self._suggest_export_target("_photo", ".png")
+
         file_path = filedialog.asksaveasfilename(
             title="Save Annotated Photo",
             defaultextension=".png",
             filetypes=[("PNG files", "*.png"), ("JPG files", "*.jpg"), ("All files", "*.*")],
+            initialdir=str(default_dir),
+            initialfile=default_name,
         )
         if not file_path:
             return

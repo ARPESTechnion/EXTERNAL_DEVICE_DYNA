@@ -48,6 +48,25 @@ python v3/run_app.py --real
 
 You can also edit `Use_MockUp` in `v3/run_app.py`.
 
+### 2.3 Switch backend selection
+
+Switch backend is configured in `v3/core/constants.py`:
+
+- `SWITCH_BACKEND = "my_switch"` (legacy behavior)
+- `SWITCH_BACKEND = "keithley7001"` (new Keithley 7001 driver)
+
+Address constants:
+
+- `SWITCH_ADDRESS_MY` for the legacy switch
+- `SWITCH_ADDRESS_7001` for Keithley 7001
+
+The app keeps the same runtime workflow (`connect -> open_all -> measurement commands`) for both backends.
+
+**GUI Features:**
+- **Script editor:** Vertical and horizontal scrollbars for long command lines
+- **Commands popup:** Categorized command browser with vertical and horizontal scrollbars, search, quick insert/copy
+- **Save prompts:** When script has unsaved changes and you run/load, a 4-button dialog offers: Save, Save As, No, Cancel
+
 ### 2.3 Run tests
 
 Run full v3 suite:
@@ -69,13 +88,27 @@ pytest -q v3/tests/test_script_runner.py v3/tests/test_measurements.py
 1. Launch app in mock/real mode.
 2. Connect required instruments using tab headers.
 3. Configure tab parameters (Dyna, Helmholtz, LockIn, Hall, Switch).
+  - LockIn settings include input shield mode toggle (Floating/Grounded), default Floating.
 4. In Results tab:
+   - **Quick instrument control via double-click popups:** Double-click any status readout in the Results tab to open a quick-control popup for that instrument:
+     - **PPMS (Temperature)**: Set Temperature, Rate, Approach mode
+     - **PPMS (Field)**: Set Field, Rate, Approach mode
+     - **PPMS (Chamber)**: Set Chamber mode (Seal/Purge/Vent/etc.)
+     - **Helmholtz**: Set Current/Field, Compliance, Ramp rates, Enable/Disable output
+     - **Lock-In**: Frequency, Time Constant, Sensitivity, Filter, Output Current (with LED indicator), R_lockin selection, Input Shield toggle, Auto Gain/Phase/Reserve utilities
+     - Sine Output LED: Green when reference amplitude exceeds idle threshold (0.004V + ε); synced with real-time output voltage from instrument
+     - **Hall Bar**: Preset selection, Current, NPLC, Compliance, Filter, Offset, Hall measurement buttons
+     - **Switch**: Channel configuration and open/close controls
+   - Each popup is singleton (reused if already open), always-on-top, with close button in lower right corner
    - Choose/initialize data file
    - Optionally enable session header metadata (user/sample)
-   - Write script in editor (or load saved script)
+  - Write script in editor (or load saved script)
+  - Use `Commands` helper popup (search, categorized fold/unfold list, insert/copy snippets)
+  - Configure Graph 1 / Graph 2 independently (axes, style, color, and per-graph channel filters)
 5. Run script and monitor status LEDs/logs/live values.
 6. Abort/Pause/Resume as needed.
 7. Review generated CSV in `Data_Route/` (or chosen directory).
+8. In Switch tab (optional), export or load channel configurations between measurement sessions.
 
 ---
 
@@ -224,12 +257,17 @@ The list below mirrors the parser command set in `v3/core/script_parser.py` (`VA
 - LockIn measurement:
   - `measure_lockin`
   - `continuous_measure_lockin`
-  - `full_measure`
+  - `full_measure` — combined open-all → close-channel(s) → measure-hall + measure-lockin → reopen-all
+    - Supports `hall_excitation=cycle|keep` to control Hall current source:
+      - `cycle` (default): measure Hall, then disable output (close current loop)
+      - `keep`: measure Hall without managing excitation (keeps ongoing excitation)
+  - `continuous_full_measure` — as `full_measure` but repeated until script/loop ends
 - LockIn utilities:
   - `auto_gain`
   - `auto_phase`
   - `auto_reserve`
   - `set_lockin_time_constant`
+  - `set_lockin_sensitivity`
   - `set_lockin_filter`
   - `set_lockin_frequency`
   - `set_lockin_current`
@@ -244,17 +282,31 @@ The list below mirrors the parser command set in `v3/core/script_parser.py` (`VA
   - `sweep_dyna_temp`
   - `scan_helmholtz_field`
   - `sweep_helmholtz_field`
+  - `time_sweep`
+  - `for_loop`
 
 Command categories:
 - Setpoints: `set_dyna_temp`, `set_dyna_field`, `set_helmholtz_field`
-- Measurements: `measure_hall_field`, `continuous_measure_hall_field`, `measure_lockin`, `continuous_measure_lockin`, `full_measure`
+- Measurements: `measure_hall_field`, `continuous_measure_hall_field`, `measure_lockin`, `continuous_measure_lockin`, `full_measure`, `continuous_full_measure`
 - Hall source control: `enable_hall_output`, `disable_hall_output`
 - LockIn utilities: `auto_gain`, `auto_phase`, `auto_reserve`, `set_lockin_*`
-- Wait/coordination: `wait_for ...`
+- Wait/coordination: `wait_for ...`, `time_sweep ...`, `for_loop ...`
 - Switch control: `open_all_channels`, `close_channel`, `configure_channel`
 - File/script: `initialize_data_file`, `add_note`, `run_saved_script`
-- Loop commands: `scan_*`, `sweep_*` with indented child commands
+- Loop commands: `scan_*`, `sweep_*`, `time_sweep`, `for_loop` with indented child commands
 - Loop nesting: maximum depth is 5 levels (deeper nesting is rejected by validation)
+
+PPMS Hall-correction safety keywords:
+- `set_ppms_field_and_fix_hall <field_Oe> <target_hall_G> [helmholtz_rate=0.1] [max_current_change=2.0]`
+- `scan_ppms_field_and_fix_hall <start_Oe> <end_Oe> <step_Oe> <target_hall_G> [rate=10.0] [helmholtz_rate=0.1] [max_current_change=2.0]`
+- `max_current_change` is in total Helmholtz current Amps and defaults to `2.0`.
+- If a single Hall-fix step needs more than `max_current_change`, script execution fails fast with a command error.
+- If the resulting Helmholtz target exceeds hardware safety current limits, script execution fails fast with a command error.
+
+LockIn sensitivity utility:
+- `set_lockin_sensitivity <index>` sets SR830 sensitivity directly.
+- Valid `index` values are integers `0..26`.
+- Command updates the LockIn GUI sensitivity selector and applies immediately to the instrument.
 
 Example:
 
@@ -264,13 +316,17 @@ set_dyna_temp 300 2 fast_settle
 wait_for temp 3
 measure_hall_field current=1 nplc=1 filter_count=5
 close_channel c
-measure_lockin avg=10
+for_loop 3
+  measure_lockin avg=10
+time_sweep 10 1
+  continuous_measure_hall_field current=1 nplc=1
 open_all_channels
 ```
 
 Channel notes:
 - switch commands (`close_channel`, `configure_channel`, `full_measure`) accept logical channels `a`..`h`
 - Switch tab supports add/remove/clone/template workflows for faster multi-channel setup
+- Switch tab can export/load channel mappings (`Export Configurations` / `Load Configurations`) for reuse
 
 ---
 
@@ -302,10 +358,22 @@ Channel notes:
 - `v3/gui/dyna_tab.py` — Dyna controls and status display.
 - `v3/gui/hall_tab.py` — Hall measurement UI and Hall-source settings.
 - `v3/gui/helmholtz_tab.py` — Helmholtz setpoint/output controls and readouts.
+  - Supports both current-based (A) and field-based (Gauss) setpoints with automatic bidirectional conversion.
+  - Two-channel resistance monitoring (Ch A, Ch B) with live Ω display alongside current readouts.
 - `v3/gui/lockin_tab.py` — LockIn settings, auto-actions, single measurement actions.
+  - Includes Input Shield mode control (Floating/Grounded) in Lock-In Settings.
 - `v3/gui/results_tab.py` — results dashboard, script editor/runner controls, plotting/log panels.
+  - **Script editor:** Syntax highlighting with Courier font, Ctrl+Z/Y undo/redo, Ctrl+A select all, Ctrl+S save, Ctrl+O load, Ctrl+Enter run
+    - Includes vertical and horizontal scrollbars for editing long command lines
+  - **Commands helper popup:** Categorized command browser (search, fold/unfold categories) with vertical and horizontal scrollbars
+    - Quick insert/copy actions, double-click to insert into editor
+  - **Quick-control popups:** Double-click any instrument status readout to open a focused control popup specific to that instrument. All 7 popup types (PPMS ×3, Helmholtz, LockIn, Hall, Switch) reuse existing tab handlers and maintain singleton lifecycle with always-on-top behavior.
+  - **Live readouts with dual display:** Helmholtz status shows current (A) and resistance (Ω) combined on same line, matching tab layout. All PPMS, Helmholtz, Hall, and Lock-In readouts live-sync from instrument tabs.
+  - **Lock-In popup output indicator:** Sine Output LED (green when active) that tracks real-time output voltage with same logic as main Lock-In tab LED.
+  - Includes independent Graph 1/Graph 2 channel filters and 8-color graph palette.
 - `v3/gui/script_runner.py` — command dispatcher + loop execution runtime used by worker engine.
 - `v3/gui/switch_tab.py` — switch routing control and optional annotated wiring image tools.
+  - Includes configuration management tools (add/remove/clone/templates + load/export mappings).
 
 ## 6.4 `v3/tests/`
 

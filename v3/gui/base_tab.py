@@ -15,6 +15,8 @@ import tkinter as tk
 from tkinter import ttk
 from typing import TYPE_CHECKING, Any
 
+from v3.gui.theme import COLORS, FONTS
+
 if TYPE_CHECKING:
     from v3.gui.app import MeasureApp
 
@@ -22,8 +24,8 @@ if TYPE_CHECKING:
 # ═══════════════════════════════════════════════════════════════════════
 # LED helper
 # ═══════════════════════════════════════════════════════════════════════
-LED_ON_COLOR = "#00FF00"
-LED_OFF_COLOR = "#FF0000"
+LED_ON_COLOR = COLORS["led_on"]
+LED_OFF_COLOR = COLORS["led_off"]
 LED_CHAR = "●"
 
 
@@ -33,7 +35,8 @@ def make_led(parent: tk.Widget, **kwargs) -> tk.Label:
         parent,
         text=LED_CHAR,
         fg=LED_OFF_COLOR,
-        font=("Arial", 12),
+        bg=COLORS["bg_root"],
+        font=FONTS["subtitle"],
         **kwargs,
     )
     return lbl

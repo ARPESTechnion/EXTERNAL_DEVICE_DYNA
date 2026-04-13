@@ -1,0 +1,10 @@
+wait_for no_event 5
+set_lockin_sensitivity 1
+wait_for no_event 5
+set_lockin_sensitivity 10
+wait_for no_event 5
+set_lockin_sensitivity 20
+wait_for no_event 5
+set_lockin_sensitivity 26
+wait_for no_event 5
+set_lockin_sensitivity 10

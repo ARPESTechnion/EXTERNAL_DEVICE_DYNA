@@ -45,14 +45,14 @@ class TestConstruction(unittest.TestCase):
     def test_custom_calibration(self):
         cal = CalibrationConfig(ga_per_coil=200.0, num_coils=2)
         ctrl = HelmholtzController(InstrumentBus(), UIEventBus(), calibration=cal)
-        self.assertAlmostEqual(ctrl.calibration.ga_total, 400.0)
+        self.assertAlmostEqual(ctrl.calibration.ga_total, 200.0)
 
 
 class TestSetField(unittest.TestCase):
     def test_set_field_computes_target(self):
         ctrl = HelmholtzController(InstrumentBus(), UIEventBus())
         cal = ctrl.calibration
-        # 683.42 G/A total, so 100 G → ~0.1464 A total → ~0.0732 A/coil
+        # 341.71 G/A total, so 100 G → ~0.2926 A total → ~0.1463 A/coil
         ctrl.set_field(100.0)
         expected = 100.0 / cal.ga_total / cal.num_coils
         self.assertAlmostEqual(ctrl.target_current, expected, places=5)
@@ -64,7 +64,7 @@ class TestSetField(unittest.TestCase):
 
     def test_set_field_exceeding_limit_raises(self):
         ctrl = HelmholtzController(InstrumentBus(), UIEventBus())
-        # 3A max total → max field = 3 * 683.42 = 2050.26 G
+        # 3A max total → max field = 3 * 341.71 = 1025.13 G
         with self.assertRaises(HelmholtzSafetyError):
             ctrl.set_field(3000.0)
 
@@ -161,8 +161,8 @@ class TestFieldCalculation(unittest.TestCase):
         ctrl = HelmholtzController(InstrumentBus(), UIEventBus())
         ctrl._actual_a = 0.5
         ctrl._actual_b = 0.5
-        # total = 1.0 A → 683.42 G
-        self.assertAlmostEqual(ctrl.field_gauss, 683.42, places=1)
+        # total = 1.0 A → 341.71 G
+        self.assertAlmostEqual(ctrl.field_gauss, 341.71, places=1)
 
 
 class TestEnableDisable(unittest.TestCase):
@@ -195,6 +195,26 @@ class TestEnableDisable(unittest.TestCase):
         ctrl._enabled = True
         ctrl.disable_output()
         self.assertFalse(ctrl.is_enabled)
+
+    def test_disable_invalid_session_logs_warning_not_traceback(self):
+        class InvalidSession(Exception):
+            pass
+
+        bus = _make_mock_bus()
+        mock_k = bus.get_raw(INST_KEITHLEY2600)
+        mock_k.set_current.side_effect = InvalidSession(
+            "Invalid session handle. The resource might be closed."
+        )
+
+        ctrl = HelmholtzController(bus, UIEventBus())
+        ctrl._enabled = True
+
+        with patch("v3.core.helmholtz_controller.logger") as mock_logger:
+            ctrl.disable_output()
+
+        self.assertFalse(ctrl.is_enabled)
+        self.assertTrue(mock_logger.warning.called)
+        self.assertFalse(mock_logger.exception.called)
 
 
 class TestApplyTick(unittest.TestCase):
@@ -300,7 +320,7 @@ class TestSnapshot(unittest.TestCase):
         self.assertIn("Helmholtz_Current", snap)
         self.assertIn("Helmholtz_Field", snap)
         self.assertAlmostEqual(snap["Helmholtz_Current"], 0.6, places=5)
-        expected_field = 0.6 * 683.42
+        expected_field = 0.6 * 341.71
         self.assertAlmostEqual(snap["Helmholtz_Field"], expected_field, places=1)
 
 

@@ -19,7 +19,7 @@ class TestCalibrationDefaults:
 
     def test_ga_total_computed(self):
         cal = CalibrationConfig()
-        assert cal.ga_total == pytest.approx(683.42)
+        assert cal.ga_total == pytest.approx(341.71)
 
     def test_default_hall_v2gauss(self):
         cal = CalibrationConfig()
@@ -33,13 +33,13 @@ class TestCalibrationDefaults:
 class TestHelmholtzConversions:
     def test_current_to_field(self):
         cal = CalibrationConfig()
-        # 1 A total → 683.42 G
-        assert cal.current_to_field(1.0) == pytest.approx(683.42)
+        # 1 A total → 341.71 G
+        assert cal.current_to_field(1.0) == pytest.approx(341.71)
 
     def test_field_to_current(self):
         cal = CalibrationConfig()
-        # 683.42 G → 1 A
-        assert cal.field_to_current(683.42) == pytest.approx(1.0)
+        # 341.71 G → 1 A
+        assert cal.field_to_current(341.71) == pytest.approx(1.0)
 
     def test_roundtrip(self):
         cal = CalibrationConfig()
@@ -55,8 +55,8 @@ class TestHelmholtzConversions:
 
     def test_negative_field(self):
         cal = CalibrationConfig()
-        assert cal.current_to_field(-1.0) == pytest.approx(-683.42)
-        assert cal.field_to_current(-683.42) == pytest.approx(-1.0)
+        assert cal.current_to_field(-1.0) == pytest.approx(-341.71)
+        assert cal.field_to_current(-341.71) == pytest.approx(-1.0)
 
     def test_coil_current(self):
         cal = CalibrationConfig()
@@ -65,9 +65,9 @@ class TestHelmholtzConversions:
 
     def test_custom_calibration(self):
         cal = CalibrationConfig(ga_per_coil=400.0, num_coils=3)
-        assert cal.ga_total == pytest.approx(1200.0)
-        assert cal.current_to_field(1.0) == pytest.approx(1200.0)
-        assert cal.field_to_current(1200.0) == pytest.approx(1.0)
+        assert cal.ga_total == pytest.approx(400.0)
+        assert cal.current_to_field(1.0) == pytest.approx(400.0)
+        assert cal.field_to_current(400.0) == pytest.approx(1.0)
 
     def test_zero_ga_total_raises(self):
         cal = CalibrationConfig(ga_per_coil=0.0, num_coils=2)

@@ -62,6 +62,15 @@ def _round_to(value: float, resolution: float) -> float:
     return round(float(value) / resolution) * resolution
 
 
+def _is_invalid_session_error(exc: Exception) -> bool:
+    """Best-effort detection of a closed/stale VISA session exception."""
+    cls_name = exc.__class__.__name__.lower()
+    if "invalidsession" in cls_name:
+        return True
+    text = str(exc).lower()
+    return "invalid session" in text and "closed" in text
+
+
 # ============================================================================
 # Exceptions
 # ============================================================================
@@ -281,8 +290,14 @@ class HelmholtzController:
                 else:
                     self._bus.execute(INST_KEITHLEY2600, "disable_source", Ch="a")
                     self._bus.execute(INST_KEITHLEY2600, "disable_source", Ch="b")
-            except Exception:  # noqa: BLE001
-                logger.exception("Failed to disable Helmholtz output")
+            except Exception as exc:  # noqa: BLE001
+                if _is_invalid_session_error(exc):
+                    logger.warning(
+                        "Helmholtz VISA session already closed while disabling output; "
+                        "continuing shutdown."
+                    )
+                else:
+                    logger.exception("Failed to disable Helmholtz output")
 
         with self._lock:
             self._enabled = False

@@ -285,6 +285,76 @@ class TestWriteRow:
         assert float(rows[99]["Time(s)"]) == pytest.approx(99.0)
 
 
+class TestHallMetadataLogging:
+    def test_no_hall_metadata_for_non_hall_measurement_types(self, dm, tmp_data_dir):
+        path = dm.initialize_file(filename="hall_meta_non_hall")
+        dm.set_hall_metadata(hall_bar="Wire Hall Bar 1", v_per_g=2.15e-5, hall_offset_v=0.001)
+        dm.write_row({"Time": 1.0, "Temp": 300.0}, measurement_type="LockIn")
+        dm.close()
+
+        with open(path, "r", newline="", encoding="utf-8") as f:
+            rows = list(csv.DictReader(f))
+
+        assert len(rows) == 1
+        assert rows[0]["Measurement_Type"] == "LockIn"
+        assert "HallBar:" not in rows[0]["Notes"]
+
+    def test_first_hall_write_emits_single_metadata_row(self, dm, tmp_data_dir):
+        path = dm.initialize_file(filename="hall_meta_first")
+        dm.set_hall_metadata(hall_bar="Wire Hall Bar 1", v_per_g=2.15e-5, hall_offset_v=0.001)
+        dm.write_row({"Time": 1.0, "Hall_Field": 100.0}, measurement_type="Hall")
+        dm.close()
+
+        with open(path, "r", newline="", encoding="utf-8") as f:
+            rows = list(csv.DictReader(f))
+
+        assert len(rows) == 2
+        assert rows[0]["Measurement_Type"] == "SessionInfo"
+        assert "HallBar: Wire Hall Bar 1" in rows[0]["Notes"]
+        assert "VperG:" in rows[0]["Notes"]
+        assert "HallOffsetV:" in rows[0]["Notes"]
+        assert "GperV" not in rows[0]["Notes"]
+        assert "HallOffsetG" not in rows[0]["Notes"]
+        assert rows[1]["Measurement_Type"] == "Hall"
+
+    def test_hall_metadata_not_duplicated_without_changes(self, dm, tmp_data_dir):
+        path = dm.initialize_file(filename="hall_meta_no_dup")
+        dm.set_hall_metadata(hall_bar="Wire Hall Bar 2", v_per_g=2.10e-5, hall_offset_v=0.002)
+        dm.write_row({"Time": 1.0}, measurement_type="Hall")
+        dm.write_row({"Time": 2.0}, measurement_type="Full")
+        dm.write_row({"Time": 3.0}, measurement_type="Hall")
+        dm.close()
+
+        with open(path, "r", newline="", encoding="utf-8") as f:
+            rows = list(csv.DictReader(f))
+
+        metadata_rows = [
+            r for r in rows
+            if r["Measurement_Type"] == "SessionInfo" and "HallBar:" in r["Notes"]
+        ]
+        assert len(metadata_rows) == 1
+
+    def test_hall_metadata_re_emits_after_change(self, dm, tmp_data_dir):
+        path = dm.initialize_file(filename="hall_meta_change")
+        dm.set_hall_metadata(hall_bar="Wire Hall Bar 1", v_per_g=2.15e-5, hall_offset_v=0.001)
+        dm.write_row({"Time": 1.0}, measurement_type="Hall")
+
+        dm.set_hall_metadata(hall_bar="Wire Hall Bar 3", v_per_g=2.00e-5, hall_offset_v=0.004)
+        dm.write_row({"Time": 2.0}, measurement_type="Full")
+        dm.close()
+
+        with open(path, "r", newline="", encoding="utf-8") as f:
+            rows = list(csv.DictReader(f))
+
+        metadata_rows = [
+            r for r in rows
+            if r["Measurement_Type"] == "SessionInfo" and "HallBar:" in r["Notes"]
+        ]
+        assert len(metadata_rows) == 2
+        assert "HallBar: Wire Hall Bar 1" in metadata_rows[0]["Notes"]
+        assert "HallBar: Wire Hall Bar 3" in metadata_rows[1]["Notes"]
+
+
 # ---------------------------------------------------------------------------
 # Results buffer
 # ---------------------------------------------------------------------------

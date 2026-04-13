@@ -155,7 +155,7 @@ class LockInSR830:
         self.sine_output_off()         # SLVL → 4 mV (minimum)
         self.set_frequency(173)        # FREQ 173 Hz
         self.write("ISRC 1")          # Input config: A−B (differential)
-        self.write("IGND 1")          # Input shield: grounded
+        self.write("IGND 0")          # Input shield: float
         self.write("ICPL 0")          # Input coupling: AC
         self.write("FMOD 1")          # Reference source: internal
         self.write("SYNC 1")          # Sync filter: on
@@ -226,6 +226,24 @@ class LockInSR830:
     def get_phase(self):
         """PHAS? — query reference phase shift (degrees)."""
         return float(self.query("PHAS?"))
+
+    # ── Input shield (ground / float) ───────────────────────────────
+
+    def set_input_shield_grounded(self, grounded):
+        """IGND i — set input shield mode (0=float, 1=ground)."""
+        self.write(f"IGND {1 if bool(grounded) else 0}")
+
+    def set_input_shield_float(self):
+        """Set input shield mode to float."""
+        self.set_input_shield_grounded(False)
+
+    def set_input_shield_ground(self):
+        """Set input shield mode to ground."""
+        self.set_input_shield_grounded(True)
+
+    def is_input_shield_grounded(self):
+        """IGND? — return True when input shield is grounded."""
+        return bool(int(float(self.query("IGND?"))))
 
     # ── Sensitivity / time-constant / filter slope ───────────────────
 
@@ -326,16 +344,79 @@ class LockInSR830:
 
     def serial_poll_status(self):
         """*STB? — read the serial poll status byte."""
-        return int(self.query("*STB?"))
+        return self._read_serial_poll_status()
 
-    def _wait_for_command_complete(self, timeout_s=30):
+    def _read_serial_poll_status(self):
         """
-        Simple wait for SR830 auto-commands (APHS/AGAN/ARSV).
-        
-        These typically complete in 2-5 seconds. We just wait a fixed
-        time rather than polling, which matches the old driver behavior.
+        Read SR830 serial poll status with a robust fallback path.
+
+        Prefer VISA serial poll when supported by the GPIB backend,
+        otherwise fall back to *STB? query.
         """
-        time.sleep(min(timeout_s, 5.0))  # Cap at 5s for typical auto-commands
+        read_stb = getattr(self.inst, "read_stb", None)
+        if callable(read_stb):
+            try:
+                return int(read_stb())
+            except Exception:
+                # Some adapters back read_stb with limited support.
+                pass
+
+        return int(self.query("*STB?", wait_after_write=0.0))
+
+    @staticmethod
+    def _is_internal_command_idle(status_byte):
+        """
+        Return True when IFC bit indicates no internal command is running.
+
+        Per SR830 status byte definition, bit 1 (IFC) is set when idle.
+        """
+        return bool(status_byte & (1 << 1))
+
+    def _wait_for_command_complete(
+        self,
+        timeout_s=15.0,
+        poll_interval_s=0.05,
+        consecutive_idle_polls=1,
+    ):
+        """
+        Poll SR830 status until the auto-command is complete.
+
+        APHS, AGAN and ARSV are asynchronous. This waits only while the
+        instrument reports busy, with a hard timeout to avoid hangs.
+        """
+        if timeout_s <= 0:
+            raise ValueError("timeout_s must be positive")
+        if poll_interval_s <= 0:
+            raise ValueError("poll_interval_s must be positive")
+        if consecutive_idle_polls <= 0:
+            raise ValueError("consecutive_idle_polls must be positive")
+
+        deadline = time.perf_counter() + float(timeout_s)
+        idle_count = 0
+        last_error = None
+
+        while True:
+            now = time.perf_counter()
+            if now >= deadline:
+                raise TimeoutError(
+                    "SR830 auto-command did not complete within "
+                    f"{timeout_s:.2f} s"
+                ) from last_error
+
+            try:
+                status = self._read_serial_poll_status()
+                if self._is_internal_command_idle(status):
+                    idle_count += 1
+                    if idle_count >= consecutive_idle_polls:
+                        return
+                else:
+                    idle_count = 0
+                last_error = None
+            except Exception as exc:
+                last_error = exc
+                idle_count = 0
+
+            time.sleep(min(poll_interval_s, max(deadline - now, 0.0)))
 
     def is_overloaded(self):
         """
@@ -353,24 +434,37 @@ class LockInSR830:
 
     # ── Safe auto-commands ───────────────────────────────────────────
 
-    def _safe_auto(self, cmd, timeout_s=5.0):
+    def _safe_auto(
+        self,
+        cmd,
+        timeout_s=15.0,
+        poll_interval_s=0.05,
+        post_settle_s=0.1,
+        consecutive_idle_polls=1,
+    ):
         """
         Execute an auto-command (APHS / AGAN / ARSV), wait for it
         to finish, then clear buffer before next query.
         """
         self.write(cmd)
-        self._wait_for_command_complete(timeout_s)
+        self._wait_for_command_complete(
+            timeout_s=timeout_s,
+            poll_interval_s=poll_interval_s,
+            consecutive_idle_polls=consecutive_idle_polls,
+        )
+        if post_settle_s > 0:
+            time.sleep(post_settle_s)
         self._clear_buffer()  # Clear any data left by auto-command
 
-    def safe_auto_phase(self, timeout_s=5.0):
+    def safe_auto_phase(self, timeout_s=15.0):
         """APHS — auto phase, then settle."""
         self._safe_auto("APHS", timeout_s)
 
-    def safe_auto_gain(self, timeout_s=5.0):
+    def safe_auto_gain(self, timeout_s=15.0):
         """AGAN — auto gain, then settle."""
         self._safe_auto("AGAN", timeout_s)
 
-    def safe_auto_reserve(self, timeout_s=5.0):
+    def safe_auto_reserve(self, timeout_s=15.0):
         """ARSV — auto reserve, then settle."""
         self._safe_auto("ARSV", timeout_s)
 
@@ -480,6 +574,8 @@ class LockInSR830:
         use_autorange=True,
         use_autophase=True,
         sample_delay=0.05,
+        manage_excitation=True,
+        wait_for_settling_when_no_autorange=True,
     ):
         """
         Perform a measurement: set excitation, auto-adjust, average
@@ -514,14 +610,15 @@ class LockInSR830:
 
         if start_sens is not None:
             self.set_sensitivity(int(start_sens))
-        self.set_excitation_current(current, series_resistance)
+        if manage_excitation:
+            self.set_excitation_current(current, series_resistance)
         self.reset_buffer()
 
 
         if use_autorange:
             self.quick_autorange()
             print("AutoRange")
-        else:
+        elif wait_for_settling_when_no_autorange:
             self.wait_for_settling(show_timer=True)
             
         if use_autophase:       
@@ -549,7 +646,8 @@ class LockInSR830:
                 data[k].append(v)
             time.sleep(sample_delay)
 
-        self.sine_output_off()
+        if manage_excitation:
+            self.sine_output_off()
 
         elapsed = time.perf_counter() - start_time
         print(f"Measurement complete in {elapsed:.2f} s")

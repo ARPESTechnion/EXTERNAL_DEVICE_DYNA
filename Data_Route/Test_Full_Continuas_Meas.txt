@@ -1,0 +1,10 @@
+enable_hall_output current=2e-3
+set_lockin_current 5e-7
+wait_for no_event 12
+auto_phase
+auto_gain
+auto_reserve
+
+#
+scan_dyna_field -100 100 10 2 no_overshoot
+ continuous_full_measure hall_filter=5 hall_nplc=10 lockin_avg=10 lockin_sample_delay=0.05 time_between=0.5

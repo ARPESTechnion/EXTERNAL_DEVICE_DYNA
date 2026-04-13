@@ -191,6 +191,21 @@ class TestInterruptibleSleep(unittest.TestCase):
         self.assertLess(elapsed, 2.0, "Stop should interrupt sleep promptly")
         self.assertEqual(engine.state, EngineState.IDLE)
 
+        def test_is_running_is_true_while_stopping(self):
+            bus = UIEventBus()
+            engine = ExperimentEngine(bus)
+            entered = threading.Event()
+
+            def task(eng):
+                entered.set()
+                eng.interruptible_sleep(60)
+
+            engine.start(task)
+            entered.wait(timeout=2)
+            engine.request_stop()
+            self.assertTrue(engine.is_running)
+            engine.join(timeout=2)
+
 
 class TestErrorState(unittest.TestCase):
     def setUp(self):
@@ -231,6 +246,18 @@ class TestErrorState(unittest.TestCase):
             self.engine.reset()
         self.engine.request_stop()
         self.engine.join(timeout=2)
+
+    def test_request_stop_after_error_returns_to_idle(self):
+        def task(eng):
+            raise RuntimeError("fail then abort")
+
+        self.engine.start(task)
+        self.engine.join(timeout=2)
+        self.assertEqual(self.engine.state, EngineState.ERROR)
+
+        # Simulate user pressing Abort after the script already failed.
+        self.engine.request_stop()
+        self.assertEqual(self.engine.state, EngineState.IDLE)
 
 
 class TestProgress(unittest.TestCase):

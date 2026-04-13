@@ -108,7 +108,7 @@ class ExperimentEngine:
 
     @property
     def is_running(self) -> bool:
-        return self._state in (EngineState.RUNNING, EngineState.PAUSED)
+        return self._state in (EngineState.RUNNING, EngineState.PAUSED, EngineState.STOPPING)
 
     @property
     def is_paused(self) -> bool:
@@ -245,6 +245,17 @@ class ExperimentEngine:
         with self._state_lock:
             if self._state in (EngineState.IDLE, EngineState.STOPPING):
                 return
+
+            # If execution already failed or worker is gone, do not enter
+            # STOPPING (which would otherwise look like "still running").
+            if self._state == EngineState.ERROR or (
+                self._worker is not None and not self._worker.is_alive()
+            ):
+                self._set_state(EngineState.IDLE)
+                self._stop_event.clear()
+                self._pause_event.set()
+                return
+
             self._set_state(EngineState.STOPPING)
         self._stop_event.set()
         # If paused, unblock so the thread can exit

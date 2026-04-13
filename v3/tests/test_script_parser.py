@@ -127,6 +127,39 @@ class TestScriptParser(unittest.TestCase):
 
         self.assertEqual(outer.children[1].name, "disable_hall_output")
 
+    def test_parse_scan_ppms_field_and_fix_hall_as_loop_command(self):
+        script = (
+            "scan_ppms_field_and_fix_hall -1000 1000 200 50 rate=10\n"
+            "    measure_hall_field\n"
+        )
+        cmds = self.parser.parse(script)
+        self.assertEqual(len(cmds), 1)
+        self.assertEqual(cmds[0].name, "scan_ppms_field_and_fix_hall")
+        self.assertEqual(len(cmds[0].children), 1)
+        self.assertEqual(cmds[0].children[0].name, "measure_hall_field")
+
+    def test_parse_time_sweep_as_loop_command(self):
+        script = (
+            "time_sweep 120 2\n"
+            "    measure_hall_field\n"
+        )
+        cmds = self.parser.parse(script)
+        self.assertEqual(len(cmds), 1)
+        self.assertEqual(cmds[0].name, "time_sweep")
+        self.assertEqual(len(cmds[0].children), 1)
+        self.assertEqual(cmds[0].children[0].name, "measure_hall_field")
+
+    def test_parse_for_loop_as_loop_command(self):
+        script = (
+            "for_loop 5\n"
+            "    auto_gain\n"
+        )
+        cmds = self.parser.parse(script)
+        self.assertEqual(len(cmds), 1)
+        self.assertEqual(cmds[0].name, "for_loop")
+        self.assertEqual(len(cmds[0].children), 1)
+        self.assertEqual(cmds[0].children[0].name, "auto_gain")
+
     def test_case_insensitive_command_names(self):
         cmds = self.parser.parse("Set_Dyna_Field 1000 100 linear\n")
         self.assertEqual(cmds[0].name, "set_dyna_field")
@@ -346,20 +379,106 @@ class TestScriptValidator(unittest.TestCase):
         errors = self.validator.validate(cmds)
         self.assertTrue(any("must be one of: 6, 12, 18, 24" in e.message for e in errors))
 
+    def test_set_lockin_sensitivity_valid_range(self):
+        cmds = self.parser.parse("set_lockin_sensitivity 17\n")
+        errors = self.validator.validate(cmds)
+        hard_errors = [e for e in errors if e.severity == "error"]
+        self.assertEqual(len(hard_errors), 0)
+
+    def test_set_lockin_sensitivity_out_of_range(self):
+        cmds = self.parser.parse("set_lockin_sensitivity 30\n")
+        errors = self.validator.validate(cmds)
+        self.assertTrue(any("0..26" in e.message for e in errors))
+
+    def test_set_ppms_field_and_fix_hall_accepts_max_current_change_kwarg(self):
+        cmds = self.parser.parse(
+            "set_ppms_field_and_fix_hall 1000 100 helmholtz_rate=0.2 max_current_change=1.5\n"
+        )
+        errors = self.validator.validate(cmds)
+        hard_errors = [e for e in errors if e.severity == "error"]
+        self.assertEqual(len(hard_errors), 0)
+
+    def test_scan_ppms_field_and_fix_hall_accepts_new_kwargs(self):
+        cmds = self.parser.parse(
+            "scan_ppms_field_and_fix_hall -1000 1000 200 100 rate=15 helmholtz_rate=0.2 max_current_change=1.5\n"
+        )
+        errors = self.validator.validate(cmds)
+        hard_errors = [e for e in errors if e.severity == "error"]
+        self.assertEqual(len(hard_errors), 0)
+
+    def test_time_sweep_requires_numeric_time_and_gap(self):
+        cmds = self.parser.parse("time_sweep 120 two\n")
+        errors = self.validator.validate(cmds)
+        self.assertTrue(any("not a number" in e.message for e in errors))
+
+    def test_for_loop_requires_numeric_iterations(self):
+        cmds = self.parser.parse("for_loop five\n")
+        errors = self.validator.validate(cmds)
+        self.assertTrue(any("not a number" in e.message for e in errors))
+
     def test_full_measure_channel_validation(self):
         cmds = self.parser.parse("full_measure z\n")
         errors = self.validator.validate(cmds)
         self.assertTrue(any("must be channel name" in e.message for e in errors))
+
+    def test_full_measure_hall_excitation_validation(self):
+        cmds = self.parser.parse("full_measure a hall_excitation=toggle\n")
+        errors = self.validator.validate(cmds)
+        self.assertTrue(any("hall_excitation" in e.message for e in errors))
+
+    def test_full_measure_accepts_hall_excitation_keep(self):
+        cmds = self.parser.parse(
+            "full_measure a time_between=0.1 hall_current=1.5 hall_nplc=10 hall_compliance=2 "
+            "hall_voltage_range=10V hall_filter=5 hall_excitation=keep tbm=0.2 "
+            "lockin_what=X,Y,R lockin_current=1e-6 lockin_series_resistance=1000 "
+            "lockin_avg=20 lockin_start_sens=10 lockin_use_autorange=true "
+            "lockin_use_autophase=false lockin_sample_delay=0.05\n"
+        )
+        errors = self.validator.validate(cmds)
+        hard_errors = [e for e in errors if e.severity == "error"]
+        self.assertEqual(len(hard_errors), 0)
+
+    def test_full_measure_rejects_deprecated_current_alias(self):
+        cmds = self.parser.parse("full_measure a current=1e-6\n")
+        errors = self.validator.validate(cmds)
+        self.assertTrue(any("unknown" in e.message and "current" in e.message for e in errors))
+
+    def test_continuous_full_measure_rejects_positional_args(self):
+        cmds = self.parser.parse("continuous_full_measure a\n")
+        errors = self.validator.validate(cmds)
+        self.assertTrue(any("takes no positional arguments" in e.message for e in errors))
+
+    def test_continuous_full_measure_kwargs_validation(self):
+        cmds = self.parser.parse(
+            "continuous_full_measure lockin_what=X,Q hall_voltage_range=bad "
+            "lockin_use_autorange=maybe lockin_use_autophase=maybe\n"
+        )
+        errors = self.validator.validate(cmds)
+        messages = [e.message for e in errors]
+        self.assertTrue(any("lockin_what" in msg for msg in messages))
+        self.assertTrue(any("hall_voltage_range" in msg for msg in messages))
+        self.assertTrue(any("lockin_use_autorange" in msg for msg in messages))
+        self.assertTrue(any("lockin_use_autophase" in msg for msg in messages))
+
+    def test_continuous_full_measure_accepts_new_kwargs(self):
+        cmds = self.parser.parse(
+            "continuous_full_measure time_between=0.1 hall_nplc=5 hall_compliance=2.0 "
+            "hall_voltage_range=10V hall_filter=10 lockin_what=X,Y,R "
+            "lockin_avg=20 lockin_use_autorange=true lockin_use_autophase=false lockin_sample_delay=0.05\n"
+        )
+        errors = self.validator.validate(cmds)
+        hard_errors = [e for e in errors if e.severity == "error"]
+        self.assertEqual(len(hard_errors), 0)
 
     def test_measure_lockin_what_validation(self):
         cmds = self.parser.parse("measure_lockin what=X,Q\n")
         errors = self.validator.validate(cmds)
         self.assertTrue(any("unknown parameter" in e.message for e in errors))
 
-    def test_continuous_measure_lockin_excitation_validation(self):
+    def test_continuous_measure_lockin_rejects_excitation_kwarg(self):
         cmds = self.parser.parse("continuous_measure_lockin excitation=toggle\n")
         errors = self.validator.validate(cmds)
-        self.assertTrue(any("must be one of: on, off, keep" in e.message for e in errors))
+        self.assertTrue(any("unknown" in e.message and "excitation" in e.message for e in errors))
 
     def test_scan_helmholtz_field_rejects_approach_argument(self):
         cmds = self.parser.parse("scan_helmholtz_field 0 500 50 10 linear\n")
@@ -403,6 +522,7 @@ class TestValidCommands(unittest.TestCase):
         expected = [
             "test", "initialize_data_file", "set_dyna_field",
             "set_helmholtz_field", "measure_lockin", "full_measure",
+            "continuous_full_measure",
             "auto_gain", "wait_for", "continuous_measure_hall_field",
             "enable_hall_output", "disable_hall_output",
         ]

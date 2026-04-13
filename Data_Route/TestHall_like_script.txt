@@ -1,0 +1,15 @@
+initialize_data_file filename=TestHall_like.csv
+set_dyna_field -10000 50 linear
+wait_for field 10
+
+scan_dyna_field -10000 10000 1000 50 linear
+  close_channel a
+  measure_lockin avg=15 use_autorange=false use_autophase=false
+  close_channel b
+  measure_lockin avg=15 use_autorange=false use_autophase=false
+  close_channel c
+  measure_lockin avg=15 use_autorange=false use_autophase=false
+  close_channel d
+  measure_lockin avg=15 use_autorange=false use_autophase=false
+
+set_dyna_field 0 50 linear

@@ -1,5 +1,5 @@
 """
-v3.gui.script_runner  —  Command dispatch loop for parsed scripts.
+v3.gui.script_runner  -  Command dispatch loop for parsed scripts.
 
 This module bridges the parsed DSL commands with the measurement/control
 functions from ``v3.core.measurements``.  It is executed on the
@@ -15,7 +15,7 @@ import time
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from v3.core.constants import INST_SWITCH
+from v3.core.constants import HELMHOLTZ_MAX_CURRENT_A, INST_LOCKIN, INST_SWITCH
 from v3.core.experiment_engine import ExperimentEngine, StopRequested
 from v3.core.measurements import (
     MeasurementContext,
@@ -35,6 +35,7 @@ from v3.core.measurements import (
     set_lockin_current,
     set_lockin_filter,
     set_lockin_frequency,
+    set_lockin_sensitivity,
     set_lockin_time_constant,
     wait_for_events,
 )
@@ -52,6 +53,7 @@ from v3.core.ui_events import (
     W_LOCKIN_R_ERROR,
     W_LOCKIN_RESISTANCE,
     W_LOCKIN_RESISTANCE_ERROR,
+    W_LOCKIN_SENSITIVITY,
     W_LOCKIN_STATUS,
     W_LOCKIN_X,
     W_LOCKIN_X_ERROR,
@@ -169,7 +171,27 @@ def _close_active_channel(ctx: MeasurementContext, app: "MeasureApp", channel: s
         for pin in (ip, vp, vm, im):
             app.bus.execute(INST_SWITCH, "close_channel", int(pin))
 
-    app.active_channel = token
+    current_signature = (
+        int(channel_cfg["I+"].get()),
+        int(channel_cfg["V+"].get()),
+        int(channel_cfg["V-"].get()),
+        int(channel_cfg["I-"].get()),
+    )
+    canonical = min(
+        (
+            ch for ch in app.channels
+            if (
+                int(app.channel_configs[ch]["I+"].get()),
+                int(app.channel_configs[ch]["V+"].get()),
+                int(app.channel_configs[ch]["V-"].get()),
+                int(app.channel_configs[ch]["I-"].get()),
+            ) == current_signature
+        ),
+        key=lambda ch: ch.lower(),
+        default=token,
+    )
+
+    app.active_channel = canonical
 
 
 def _post_lockin_result_events(ctx: MeasurementContext, app: "MeasureApp", result: dict[str, object]) -> None:
@@ -244,6 +266,15 @@ def _post_lockin_result_events(ctx: MeasurementContext, app: "MeasureApp", resul
         ctx.ui_bus.post(W_LOCKIN_CHANNEL, f"Channel {channel.upper()}")
     else:
         ctx.ui_bus.post(W_LOCKIN_CHANNEL, "No channel active")
+
+    # Keep GUI sensitivity selector in sync after measurements that may autorange.
+    try:
+        sens_idx = int(ctx.bus.execute("lockin", "get_sensitivity"))
+        if 0 <= sens_idx <= 26:
+            ctx.ui_bus.post(W_LOCKIN_SENSITIVITY, sens_idx)
+    except Exception:
+        logger.debug("Could not refresh lock-in sensitivity after measurement", exc_info=True)
+
     ctx.ui_bus.post(W_LOCKIN_STATUS, "LockIn: measurement completed")
 
 
@@ -339,6 +370,123 @@ def _is_disconnect_error(exc: Exception) -> bool:
     )
 
 
+def _confirm_dyna_cooling_or_abort(
+    engine: ExperimentEngine,
+    ctx: MeasurementContext,
+    app: "MeasureApp",
+    *,
+    target_temp_k: float,
+    command_name: str,
+) -> None:
+    confirm = getattr(app, "confirm_dyna_low_temp_transition", None)
+    if not callable(confirm):
+        return
+
+    allowed = bool(confirm(float(target_temp_k), source=f"script:{command_name}"))
+    if allowed:
+        return
+
+    ctx.ui_bus.post_log(
+        "Script aborted: Dyna purge/seal safety confirmation declined."
+    )
+    engine.request_stop()
+    raise StopRequested()
+
+
+def _measure_hall_with_gui_settings(ctx: MeasurementContext, app: "MeasureApp") -> dict[str, object]:
+    """Run one Hall measurement using current Hall-tab settings."""
+    hall_vr_raw = app.hall_tab.k2450_voltage_range.get()
+    hall_vr = str(hall_vr_raw).strip().lower()
+    return measure_hall(
+        ctx,
+        current_mA=app.hall_tab.k2450_current.get(),
+        nplc=app.hall_tab.k2450_nplc.get(),
+        compliance_v=app.hall_tab.k2450_compliance_v.get(),
+        voltage_range=None if hall_vr == "auto" else float(hall_vr_raw),
+        auto_range=hall_vr == "auto",
+        filter_count=app.hall_tab.k2450_filter_count.get(),
+        tbm=app.hall_tab.k2450_tbm.get(),
+    )
+
+
+def _apply_hall_fix_step(
+    engine: ExperimentEngine,
+    app: "MeasureApp",
+    *,
+    target_hall_g: float,
+    measured_hall_g: float,
+    helmholtz_rate_g_s: float,
+    max_current_change_a: float,
+) -> float:
+    """Apply one Helmholtz correction step and return remaining Hall error in Gauss."""
+    engine.check_stop()
+    engine.check_pause()
+
+    err_g = target_hall_g - measured_hall_g
+    current_helm_g = float(app.helmholtz.snapshot().get("Helmholtz_Field", 0.0) or 0.0)
+    target_helm_g = current_helm_g + err_g
+
+    required_change_a = abs(float(app.helmholtz.calibration.field_to_current(err_g)))
+    if required_change_a > max_current_change_a:
+        raise RuntimeError(
+            "Hall correction exceeds allowed current change: "
+            f"need {required_change_a:.3f} A, limit {max_current_change_a:.3f} A "
+            "(use max_current_change=... to override)."
+        )
+
+    target_total_current_a = abs(float(app.helmholtz.calibration.field_to_current(target_helm_g)))
+    if target_total_current_a > HELMHOLTZ_MAX_CURRENT_A:
+        raise RuntimeError(
+            "Hall correction target exceeds Helmholtz safety limit: "
+            f"target {target_helm_g:.2f} G requires {target_total_current_a:.3f} A total "
+            f"(limit {HELMHOLTZ_MAX_CURRENT_A:.3f} A)."
+        )
+
+    # Keep Helmholtz tab setpoint/rate in sync with script-driven Hall correction.
+    _post_helmholtz_setpoint(app, target_helm_g, helmholtz_rate_g_s)
+    app.helmholtz.set_field(target_helm_g, rate_mA_per_s=helmholtz_rate_g_s)
+    app.helmholtz.ramp_to_target(engine.stop_event)
+    return err_g
+
+
+def _run_hall_fix_loop(
+    engine: ExperimentEngine,
+    ctx: MeasurementContext,
+    app: "MeasureApp",
+    *,
+    target_hall_g: float,
+    helmholtz_rate_g_s: float,
+    max_current_change_a: float,
+    tolerance_g: float = 1.0,
+    max_iter: int = 8,
+) -> None:
+    """Iteratively correct Hall field using Helmholtz setpoints.
+
+    These Hall probe reads are diagnostic for correction only, so they are logged
+    but intentionally not written to the main data file.
+    """
+    for _ in range(max_iter):
+        hall_data = _measure_hall_with_gui_settings(ctx, app)
+        measured_hall_g = float(hall_data.get("Hall Field", 0.0))
+
+        err_g = target_hall_g - measured_hall_g
+        ctx.ui_bus.post_log(
+            f"Hall correction: target={target_hall_g:.2f} G, measured={measured_hall_g:.2f} G, err={err_g:.2f} G"
+        )
+
+        if abs(err_g) <= tolerance_g:
+            return
+
+        _apply_hall_fix_step(
+            engine,
+            app,
+            target_hall_g=target_hall_g,
+            measured_hall_g=measured_hall_g,
+            helmholtz_rate_g_s=helmholtz_rate_g_s,
+            max_current_change_a=max_current_change_a,
+        )
+
+
 def run_commands(
     engine: ExperimentEngine,
     ctx: MeasurementContext,
@@ -399,6 +547,13 @@ def _dispatch(
             temp_k = _round_to(float(args[0]), _DYNA_TEMP_RES_K)
             rate = _round_to(float(args[1]), _DYNA_TEMP_RES_K)
             approach = args[2] if len(args) > 2 else "fast_settle"
+            _confirm_dyna_cooling_or_abort(
+                engine,
+                ctx,
+                app,
+                target_temp_k=temp_k,
+                command_name=name,
+            )
             set_dyna_temp(ctx, temp_k, rate, approach)
             _post_dyna_setpoint(ctx, temp_k=temp_k, temp_rate_k_min=rate, temp_mode=approach)
             ctx.ui_bus.post_log(f"Set Dyna temp: {temp_k:.2f} K @ {rate:.2f} K/min ({approach})")
@@ -461,7 +616,6 @@ def _dispatch(
             avg = cmd.get_int("avg", int(app.lockin_tab.lockin_averaging.get()))
             what = cmd.get_tuple("what", ("X", "Y", "R", "Theta"))
             sample_delay = cmd.get_float("sample_delay", 0.05)
-            excitation = cmd.get_str("excitation", None)
             tau_idx = int(app.lockin_tab.lockin_time_constant_idx.get())
 
             result = measure_lockin_continuous(
@@ -471,7 +625,6 @@ def _dispatch(
                 sample_delay=sample_delay,
                 current=app.lockin_tab.lockin_output_current.get(),
                 series_resistance=app.lockin_tab.lockin_r_lockin.get(),
-                excitation=excitation,
                 frequency=app.lockin_tab.lockin_frequency.get(),
                 tau_idx=tau_idx,
             )
@@ -564,13 +717,10 @@ def _dispatch(
             db_oct = int(app.lockin_tab.lockin_filter_slope.get())
             lockin_filter_idx = {6: 0, 12: 1, 18: 2, 24: 3}.get(db_oct, 3)
 
-            lockin_current = cmd.get_float(
-                "lockin_current",
-                cmd.get_float("current", app.lockin_tab.lockin_output_current.get()),
-            )
+            lockin_current = cmd.get_float("lockin_current", app.lockin_tab.lockin_output_current.get())
             lockin_series_resistance = cmd.get_float(
                 "lockin_series_resistance",
-                cmd.get_float("resistance", app.lockin_tab.lockin_r_lockin.get()),
+                app.lockin_tab.lockin_r_lockin.get(),
             )
             lockin_avg = cmd.get_int("lockin_avg", int(app.lockin_tab.lockin_averaging.get()))
             lockin_start_sens = cmd.get_int("lockin_start_sens", int(app.lockin_tab.lockin_sensitivity_idx.get()))
@@ -581,32 +731,41 @@ def _dispatch(
 
             hall_current_mA = cmd.get_float("hall_current", app.hall_tab.k2450_current.get())
             hall_nplc = cmd.get_float("hall_nplc", app.hall_tab.k2450_nplc.get())
-            hall_compliance_v = cmd.get_float(
-                "hall_compliance",
-                cmd.get_float("hall_compliance_v", app.hall_tab.k2450_compliance_v.get()),
-            )
-            hall_filter_count = cmd.get_int(
-                "hall_filter",
-                cmd.get_int("hall_filter_count", app.hall_tab.k2450_filter_count.get()),
-            )
-            hall_tbm = cmd.get_float("hall_tbm", app.hall_tab.k2450_tbm.get())
+            hall_compliance_v = cmd.get_float("hall_compliance", app.hall_tab.k2450_compliance_v.get())
+            hall_filter_count = cmd.get_int("hall_filter", app.hall_tab.k2450_filter_count.get())
+            hall_tbm = cmd.get_float("tbm", app.hall_tab.k2450_tbm.get())
+            hall_excitation = cmd.get_str("hall_excitation", "cycle")
+            hall_excitation = str(hall_excitation).strip().lower()
             time_between = cmd.get_float("time_between", 0.05)
 
-            hall_data = measure_hall(
-                ctx,
-                current_mA=hall_current_mA,
-                nplc=hall_nplc,
-                compliance_v=hall_compliance_v,
-                voltage_range=hall_voltage_range,
-                auto_range=hall_auto_range,
-                filter_count=hall_filter_count,
-                tbm=hall_tbm,
-            )
+            if hall_excitation == "keep":
+                hall_data = measure_hall_continuous(
+                    ctx,
+                    current_mA=hall_current_mA,
+                    nplc=hall_nplc,
+                    compliance_v=hall_compliance_v,
+                    voltage_range=hall_voltage_range,
+                    auto_range=hall_auto_range,
+                    filter_count=hall_filter_count,
+                    tbm=hall_tbm,
+                )
+            else:
+                hall_data = measure_hall(
+                    ctx,
+                    current_mA=hall_current_mA,
+                    nplc=hall_nplc,
+                    compliance_v=hall_compliance_v,
+                    voltage_range=hall_voltage_range,
+                    auto_range=hall_auto_range,
+                    filter_count=hall_filter_count,
+                    tbm=hall_tbm,
+                )
 
             closed_switch = False
             try:
                 _close_active_channel(ctx, app, str(channel))
                 closed_switch = True
+                _post_switch_summary(ctx, app)
 
                 if time_between > 0:
                     _sleep_with_stop(engine.stop_event, float(time_between))
@@ -628,53 +787,110 @@ def _dispatch(
             finally:
                 if closed_switch:
                     open_all_channels(ctx)
+                    _post_switch_summary(ctx, app)
+
+            result = {**hall_data, **lockin_data}
+            ctx.data_mgr.write_row(result, measurement_type="Full")
+            _post_hall_result_events(ctx, app, result)
+            _post_lockin_result_events(ctx, app, result)
+            ctx.ui_bus.post_log("Full measurement recorded")
+            ctx.ui_bus.post(W_RESULTS_NEW_POINT, True)
+
+        elif name == "continuous_full_measure":
+            hall_voltage_range_raw = cmd.get_str("hall_voltage_range", app.hall_tab.k2450_voltage_range.get())
+            hall_voltage_range, hall_auto_range = _parse_voltage_range(
+                hall_voltage_range_raw,
+                default_raw=str(app.hall_tab.k2450_voltage_range.get()),
+            )
+
+            db_oct = int(app.lockin_tab.lockin_filter_slope.get())
+            lockin_filter_idx = {6: 0, 12: 1, 18: 2, 24: 3}.get(db_oct, 3)
+
+            lockin_current = app.lockin_tab.lockin_output_current.get()
+            lockin_series_resistance = app.lockin_tab.lockin_r_lockin.get()
+            lockin_avg = cmd.get_int("lockin_avg", int(app.lockin_tab.lockin_averaging.get()))
+            lockin_start_sens = int(app.lockin_tab.lockin_sensitivity_idx.get())
+            lockin_use_autorange = cmd.get_bool("lockin_use_autorange", False)
+            lockin_use_autophase = cmd.get_bool("lockin_use_autophase", False)
+            lockin_sample_delay = cmd.get_float("lockin_sample_delay", 0.05)
+            lockin_what = cmd.get_tuple("lockin_what", ("X", "Y", "R", "Theta"))
+
+            hall_current_mA = app.hall_tab.k2450_current.get()
+            hall_nplc = cmd.get_float("hall_nplc", app.hall_tab.k2450_nplc.get())
+            hall_compliance_v = cmd.get_float("hall_compliance", app.hall_tab.k2450_compliance_v.get())
+            hall_filter_count = cmd.get_int("hall_filter", app.hall_tab.k2450_filter_count.get())
+            time_between = cmd.get_float("time_between", 0.05)
+
+            hall_data = measure_hall_continuous(
+                ctx,
+                current_mA=hall_current_mA,
+                nplc=hall_nplc,
+                compliance_v=hall_compliance_v,
+                voltage_range=hall_voltage_range,
+                auto_range=hall_auto_range,
+                filter_count=hall_filter_count,
+                tbm=app.hall_tab.k2450_tbm.get(),
+            )
+
+            if time_between > 0:
+                _sleep_with_stop(engine.stop_event, float(time_between))
+
+            if lockin_use_autorange or lockin_use_autophase:
+                lockin_data = measure_lockin(
+                    ctx,
+                    what=lockin_what,
+                    current=lockin_current,
+                    series_resistance=lockin_series_resistance,
+                    avg=lockin_avg,
+                    start_sens=lockin_start_sens,
+                    use_autorange=lockin_use_autorange,
+                    use_autophase=lockin_use_autophase,
+                    sample_delay=lockin_sample_delay,
+                    manage_excitation=False,
+                    tau_idx=int(app.lockin_tab.lockin_time_constant_idx.get()),
+                    filter_slope_idx=lockin_filter_idx,
+                    frequency=app.lockin_tab.lockin_frequency.get(),
+                )
+            else:
+                lockin_data = measure_lockin_continuous(
+                    ctx,
+                    what=lockin_what,
+                    avg=lockin_avg,
+                    sample_delay=lockin_sample_delay,
+                    current=lockin_current,
+                    series_resistance=lockin_series_resistance,
+                    frequency=app.lockin_tab.lockin_frequency.get(),
+                    tau_idx=int(app.lockin_tab.lockin_time_constant_idx.get()),
+                )
 
             result = {**hall_data, **lockin_data}
             ctx.data_mgr.write_row(result, measurement_type="Full")
             _post_hall_result_events(ctx, app, result)
             _post_lockin_result_events(ctx, app, result)
             _post_switch_summary(ctx, app)
-            ctx.ui_bus.post_log("Full measurement recorded")
+            ctx.ui_bus.post_log("Continuous full measurement recorded")
             ctx.ui_bus.post(W_RESULTS_NEW_POINT, True)
 
         elif name == "set_ppms_field_and_fix_hall":
             target_ppms_oe = float(args[0])
             target_hall_g = float(args[1])
             helm_rate = float(cmd.kwargs.get("helmholtz_rate", 0.1))
+            max_current_change_a = float(cmd.kwargs.get("max_current_change", 2.0))
+
+            if max_current_change_a <= 0:
+                raise ValueError("max_current_change must be > 0 A")
 
             set_dyna_field(ctx, target_ppms_oe, rate=10.0, approach="linear")
             wait_for_events(ctx, engine.stop_event, ["field"], additional_time=0)
 
-            # Iterative Hall correction using Helmholtz field
-            tolerance_g = 1.0
-            max_iter = 8
-            for _ in range(max_iter):
-                hall_data = measure_hall(
-                    ctx,
-                    current_mA=app.hall_tab.k2450_current.get(),
-                    nplc=app.hall_tab.k2450_nplc.get(),
-                    compliance_v=app.hall_tab.k2450_compliance_v.get(),
-                    voltage_range=None if str(app.hall_tab.k2450_voltage_range.get()).lower() == "auto"
-                    else float(app.hall_tab.k2450_voltage_range.get()),
-                    auto_range=str(app.hall_tab.k2450_voltage_range.get()).lower() == "auto",
-                    filter_count=app.hall_tab.k2450_filter_count.get(),
-                    tbm=app.hall_tab.k2450_tbm.get(),
-                )
-                measured_hall_g = float(hall_data.get("Hall Field", 0.0))
-                err_g = target_hall_g - measured_hall_g
-
-                ctx.data_mgr.write_row(hall_data, measurement_type="Hall")
-                ctx.ui_bus.post(W_RESULTS_NEW_POINT, True)
-                ctx.ui_bus.post_log(
-                    f"Hall correction: target={target_hall_g:.2f} G, measured={measured_hall_g:.2f} G, err={err_g:.2f} G"
-                )
-
-                if abs(err_g) <= tolerance_g:
-                    break
-
-                current_helm_g = app.helmholtz.snapshot().get("Helmholtz_Field", 0.0) or 0.0
-                app.helmholtz.set_field(current_helm_g + err_g, rate_mA_per_s=helm_rate)
-                app.helmholtz.ramp_to_target(engine.stop_event)
+            _run_hall_fix_loop(
+                engine,
+                ctx,
+                app,
+                target_hall_g=target_hall_g,
+                helmholtz_rate_g_s=helm_rate,
+                max_current_change_a=max_current_change_a,
+            )
 
         elif name == "scan_ppms_field_and_fix_hall":
             start_oe = float(args[0])
@@ -682,6 +898,11 @@ def _dispatch(
             step_oe = float(args[2])
             target_hall_g = float(args[3])
             rate = float(cmd.kwargs.get("rate", 10.0))
+            helm_rate = float(cmd.kwargs.get("helmholtz_rate", 0.1))
+            max_current_change_a = float(cmd.kwargs.get("max_current_change", 2.0))
+
+            if max_current_change_a <= 0:
+                raise ValueError("max_current_change must be > 0 A")
 
             for field_oe in _arange(start_oe, end_oe, step_oe):
                 engine.check_stop()
@@ -691,29 +912,14 @@ def _dispatch(
                 set_dyna_field(ctx, field_oe, rate=rate, approach="linear")
                 wait_for_events(ctx, engine.stop_event, ["field"], additional_time=0)
 
-                tolerance_g = 1.0
-                max_iter = 8
-                for _ in range(max_iter):
-                    hall_data = measure_hall(
-                        ctx,
-                        current_mA=app.hall_tab.k2450_current.get(),
-                        nplc=app.hall_tab.k2450_nplc.get(),
-                        compliance_v=app.hall_tab.k2450_compliance_v.get(),
-                        voltage_range=None if str(app.hall_tab.k2450_voltage_range.get()).lower() == "auto"
-                        else float(app.hall_tab.k2450_voltage_range.get()),
-                        auto_range=str(app.hall_tab.k2450_voltage_range.get()).lower() == "auto",
-                        filter_count=app.hall_tab.k2450_filter_count.get(),
-                        tbm=app.hall_tab.k2450_tbm.get(),
-                    )
-                    measured_hall_g = float(hall_data.get("Hall Field", 0.0))
-                    err_g = target_hall_g - measured_hall_g
-                    ctx.data_mgr.write_row(hall_data, measurement_type="Hall")
-                    ctx.ui_bus.post(W_RESULTS_NEW_POINT, True)
-                    if abs(err_g) <= tolerance_g:
-                        break
-                    current_helm_g = app.helmholtz.snapshot().get("Helmholtz_Field", 0.0) or 0.0
-                    app.helmholtz.set_field(current_helm_g + err_g, rate_mA_per_s=0.1)
-                    app.helmholtz.ramp_to_target(engine.stop_event)
+                _run_hall_fix_loop(
+                    engine,
+                    ctx,
+                    app,
+                    target_hall_g=target_hall_g,
+                    helmholtz_rate_g_s=helm_rate,
+                    max_current_change_a=max_current_change_a,
+                )
 
                 if cmd.children:
                     _run_children(engine, ctx, cmd.children, app, parent_line=cmd.line_number)
@@ -741,8 +947,12 @@ def _dispatch(
         # ==============================================================
         elif name == "auto_gain":
             ctx.ui_bus.post(W_LOCKIN_STATUS, "LockIn: running auto gain")
-            lockin_auto_gain(ctx)
+            sens_idx = int(lockin_auto_gain(ctx))
+            app.lockin_tab.lockin_sensitivity_idx.set(sens_idx)
+            app.lockin_tab.sens_label.configure(text=app.lockin_tab._sens_text())
+            ctx.ui_bus.post(W_LOCKIN_SENSITIVITY, sens_idx)
             ctx.ui_bus.post_log("Lock-in auto gain executed")
+            ctx.ui_bus.post_log(f"Lock-in sensitivity index: {sens_idx}")
             ctx.ui_bus.post(W_LOCKIN_STATUS, "LockIn: auto gain completed")
         elif name == "auto_phase":
             ctx.ui_bus.post(W_LOCKIN_STATUS, "LockIn: running auto phase")
@@ -762,6 +972,14 @@ def _dispatch(
             app.lockin_tab.tc_label.configure(text=app.lockin_tab._tc_text())
             ctx.ui_bus.post_log(f"Lock-in time constant set to {tau_seconds} s (idx {tau_index})")
             ctx.ui_bus.post(W_LOCKIN_STATUS, "LockIn: time constant updated")
+        elif name == "set_lockin_sensitivity":
+            sens_idx = int(float(args[0]))
+            set_lockin_sensitivity(ctx, sens_idx)
+            app.lockin_tab.lockin_sensitivity_idx.set(sens_idx)
+            app.lockin_tab.sens_label.configure(text=app.lockin_tab._sens_text())
+            ctx.ui_bus.post(W_LOCKIN_SENSITIVITY, sens_idx)
+            ctx.ui_bus.post_log(f"Set Lock-in sensitivity index: {sens_idx}")
+            ctx.ui_bus.post(W_LOCKIN_STATUS, "LockIn: sensitivity updated")
         elif name == "set_lockin_filter":
             db_oct = int(float(args[0]))
             filter_idx = {6: 0, 12: 1, 18: 2, 24: 3}.get(db_oct, db_oct)
@@ -798,21 +1016,7 @@ def _dispatch(
         elif name == "close_channel":
             token = str(args[0]).strip().lower()
             if token in app.channels:
-                channel_cfg = app.channel_configs.get(token)
-                if channel_cfg is None:
-                    raise ValueError(f"Unknown channel: {token}")
-                ip = int(channel_cfg["I+"].get())
-                vp = int(channel_cfg["V+"].get())
-                vm = int(channel_cfg["V-"].get())
-                im = int(channel_cfg["I-"].get())
-                open_all_channels(ctx)
-                inst = app.bus.get_raw(INST_SWITCH)
-                if inst is not None and hasattr(inst, "close_list"):
-                    app.bus.execute(INST_SWITCH, "close_list", ip, vp, vm, im)
-                else:
-                    for pin in (ip, vp, vm, im):
-                        app.bus.execute(INST_SWITCH, "close_channel", int(pin))
-                app.active_channel = token
+                _close_active_channel(ctx, app, token)
                 _post_switch_summary(ctx, app)
                 ctx.ui_bus.post_log(f"close_channel {token} executed")
             else:
@@ -916,6 +1120,14 @@ def _run_loop(
         start, end, step, rate = float(args[0]), float(args[1]), float(args[2]), float(args[3])
         approach = args[4] if len(args) > 4 else "fast_settle"
         values = _arange(start, end, step)
+        if values:
+            _confirm_dyna_cooling_or_abort(
+                engine,
+                ctx,
+                app,
+                target_temp_k=min(values),
+                command_name=name,
+            )
         for val in values:
             engine.check_stop()
             engine.check_pause()
@@ -951,6 +1163,14 @@ def _run_loop(
     elif name == "sweep_dyna_temp":
         start, end, rate = float(args[0]), float(args[1]), float(args[2])
         gap_time = float(cmd.kwargs.get("gap_time", args[3] if len(args) > 3 else 0.0))
+
+        _confirm_dyna_cooling_or_abort(
+            engine,
+            ctx,
+            app,
+            target_temp_k=min(start, end),
+            command_name=name,
+        )
 
         _post_dyna_setpoint(ctx, temp_k=start, temp_rate_k_min=rate, temp_mode="fast_settle")
         set_dyna_temp(ctx, start, rate, "fast_settle")
@@ -1037,6 +1257,30 @@ def _run_loop(
 
         # Final measurement at endpoint
         _run_children(engine, ctx, cmd.children, app, parent_line=cmd.line_number)
+
+    elif name == "time_sweep":
+        sweep_time_s = max(0.0, float(args[0]))
+        time_gap_s = max(0.0, float(args[1]))
+
+        start_t = time.monotonic()
+        while not engine.stop_event.is_set():
+            engine.check_stop()
+            engine.check_pause()
+
+            elapsed = time.monotonic() - start_t
+            if elapsed >= sweep_time_s:
+                break
+
+            _run_children(engine, ctx, cmd.children, app, parent_line=cmd.line_number)
+            if time_gap_s > 0:
+                engine.interruptible_sleep(time_gap_s)
+
+    elif name == "for_loop":
+        iterations = max(0, int(float(args[0])))
+        for _ in range(iterations):
+            engine.check_stop()
+            engine.check_pause()
+            _run_children(engine, ctx, cmd.children, app, parent_line=cmd.line_number)
 
 
 def _run_children(

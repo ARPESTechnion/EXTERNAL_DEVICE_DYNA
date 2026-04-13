@@ -54,7 +54,10 @@ class MockLockInSR830:
         self._tau_idx = 9          # 300 ms
         self._slope_idx = 3        # 24 dB/oct
         self._sync_filter = True
+        self._input_shield_grounded = False
         self._overloaded = False   # set manually for testing
+        self._auto_busy_until = 0.0
+        self._mock_auto_duration_s = 0.05
         print(f"[MOCK] LockInSR830 created (resource={resource!r})")
         self.initialize_default_state()
 
@@ -79,6 +82,7 @@ class MockLockInSR830:
         self._tau_idx = 9
         self._slope_idx = 3
         self._sync_filter = True
+        self._input_shield_grounded = False
         print("[MOCK] Default state initialized")
 
     # ── Reference / sine output ──
@@ -120,6 +124,20 @@ class MockLockInSR830:
 
     def get_phase(self):
         return self._phase
+
+    # ── Input shield (ground / float) ──
+
+    def set_input_shield_grounded(self, grounded):
+        self._input_shield_grounded = bool(grounded)
+
+    def set_input_shield_float(self):
+        self.set_input_shield_grounded(False)
+
+    def set_input_shield_ground(self):
+        self.set_input_shield_grounded(True)
+
+    def is_input_shield_grounded(self):
+        return self._input_shield_grounded
 
     # ── Sensitivity / time-constant / filter slope ──
 
@@ -194,28 +212,80 @@ class MockLockInSR830:
     # ── Status ──
 
     def serial_poll_status(self):
-        return 0b10       # IFC=1 → idle
+        return self._read_serial_poll_status()
+
+    def _read_serial_poll_status(self):
+        # Match real-driver IFC semantics: bit 1 set means idle.
+        if time.perf_counter() < self._auto_busy_until:
+            return 0
+        return 0b10
+
+    @staticmethod
+    def _is_internal_command_idle(status_byte):
+        return bool(status_byte & (1 << 1))
 
     def is_overloaded(self):
         return self._overloaded
 
     # ── Safe auto-commands ──
 
-    def _wait_for_command_complete(self, timeout_s=30):
-        """Simple wait for mock auto-commands."""
-        time.sleep(min(timeout_s, 5.0))  # Cap at 5s like the real driver
+    def _wait_for_command_complete(
+        self,
+        timeout_s=15.0,
+        poll_interval_s=0.05,
+        consecutive_idle_polls=1,
+    ):
+        if timeout_s <= 0:
+            raise ValueError("timeout_s must be positive")
+        if poll_interval_s <= 0:
+            raise ValueError("poll_interval_s must be positive")
+        if consecutive_idle_polls <= 0:
+            raise ValueError("consecutive_idle_polls must be positive")
 
-    def _safe_auto(self, cmd, timeout_s=5.0):
+        deadline = time.perf_counter() + float(timeout_s)
+        idle_count = 0
+        while True:
+            now = time.perf_counter()
+            if now >= deadline:
+                raise TimeoutError(
+                    "Mock SR830 auto-command did not complete within "
+                    f"{timeout_s:.2f} s"
+                )
+
+            if self._is_internal_command_idle(self._read_serial_poll_status()):
+                idle_count += 1
+                if idle_count >= consecutive_idle_polls:
+                    return
+            else:
+                idle_count = 0
+
+            time.sleep(min(poll_interval_s, max(deadline - now, 0.0)))
+
+    def _safe_auto(
+        self,
+        cmd,
+        timeout_s=15.0,
+        poll_interval_s=0.05,
+        post_settle_s=0.1,
+        consecutive_idle_polls=1,
+    ):
         print(f"[MOCK] auto command: {cmd}")
-        time.sleep(min(timeout_s, 5.0))
+        self._auto_busy_until = time.perf_counter() + max(self._mock_auto_duration_s, 0.0)
+        self._wait_for_command_complete(
+            timeout_s=timeout_s,
+            poll_interval_s=poll_interval_s,
+            consecutive_idle_polls=consecutive_idle_polls,
+        )
+        if post_settle_s > 0:
+            time.sleep(min(post_settle_s, 0.2))
 
-    def safe_auto_phase(self, timeout_s=5.0):
+    def safe_auto_phase(self, timeout_s=15.0):
         self._safe_auto("APHS", timeout_s)
 
-    def safe_auto_gain(self, timeout_s=5.0):
+    def safe_auto_gain(self, timeout_s=15.0):
         self._safe_auto("AGAN", timeout_s)
 
-    def safe_auto_reserve(self, timeout_s=5.0):
+    def safe_auto_reserve(self, timeout_s=15.0):
         self._safe_auto("ARSV", timeout_s)
 
     # ── Settling ──
@@ -250,6 +320,8 @@ class MockLockInSR830:
         use_autorange=True,
         use_autophase=True,
         sample_delay=0.05,
+        manage_excitation=True,
+        wait_for_settling_when_no_autorange=True,
     ):
         ch_map = {"X": 1, "Y": 2, "R": 3, "Theta": 4}
         for k in what:
@@ -260,14 +332,15 @@ class MockLockInSR830:
 
         if start_sens is not None:
             self.set_sensitivity(int(start_sens))
-        self.set_excitation_current(current, series_resistance)
+        if manage_excitation:
+            self.set_excitation_current(current, series_resistance)
         self.reset_buffer()
 
         if use_autorange:
             self.quick_autorange()
         if use_autophase:
             self.safe_auto_phase()
-        else:
+        elif wait_for_settling_when_no_autorange:
             self.wait_for_settling(show_timer=True)
 
         data = {k: [] for k in what}
@@ -290,7 +363,8 @@ class MockLockInSR830:
                 data[k].append(v)
             time.sleep(sample_delay)
 
-        self.sine_output_off()
+        if manage_excitation:
+            self.sine_output_off()
 
         return {
             k: {"mean": float(np.mean(v)), "std": float(np.std(v))}

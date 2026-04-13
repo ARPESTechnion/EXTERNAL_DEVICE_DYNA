@@ -44,6 +44,8 @@ from v3.core.constants import (
 
 logger = logging.getLogger(__name__)
 
+CSV_TO_DATA_KEY: dict[str, str] = {csv_name: internal for internal, csv_name in DATA_KEY_TO_CSV.items()}
+
 
 class DataManager:
     """
@@ -83,9 +85,14 @@ class DataManager:
         self._session_header_enabled: bool = False
         self._session_user: str = ""
         self._session_sample: str = ""
+        self._hall_bar: str = ""
+        self._hall_v_per_g: float | None = None
+        self._hall_offset_v: float | None = None
+        self._last_hall_metadata_signature: tuple[str, float, float] | None = None
+        self._max_results = int(max_results)
 
         # --- Results buffer ---
-        self._results: deque[dict[str, Any]] = deque(maxlen=max_results)
+        self._results: deque[dict[str, Any]] = deque(maxlen=self._max_results)
 
         # --- Auto-log ---
         self.log_dir = Path(log_dir)
@@ -110,6 +117,63 @@ class DataManager:
         self._session_header_enabled = bool(enabled)
         self._session_user = str(user).strip()
         self._session_sample = str(sample).strip()
+
+    def set_hall_metadata(
+        self,
+        *,
+        hall_bar: str,
+        v_per_g: float | None,
+        hall_offset_v: float | None,
+    ) -> None:
+        """Update current Hall metadata snapshot used for lazy SessionInfo logging."""
+        self._hall_bar = str(hall_bar).strip()
+        self._hall_v_per_g = self._coerce_finite_float(v_per_g)
+        self._hall_offset_v = self._coerce_finite_float(hall_offset_v)
+
+    @staticmethod
+    def _coerce_finite_float(value: Any) -> float | None:
+        try:
+            parsed = float(value)
+        except (TypeError, ValueError):
+            return None
+        return parsed if math.isfinite(parsed) else None
+
+    def _hall_metadata_signature_unlocked(self) -> tuple[str, float, float] | None:
+        bar = str(self._hall_bar).strip()
+        if not bar:
+            return None
+
+        v_per_g = self._coerce_finite_float(self._hall_v_per_g)
+        offset_v = self._coerce_finite_float(self._hall_offset_v)
+        if v_per_g is None or offset_v is None:
+            return None
+
+        # Normalize precision to avoid float-noise duplicate metadata writes.
+        return (bar, round(v_per_g, 12), round(offset_v, 12))
+
+    def _write_hall_metadata_row_if_needed_unlocked(self, measurement_type: str) -> None:
+        if measurement_type not in {"Hall", "Full"}:
+            return
+        if self._csv_writer is None:
+            return
+
+        signature = self._hall_metadata_signature_unlocked()
+        if signature is None or signature == self._last_hall_metadata_signature:
+            return
+
+        hall_bar, v_per_g, offset_v = signature
+        row: dict[str, Any] = {}
+        for csv_col in CSV_FIELDNAMES:
+            row[csv_col] = np.nan
+        row["Measurement_Type"] = "SessionInfo"
+        row["Notes"] = (
+            f"HallBar: {hall_bar} | "
+            f"VperG: {v_per_g:.12g} | "
+            f"HallOffsetV: {offset_v:.12g}"
+        )
+        self._csv_writer.writerow(row)
+        self._last_hall_metadata_signature = signature
+        self._session_rows_written += 1
 
     def initialize_file(
         self,
@@ -192,9 +256,10 @@ class DataManager:
             self._close_file_unlocked()
             self._time_offset = 0.0
             self._measurement_start_time = None
-            self._results.clear()
+            self._results = deque(maxlen=self._max_results)
             self._session_rows_written = 0
             self._session_created_new_file = True
+            self._last_hall_metadata_signature = None
             self._data_filename = filepath
             self._data_file = open(filepath, "w", newline="", encoding="utf-8")
             self._csv_writer = csv.DictWriter(
@@ -209,6 +274,7 @@ class DataManager:
     def _open_append(self, filepath: Path) -> Path:
         last_time = 0.0
         is_empty_file = False
+        loaded_rows: list[dict[str, Any]] = []
         try:
             with open(filepath, "r", newline="", encoding="utf-8") as f:
                 reader = csv.DictReader(f)
@@ -221,13 +287,18 @@ class DataManager:
                 for row in reader:
                     raw = row.get("Time(s)", "")
                     if raw in (None, ""):
-                        continue
-                    try:
-                        candidate = float(raw)
-                        if math.isfinite(candidate):
-                            last_time = max(last_time, candidate)
-                    except (ValueError, TypeError):
-                        continue
+                        candidate = None
+                    else:
+                        try:
+                            candidate = float(raw)
+                            if math.isfinite(candidate):
+                                last_time = max(last_time, candidate)
+                        except (ValueError, TypeError):
+                            candidate = None
+
+                    converted = self._csv_row_to_result_row(row)
+                    if converted:
+                        loaded_rows.append(converted)
         except ValueError:
             raise
         except Exception:
@@ -238,9 +309,15 @@ class DataManager:
             self._close_file_unlocked()
             self._time_offset = last_time
             self._measurement_start_time = None
-            self._results.clear()
+            preload_count = len(loaded_rows)
+            if preload_count > self._max_results:
+                self._results = deque(maxlen=preload_count + self._max_results)
+            else:
+                self._results = deque(maxlen=self._max_results)
+            self._results.extend(loaded_rows)
             self._session_rows_written = 0
             self._session_created_new_file = False
+            self._last_hall_metadata_signature = None
             self._data_filename = filepath
             self._data_file = open(filepath, "a", newline="", encoding="utf-8")
             self._csv_writer = csv.DictWriter(
@@ -251,8 +328,32 @@ class DataManager:
                 self._data_file.flush()
 
         self.append_note(f"Data appended at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-        logger.info("Data file opened for append: %s (offset %.2fs)", filepath, last_time)
+        logger.info(
+            "Data file opened for append: %s (offset %.2fs, preloaded rows=%d)",
+            filepath,
+            last_time,
+            len(loaded_rows),
+        )
         return filepath
+
+    def _csv_row_to_result_row(self, row: dict[str, Any]) -> dict[str, Any]:
+        """Convert one CSV row to internal result-row keys used by plotting."""
+        converted: dict[str, Any] = {}
+        for csv_col, raw_value in row.items():
+            key = CSV_TO_DATA_KEY.get(csv_col, csv_col)
+            value: Any = raw_value
+            if isinstance(raw_value, str):
+                text = raw_value.strip()
+                if text == "":
+                    value = np.nan
+                else:
+                    try:
+                        num = float(text)
+                        value = num
+                    except (ValueError, TypeError):
+                        value = raw_value
+            converted[key] = value
+        return converted
 
     def _write_session_header_row_unlocked(self) -> None:
         if not self._session_header_enabled or self._csv_writer is None:
@@ -356,6 +457,7 @@ class DataManager:
 
             with self._csv_lock:
                 if self._csv_writer is not None and self._data_file is not None:
+                    self._write_hall_metadata_row_if_needed_unlocked(measurement_type)
                     self._csv_writer.writerow(row)
                     self._data_file.flush()
                     self._session_rows_written += 1

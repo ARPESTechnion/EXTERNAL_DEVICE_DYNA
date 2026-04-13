@@ -37,6 +37,8 @@ from v3.core.ui_events import (
     W_RESULTS_NEW_POINT,
 )
 from v3.gui.base_tab import BaseTab, ConnectionHeader, make_led, set_led
+from v3.gui.components import ValidatingEntry, make_float_validator
+from v3.gui.theme import COLORS, FONTS
 
 if TYPE_CHECKING:
     from v3.gui.app import MeasureApp
@@ -59,12 +61,12 @@ SENSITIVITY_TABLE = [
 
 # Calibrated series resistor values (matching V2)
 R_LOCKIN_OPTIONS = {
-    "50 Ω": 50.38,
-    "1 kΩ": 1000.37,
-    "10 kΩ": 10064,
-    "100 kΩ": 99619,
-    "1 MΩ": 996470,
-    "10 MΩ": 10000000,
+    "50 Ω": 50.35,
+    "1 kΩ": 1000.0,
+    "10 kΩ": 10062.1,
+    "100 kΩ": 99640.0,
+    "1 MΩ": 996500.0,
+    "10 MΩ": 9987500.0,
 }
 
 # Filter slope dB/oct → SR830 index
@@ -87,6 +89,7 @@ class LockInTab(BaseTab):
         super().__init__(parent, app)
         self._conn_header: ConnectionHeader | None = None
         self._measuring = False
+        self._measure_buttons: list[ttk.Button] = []
         self._idle_output_voltage = 0.004
         self._status_idle_after_id: str | None = None
         self._x_value: float | None = None
@@ -131,15 +134,22 @@ class LockInTab(BaseTab):
         self.lockin_filter_slope = tk.StringVar(value="24")
         self.lockin_sensitivity_idx = tk.IntVar(value=10)
         self.lockin_output_current = tk.DoubleVar(value=100e-9)
-        self.lockin_r_lockin = tk.DoubleVar(value=996470)
+        self.lockin_r_lockin = tk.DoubleVar(value=996500)
         self.lockin_averaging = tk.IntVar(value=10)
         self.lockin_r_lockin_idx = tk.StringVar(value="1 MΩ")
+        self.lockin_input_shield_grounded = tk.BooleanVar(value=False)
+        self.lockin_input_shield_state = tk.StringVar(value="Floating")
 
         row = 0
 
         # Frequency
         ttk.Label(sf, text="Frequency (Hz):").grid(row=row, column=0, sticky="w", padx=5, pady=2)
-        ttk.Entry(sf, textvariable=self.lockin_frequency, width=10).grid(row=row, column=1, padx=5)
+        ValidatingEntry(
+            sf,
+            textvariable=self.lockin_frequency,
+            width=10,
+            validator=make_float_validator(0.001, 102000.0),
+        ).grid(row=row, column=1, padx=5)
         ttk.Button(sf, text="Set", command=self._set_frequency, width=5).grid(row=row, column=2)
         row += 1
 
@@ -175,7 +185,12 @@ class LockInTab(BaseTab):
 
         # Output current
         ttk.Label(sf, text="Output Current (A):").grid(row=row, column=0, sticky="w", padx=5, pady=2)
-        ttk.Entry(sf, textvariable=self.lockin_output_current, width=10).grid(row=row, column=1, padx=5)
+        ValidatingEntry(
+            sf,
+            textvariable=self.lockin_output_current,
+            width=10,
+            validator=make_float_validator(0.0, 1.0),
+        ).grid(row=row, column=1, padx=5)
         ttk.Button(sf, text="Set", command=self._set_current, width=5).grid(row=row, column=2)
         row += 1
 
@@ -192,7 +207,21 @@ class LockInTab(BaseTab):
 
         # Averaging
         ttk.Label(sf, text="Averaging:").grid(row=row, column=0, sticky="w", padx=5, pady=2)
-        ttk.Entry(sf, textvariable=self.lockin_averaging, width=10).grid(row=row, column=1, padx=5)
+        ValidatingEntry(
+            sf,
+            textvariable=self.lockin_averaging,
+            width=10,
+            validator=make_float_validator(1.0, 5000.0),
+        ).grid(row=row, column=1, padx=5)
+        row += 1
+
+        # Input shield mode toggle
+        ttk.Label(sf, text="Input Shield:").grid(row=row, column=0, sticky="w", padx=5, pady=2)
+        self.input_shield_state_label = ttk.Label(sf, textvariable=self.lockin_input_shield_state)
+        self.input_shield_state_label.grid(row=row, column=1, padx=5, sticky="w")
+        self.input_shield_btn = ttk.Button(sf, width=7, command=self._toggle_input_shield)
+        self.input_shield_btn.grid(row=row, column=2, padx=5, sticky="w")
+        self._refresh_input_shield_button()
         row += 1
 
         # Utility buttons
@@ -211,6 +240,7 @@ class LockInTab(BaseTab):
 
         self.measure_btn = ttk.Button(mf, text="Measure", command=self._on_measure)
         self.measure_btn.pack(side="left", padx=5, pady=2)
+        self.register_measure_button(self.measure_btn)
 
         self.apply_btn = ttk.Button(mf, text="Apply Settings", command=self._on_apply_settings)
         self.apply_btn.pack(side="left", padx=5, pady=2)
@@ -220,6 +250,23 @@ class LockInTab(BaseTab):
         self.output_led.pack(side="left", padx=2)
         self._update_output_led(0.0)
 
+    def register_measure_button(self, button: ttk.Button) -> None:
+        if button not in self._measure_buttons:
+            self._measure_buttons.append(button)
+        self._set_measure_buttons_enabled(not self._measuring)
+
+    def _set_measure_buttons_enabled(self, enabled: bool) -> None:
+        state = "normal" if enabled else "disabled"
+        alive_buttons: list[ttk.Button] = []
+        for button in self._measure_buttons:
+            try:
+                if bool(button.winfo_exists()):
+                    button.configure(state=state)
+                    alive_buttons.append(button)
+            except Exception:
+                continue
+        self._measure_buttons = alive_buttons
+
     # ------------------------------------------------------------------
     # Readouts
     # ------------------------------------------------------------------
@@ -227,22 +274,76 @@ class LockInTab(BaseTab):
         rd = ttk.LabelFrame(parent, text="LockIn Measurement")
         rd.pack(fill="x", padx=5, pady=5)
 
-        self.x_label = tk.Label(rd, font=("Courier", 11), fg="#00FF00", bg="#000000", anchor="w")
+        self.x_label = tk.Label(
+            rd,
+            font=FONTS["mono"],
+            fg=COLORS["accent_current"],
+            bg=COLORS["bg_input"],
+            relief="solid",
+            borderwidth=1,
+            padx=6,
+            pady=2,
+            anchor="w",
+        )
         self.x_label.pack(fill="x", padx=5, pady=(5, 2))
-        self.y_label = tk.Label(rd, font=("Courier", 11), fg="#00FF00", bg="#000000", anchor="w")
+        self.y_label = tk.Label(
+            rd,
+            font=FONTS["mono"],
+            fg=COLORS["accent_current"],
+            bg=COLORS["bg_input"],
+            relief="solid",
+            borderwidth=1,
+            padx=6,
+            pady=2,
+            anchor="w",
+        )
         self.y_label.pack(fill="x", padx=5, pady=2)
-        self.r_label = tk.Label(rd, font=("Courier", 11), fg="#00FF00", bg="#000000", anchor="w")
+        self.r_label = tk.Label(
+            rd,
+            font=FONTS["mono"],
+            fg=COLORS["accent_resistance"],
+            bg=COLORS["bg_input"],
+            relief="solid",
+            borderwidth=1,
+            padx=6,
+            pady=2,
+            anchor="w",
+        )
         self.r_label.pack(fill="x", padx=5, pady=2)
-        self.phase_label = tk.Label(rd, font=("Courier", 11), fg="#00FF00", bg="#000000", anchor="w")
+        self.phase_label = tk.Label(
+            rd,
+            font=FONTS["mono"],
+            fg=COLORS["accent_info"],
+            bg=COLORS["bg_input"],
+            relief="solid",
+            borderwidth=1,
+            padx=6,
+            pady=2,
+            anchor="w",
+        )
         self.phase_label.pack(fill="x", padx=5, pady=2)
-        self.resistance_label = tk.Label(rd, font=("Courier", 11), fg="#00FF00", bg="#000000", anchor="w")
+        self.resistance_label = tk.Label(
+            rd,
+            font=FONTS["mono"],
+            fg=COLORS["accent_resistance"],
+            bg=COLORS["bg_input"],
+            relief="solid",
+            borderwidth=1,
+            padx=6,
+            pady=2,
+            anchor="w",
+        )
         self.resistance_label.pack(fill="x", padx=5, pady=2)
         self.channel_label = tk.Label(
             rd,
             text="Channel: ---",
-            font=("Courier", 11),
-            fg="#00FF00",
-            bg="#000000",
+            font=FONTS["mono"],
+            fg=COLORS["accent_info"],
+            bg=COLORS["bg_input"],
+            relief="solid",
+            borderwidth=1,
+            padx=6,
+            pady=2,
             anchor="w",
         )
         self.channel_label.pack(fill="x", padx=5, pady=(2, 5))
@@ -254,8 +355,15 @@ class LockInTab(BaseTab):
             anchor="w", padx=5, pady=(10, 2)
         )
         self.lockin_status_text = tk.Text(
-            parent, height=3, width=70, font=("Courier", 10),
-            background="#f0f0f0", relief="sunken", state="disabled",
+            parent,
+            height=3,
+            width=70,
+            font=FONTS["mono_small"],
+            background=COLORS["bg_input"],
+            foreground=COLORS["fg_primary"],
+            insertbackground=COLORS["fg_primary"],
+            relief="sunken",
+            state="disabled",
         )
         self.lockin_status_text.pack(fill="x", padx=5, pady=2)
 
@@ -307,6 +415,7 @@ class LockInTab(BaseTab):
                 self._conn_header.set_connected(bool(value))
             if bool(value):
                 self._sync_output_led_from_settings()
+                self._sync_input_shield_from_instrument()
             else:
                 self._update_output_led(0.0)
         elif widget_id == W_LOCKIN_OUTPUT_VOLTAGE:
@@ -319,6 +428,7 @@ class LockInTab(BaseTab):
         if name == "lockin" and self._conn_header:
             self._conn_header.set_connected(True)
             self._sync_output_led_from_settings()
+            self._sync_input_shield_from_instrument()
 
     def on_instrument_disconnected(self, name: str) -> None:
         if name == "lockin" and self._conn_header:
@@ -373,7 +483,7 @@ class LockInTab(BaseTab):
 
     def _on_r_change(self, *_args) -> None:
         key = self.lockin_r_lockin_idx.get()
-        val = R_LOCKIN_OPTIONS.get(key, 996470)
+        val = R_LOCKIN_OPTIONS.get(key, 996500)
         self.lockin_r_lockin.set(val)
 
     def _update_status_text(self, msg: str) -> None:
@@ -429,6 +539,42 @@ class LockInTab(BaseTab):
                 output_voltage = 0.0
 
         self._update_output_led(output_voltage)
+
+    def _refresh_input_shield_button(self) -> None:
+        grounded = self.lockin_input_shield_grounded.get()
+        self.lockin_input_shield_state.set("Grounded" if grounded else "Floating")
+        self.input_shield_btn.configure(text=("Float" if grounded else "Ground"))
+
+    def _set_input_shield(self, grounded: bool, *, post_log: bool = True) -> None:
+        self.app.bus.execute(INST_LOCKIN, "set_input_shield_grounded", bool(grounded))
+        self.lockin_input_shield_grounded.set(bool(grounded))
+        self._refresh_input_shield_button()
+        status_msg = f"LockIn: Input shield {'grounded' if grounded else 'floating'}"
+        self._set_status_with_idle(status_msg)
+        if post_log:
+            mode_text = "ground" if grounded else "float"
+            self.app.ui_bus.post_log(f"Lock-in input shield -> {mode_text}")
+
+    def _sync_input_shield_from_instrument(self) -> None:
+        try:
+            grounded = bool(self.app.bus.execute(INST_LOCKIN, "is_input_shield_grounded"))
+            self.lockin_input_shield_grounded.set(grounded)
+        except Exception:
+            self.lockin_input_shield_grounded.set(False)
+        self._refresh_input_shield_button()
+        self._set_status_with_idle(
+            f"LockIn: Input shield {'grounded' if self.lockin_input_shield_grounded.get() else 'floating'}"
+        )
+
+    def _toggle_input_shield(self) -> None:
+        if not self.app.instrument_connected.get("lockin", False):
+            self.app.ui_bus.post_log("ERROR: Lock-in SR830 not connected.")
+            return
+        try:
+            next_mode_grounded = not self.lockin_input_shield_grounded.get()
+            self._set_input_shield(next_mode_grounded, post_log=True)
+        except Exception as exc:
+            self.app.ui_bus.post_log(f"Set input shield error: {exc}")
 
     @staticmethod
     def _to_number_or_none(value: Any) -> float | None:
@@ -517,6 +663,7 @@ class LockInTab(BaseTab):
             methods=("quick_autorange", "safe_auto_gain", "auto_gain"),
             executed_log="Lock-in auto gain executed.",
             thread_name="lockin-auto-gain",
+            sync_sensitivity=True,
         )
 
     def _auto_phase(self) -> None:
@@ -548,6 +695,7 @@ class LockInTab(BaseTab):
         methods: tuple[str, ...],
         executed_log: str,
         thread_name: str,
+        sync_sensitivity: bool = False,
     ) -> None:
         self._set_status_with_idle(running_status)
 
@@ -566,6 +714,14 @@ class LockInTab(BaseTab):
                     raise AttributeError("No supported auto function on lock-in driver")
 
                 self.app.bus.execute(INST_LOCKIN, selected_method)
+
+                if sync_sensitivity:
+                    try:
+                        sens_idx = int(self.app.bus.execute(INST_LOCKIN, "get_sensitivity"))
+                        self.app.ui_bus.post(W_LOCKIN_SENSITIVITY, sens_idx)
+                    except Exception:
+                        self.app.ui_bus.post_log("Auto gain completed, but failed to refresh sensitivity")
+
                 self.app.ui_bus.post_log(executed_log)
                 self.app.root.after(0, lambda: self._set_status_with_idle(done_status))
             except Exception as exc:
@@ -587,7 +743,7 @@ class LockInTab(BaseTab):
             return
 
         self._measuring = True
-        self.measure_btn.configure(state="disabled")
+        self._set_measure_buttons_enabled(False)
         self.app.ui_bus.post(W_LED_LOCKIN, True)
         self._set_status_with_idle("LockIn: running measurement")
 
@@ -693,7 +849,7 @@ class LockInTab(BaseTab):
     def _measure_done(self) -> None:
         """Called on main thread after measurement completes."""
         self._measuring = False
-        self.measure_btn.configure(state="normal")
+        self._set_measure_buttons_enabled(True)
         self.app.ui_bus.post(W_LED_LOCKIN, False)
 
     # ------------------------------------------------------------------
@@ -720,6 +876,9 @@ class LockInTab(BaseTab):
             # Sensitivity (index)
             sens_idx = self.lockin_sensitivity_idx.get()
             self.app.bus.execute(INST_LOCKIN, "set_sensitivity", sens_idx)
+
+            # Input shield mode (default float)
+            self._set_input_shield(self.lockin_input_shield_grounded.get(), post_log=False)
 
             # Output voltage (current × R)
             self._set_current()

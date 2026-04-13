@@ -34,6 +34,7 @@ from v3.core.measurements import (
     lockin_auto_gain,
     lockin_auto_phase,
     set_lockin_frequency,
+    set_lockin_sensitivity,
     set_lockin_current,
     set_dyna_field,
     set_dyna_temp,
@@ -240,16 +241,33 @@ class TestMeasureLockinContinuous(unittest.TestCase):
         self.assertIn("Time", result)
         self.assertIn("LockIn_Frequency", result)
 
-    def test_posts_zero_voltage_when_excitation_off(self):
+    def test_posts_output_voltage_event(self):
         ctx = _make_context()
         measure_lockin_continuous(
             ctx,
             current=0.001,
             series_resistance=1000.0,
-            excitation="off",
         )
         events = ctx.ui_bus.drain()
-        self.assertAlmostEqual(events[W_LOCKIN_OUTPUT_VOLTAGE], 0.0)
+        self.assertAlmostEqual(events[W_LOCKIN_OUTPUT_VOLTAGE], 1.0)
+
+    def test_continuous_measure_disables_excitation_management_and_settling_wait(self):
+        ctx = _make_context()
+        mock_lockin = ctx.bus.get_raw(INST_LOCKIN)
+
+        measure_lockin_continuous(
+            ctx,
+            current=0.001,
+            series_resistance=1000.0,
+        )
+
+        mock_lockin.sine_output_on.assert_not_called()
+        mock_lockin.sine_output_off.assert_not_called()
+        self.assertIs(mock_lockin.measure.call_args.kwargs.get("manage_excitation"), False)
+        self.assertIs(
+            mock_lockin.measure.call_args.kwargs.get("wait_for_settling_when_no_autorange"),
+            False,
+        )
 
 
 # ============================================================================
@@ -474,6 +492,12 @@ class TestLockinUtilities(unittest.TestCase):
         set_lockin_frequency(ctx, 137.0)
         mock_lockin = ctx.bus.get_raw(INST_LOCKIN)
         mock_lockin.set_frequency.assert_called_with(137.0)
+
+    def test_set_sensitivity(self):
+        ctx = _make_context()
+        set_lockin_sensitivity(ctx, 17)
+        mock_lockin = ctx.bus.get_raw(INST_LOCKIN)
+        mock_lockin.set_sensitivity.assert_called_with(17)
 
     def test_set_current_clamps_to_minimum_voltage(self):
         ctx = _make_context()

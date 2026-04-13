@@ -31,6 +31,7 @@ from v3.core.constants import (
     DEFAULT_LOG_DIR,
     DYNA_HOST,
     DYNA_PORT,
+    DYNA_COOLING_CONFIRM_THRESHOLD_K,
     INST_DYNA,
     INST_KEITHLEY2450,
     INST_KEITHLEY2600,
@@ -42,17 +43,22 @@ from v3.core.constants import (
     LOGICAL_CHANNELS,
     MAX_SWITCH_CONFIGS,
     MIN_SWITCH_CONFIGS,
+    SWITCH_ADDRESS_7001,
+    SWITCH_ADDRESS_MY,
     SWITCH_ADDRESS,
+    SWITCH_BACKEND,
     UI_TICK_INTERVAL_MS,
 )
 from v3.core.data_manager import DataManager
-from v3.core.experiment_engine import ExperimentEngine
+from v3.core.experiment_engine import EngineStateError, ExperimentEngine
 from v3.core.helmholtz_controller import HelmholtzController
 from v3.core.instrument_bus import InstrumentBus
 from v3.core.measurements import MeasurementContext
 from v3.core.script_parser import ScriptParser, ScriptValidator
 from v3.core.ui_events import (
     UIEventBus,
+    W_DYNA_CHAMBER,
+    W_DYNA_CHAMBER_STATUS,
     W_DYNA_CONNECTED,
     W_DYNA_FIELD,
     W_DYNA_FIELD_STATUS,
@@ -62,6 +68,7 @@ from v3.core.ui_events import (
     W_HELMHOLTZ_CONNECTED,
     W_INSTRUMENT_CONNECTED,
     W_INSTRUMENT_DISCONNECTED,
+    W_INSTRUMENT_ERROR,
     W_LED_DYNA,
     W_LED_HALL,
     W_LED_HELMHOLTZ,
@@ -78,6 +85,8 @@ from v3.gui.helmholtz_tab import HelmholtzTab
 from v3.gui.lockin_tab import LockInTab
 from v3.gui.results_tab import ResultsTab
 from v3.gui.switch_tab import SwitchTab
+from v3.gui.components import NotificationToast
+from v3.gui.theme import apply_theme
 
 logger = logging.getLogger(__name__)
 
@@ -124,7 +133,7 @@ _DYNA_FIELD_STATES: dict[int, str] = {
     1: "Stable",
     2: "Switch Warming",
     3: "Switch Cooling",
-    4: "Holding (driven)",
+    4: "Holding",
     5: "Iterate",
     6: "Ramping",
     7: "Ramping",
@@ -134,6 +143,21 @@ _DYNA_FIELD_STATES: dict[int, str] = {
     11: "Quenching",
     12: "Charging Error",
     14: "PSU Error",
+    15: "General Failure",
+}
+
+_DYNA_CHAMBER_STATES: dict[int, str] = {
+    0: "Unknown",
+    1: "Purged and Sealed",
+    2: "Vented and Sealed",
+    3: "Sealed",
+    4: "Purging/Sealing",
+    5: "Venting/Sealing",
+    6: "Pre-HiVac",
+    7: "HiVac",
+    8: "Pumping",
+    9: "Flooding",
+    14: "HiVac Error",
     15: "General Failure",
 }
 
@@ -149,12 +173,7 @@ class MeasureApp:
         self.root = root
         self.USE_MOCKUP = use_mockup
         self.root.title("Keithley and Dyna Controller GUI")
-        self.root.configure(bg="#000000")
-
-        style = ttk.Style(self.root)
-        style.configure("TLabelframe.Label", font=("Arial", 10, "bold"))
-        style.configure("SectionTitle.TLabel", font=("Arial", 10, "bold"))
-        style.configure("SectionTitleLarge.TLabel", font=("Arial", 11, "bold"))
+        apply_theme(self.root)
 
         # ==============================================================
         # Core subsystems
@@ -185,10 +204,13 @@ class MeasureApp:
         self._dyna_snapshot: dict[str, Any] = {
             "temp_val": None,
             "field_val": None,
+            "chamber_val": None,
             "temp_text": "N/A",
             "field_text": "N/A",
+            "chamber_text": "N/A",
             "temp_status": "N/A",
             "field_status": "N/A",
+            "chamber_status": "N/A",
         }
         self._dyna_poller_stop = threading.Event()
         self._dyna_poller_thread: threading.Thread | None = None
@@ -206,6 +228,7 @@ class MeasureApp:
         self._update_ui_id: str | None = None
         self._pending_callbacks: list[str] = []
         self._shutting_down = False
+        self._active_toasts: list[NotificationToast] = []
         self.current_temp: float | None = None
         self.current_inplane_field: float | None = None
 
@@ -306,13 +329,13 @@ class MeasureApp:
         required_height = self.root.winfo_reqheight()
         screen_width = self.root.winfo_screenwidth()
         screen_height = self.root.winfo_screenheight()
-        default_width = int(screen_width * 0.90)
-        default_height = int(screen_height * 0.88)
+        default_width = int(screen_width * 0.85)
+        default_height = int(screen_height * 0.80)
         max_width = int(screen_width * 0.97)
-        max_height = int(screen_height * 0.95)
+        max_height = int(screen_height * 0.90)
         window_width = min(max(required_width + 10, default_width), max_width)
         window_height = min(max(required_height + 10, default_height), max_height)
-        self.root.minsize(900, 650)
+        self.root.minsize(820, 560)
         pos_x = max(0, (screen_width - window_width) // 2)
         pos_y = max(0, (screen_height - window_height) // 2)
         self.root.geometry(f"{window_width}x{window_height}+{pos_x}+{pos_y}")
@@ -379,6 +402,8 @@ class MeasureApp:
             raise ValueError(f"At least {MIN_SWITCH_CONFIGS} channel configurations are required")
 
         token = str(channel).strip().lower()
+        if token in {"a", "b"}:
+            raise ValueError("Channels 'a' and 'b' are mandatory and cannot be removed")
         if token not in self.channels:
             raise ValueError(f"Unknown channel '{token}'")
 
@@ -437,8 +462,22 @@ class MeasureApp:
     def _sync_hall_calibration_from_ui(self) -> None:
         """Keep core Hall calibration aligned with Hall tab settings."""
         try:
-            self.calibration.hall_offset_v = float(self.hall_tab.k2450_hall_offset.get())
-            self.calibration.hall_v2gauss = float(self.hall_tab.k2450_hall_v2gauss.get())
+            hall_offset_v = float(self.hall_tab.k2450_hall_offset.get())
+            hall_v2gauss = float(self.hall_tab.k2450_hall_v2gauss.get())
+
+            self.calibration.hall_offset_v = hall_offset_v
+            self.calibration.hall_v2gauss = hall_v2gauss
+
+            hall_bar = str(self.hall_tab.k2450_hall_bar.get()).strip()
+            v_per_g = None
+            if hall_v2gauss != 0.0:
+                v_per_g = 1.0 / hall_v2gauss
+
+            self.data_mgr.set_hall_metadata(
+                hall_bar=hall_bar,
+                v_per_g=v_per_g,
+                hall_offset_v=hall_offset_v,
+            )
         except Exception:
             pass
 
@@ -499,6 +538,40 @@ class MeasureApp:
     # ==================================================================
     # Instrument connection / disconnection
     # ==================================================================
+    def _show_toast(self, message: str, *, level: str = "info", duration_ms: int = 4000) -> None:
+        """Show a short-lived notification in the lower-right corner."""
+        msg = str(message).strip()
+        if not msg:
+            return
+
+        if len(msg) > 220:
+            msg = msg[:217] + "..."
+
+        # Drop stale handles.
+        self._active_toasts = [
+            t for t in self._active_toasts if t.win is not None and t.win.winfo_exists()
+        ]
+
+        toast = NotificationToast(
+            self.root,
+            message=msg,
+            level=level,
+            duration_ms=duration_ms,
+        )
+        toast.show(y_offset=len(self._active_toasts) * 44)
+        self._active_toasts.append(toast)
+
+    def post_instrument_error(self, key: str, message: str) -> None:
+        """Post an instrument-specific error to both system and instrument views."""
+        payload = {
+            "instrument": str(key),
+            "message": str(message),
+        }
+        self.ui_bus.post(W_INSTRUMENT_ERROR, payload)
+        self._show_toast(f"{key}: {message}", level="error", duration_ms=5000)
+        if str(key) == "dyna":
+            self.ui_bus.post_dyna_log(f"Error: {message}")
+
     def connect_instrument(self, key: str) -> bool:
         """Connect an instrument by user-facing key.
 
@@ -526,6 +599,7 @@ class MeasureApp:
             return success
         except Exception as exc:  # noqa: BLE001
             logger.exception("Failed to connect %s", key)
+            self.post_instrument_error(key, str(exc))
             self.ui_bus.post_log(f"Connection error ({key}): {exc}")
             return False
 
@@ -542,6 +616,7 @@ class MeasureApp:
             handlers[key]()
         except Exception as exc:  # noqa: BLE001
             logger.exception("Failed to disconnect %s", key)
+            self.post_instrument_error(key, str(exc))
             self.ui_bus.post_log(f"Disconnect error ({key}): {exc}")
         finally:
             self.instrument_connected[key] = False
@@ -651,13 +726,30 @@ class MeasureApp:
                 logger.exception("LockIn cleanup failed")
 
     def _connect_switch(self) -> bool:
-        if self.USE_MOCKUP:
-            from Utility.MySwitch import MockSwitch as MySwitch
+        backend = str(SWITCH_BACKEND).strip().lower()
+
+        if backend == "keithley7001":
+            if self.USE_MOCKUP:
+                from Utility.Keithley7001 import MockKeithley7001 as SwitchDriver
+                inst = SwitchDriver()
+            else:
+                from Utility.Keithley7001 import Keithley7001 as SwitchDriver  # type: ignore[assignment]
+                inst = SwitchDriver(resource_name=SWITCH_ADDRESS_7001)
+        elif backend in {"my_switch", "legacy"}:
+            if self.USE_MOCKUP:
+                from Utility.MySwitch import MockSwitch as SwitchDriver
+            else:
+                from Utility.MySwitch import MySwitch as SwitchDriver  # type: ignore[assignment]
+            inst = SwitchDriver()
+            if not self.USE_MOCKUP:
+                # Keep backward compatibility with older single-address constant.
+                inst.address = SWITCH_ADDRESS_MY or SWITCH_ADDRESS
         else:
-            from Utility.MySwitch import MySwitch  # type: ignore[assignment]
-        inst = MySwitch()
-        if not self.USE_MOCKUP:
-            inst.address = SWITCH_ADDRESS
+            raise ValueError(
+                f"Unsupported switch backend '{SWITCH_BACKEND}'. "
+                "Use 'my_switch' or 'keithley7001'."
+            )
+
         inst.connect()
         inst.open_all()
         self.bus.connect(INST_SWITCH, inst)
@@ -691,6 +783,11 @@ class MeasureApp:
                 try:
                     temp = self.bus.execute(INST_DYNA, "get_temperature")
                     field = self.bus.execute(INST_DYNA, "get_field")
+                    chamber = None
+                    try:
+                        chamber = self.bus.execute(INST_DYNA, "get_chamber")
+                    except Exception:
+                        chamber = None
 
                     temp_status_raw = None
                     if isinstance(temp, (list, tuple)):
@@ -708,24 +805,51 @@ class MeasureApp:
 
                     temp_raw = temp[1] if isinstance(temp, (list, tuple)) else temp
                     field_raw = field[1] if isinstance(field, (list, tuple)) else field
+                    chamber_raw = None
+                    chamber_status_raw = None
+                    if isinstance(chamber, (list, tuple)):
+                        if len(chamber) >= 3:
+                            chamber_raw = chamber[1]
+                            chamber_status_raw = chamber[2]
+                        elif len(chamber) >= 2:
+                            chamber_raw = chamber[1]
+                            chamber_status_raw = chamber[1]
+                        elif len(chamber) >= 1:
+                            chamber_raw = chamber[0]
+                            chamber_status_raw = chamber[0]
+                    elif chamber is not None:
+                        chamber_raw = chamber
+                        chamber_status_raw = chamber
 
                     temp_val = None if temp_raw is None else float(temp_raw)
                     field_val = None if field_raw is None else float(field_raw)
+                    chamber_val = None
+                    if chamber_raw is not None:
+                        try:
+                            chamber_val = int(float(chamber_raw))
+                        except Exception:
+                            chamber_val = None
                     temp_status = self._normalize_dyna_status("temp", temp_status_raw)
                     field_status = self._normalize_dyna_status("field", field_status_raw)
+                    chamber_status = self._normalize_dyna_status("chamber", chamber_status_raw)
 
                     with self._dyna_snapshot_lock:
                         self._dyna_snapshot["temp_val"] = temp_val
                         self._dyna_snapshot["field_val"] = field_val
+                        self._dyna_snapshot["chamber_val"] = chamber_val
                         self._dyna_snapshot["temp_text"] = f"{temp_val:.2f} K" if temp_val is not None else "N/A"
                         self._dyna_snapshot["field_text"] = f"{field_val:.1f} Oe" if field_val is not None else "N/A"
+                        self._dyna_snapshot["chamber_text"] = chamber_status
                         self._dyna_snapshot["temp_status"] = temp_status
                         self._dyna_snapshot["field_status"] = field_status
+                        self._dyna_snapshot["chamber_status"] = chamber_status
 
                     self.ui_bus.post(W_DYNA_TEMP, temp_val)
                     self.ui_bus.post(W_DYNA_FIELD, field_val)
+                    self.ui_bus.post(W_DYNA_CHAMBER, chamber_val)
                     self.ui_bus.post(W_DYNA_TEMP_STATUS, temp_status)
                     self.ui_bus.post(W_DYNA_FIELD_STATUS, field_status)
+                    self.ui_bus.post(W_DYNA_CHAMBER_STATUS, chamber_status)
                 except Exception:  # noqa: BLE001
                     logger.debug("Dyna poll error", exc_info=True)
 
@@ -745,7 +869,14 @@ class MeasureApp:
         if not text:
             return "N/A"
 
-        state_map = _DYNA_TEMP_STATES if kind == "temp" else _DYNA_FIELD_STATES
+        if kind == "temp":
+            state_map = _DYNA_TEMP_STATES
+        elif kind == "field":
+            state_map = _DYNA_FIELD_STATES
+        elif kind == "chamber":
+            state_map = _DYNA_CHAMBER_STATES
+        else:
+            state_map = {}
         try:
             code = int(float(text))
             return state_map.get(code, text)
@@ -924,6 +1055,21 @@ class MeasureApp:
             self.ui_bus.post_log("A script is already running.")
             return
 
+        # Abort cleanup may briefly keep engine in STOPPING; don't try to start until IDLE.
+        if getattr(self.engine.state, "value", "") == "stopping":
+            settled = self.engine.join(timeout=2.0)
+            if not settled or getattr(self.engine.state, "value", "") != "idle":
+                self.ui_bus.post_log("Script engine is still stopping. Please try again in a moment.")
+                return
+
+        if getattr(self.engine.state, "value", "") == "error":
+            try:
+                self.engine.reset()
+                self.ui_bus.post_log("Previous script error state cleared.")
+            except Exception as exc:  # noqa: BLE001
+                self.ui_bus.post_log(f"Cannot reset script engine state: {exc}")
+                return
+
         commands = self.parser.parse(script_text)
         errors = self.validator.validate(
             commands,
@@ -935,12 +1081,14 @@ class MeasureApp:
         if real_errors:
             msg = "\n".join(f"L{e.line_number}: {e.message}" for e in real_errors)
             self.ui_bus.post_log(f"Script validation errors:\n{msg}")
+            self._show_toast("Script validation failed. Check System Log.", level="error", duration_ms=5000)
             return
 
         warnings = [e for e in errors if e.severity == "warning"]
         if warnings:
             msg = "\n".join(f"L{w.line_number}: {w.message}" for w in warnings)
             self.ui_bus.post_log(f"Warnings:\n{msg}")
+            self._show_toast("Script has warnings. Check System Log.", level="warn", duration_ms=4500)
 
         # Import the script runner
         from v3.gui.script_runner import run_commands
@@ -950,7 +1098,12 @@ class MeasureApp:
         def target(engine: ExperimentEngine) -> None:
             run_commands(engine, ctx, commands, self)
 
-        self.engine.start(target)
+        try:
+            self.engine.start(target)
+        except EngineStateError as exc:
+            self.ui_bus.post_log(f"Cannot start script: {exc}")
+            self._show_toast(f"Cannot start script: {exc}", level="error", duration_ms=5000)
+            return
         self.ui_bus.post_log("Script started.")
         self.ui_bus.post_log(
             "Power reminder: display-off is OK, but if Windows enters Sleep/Hibernate the script pauses."
@@ -1005,7 +1158,8 @@ class MeasureApp:
                 except Exception:
                     rate = 0.1
                 self.helmholtz.set_field(0.0, rate_mA_per_s=rate)
-                self.helmholtz.ramp_to_target(threading.Event())
+                # Do not block abort flow; the controller/UI service loop continues the ramp asynchronously.
+                logger.info("Abort safe-state: Helmholtz target set to 0 G (non-blocking).")
         except Exception:  # noqa: BLE001
             logger.exception("Abort safe-state failed for Helmholtz ramp-to-zero")
 
@@ -1028,7 +1182,20 @@ class MeasureApp:
             except Exception:
                 logger.exception("Script save prompt failed during close")
 
+        try:
+            if not self._confirm_close_with_nonzero_helmholtz_current():
+                return
+        except Exception:
+            logger.exception("Helmholtz close-current confirmation failed")
+
         self._shutting_down = True
+
+        # Best effort: try to disable Helmholtz while sessions are still alive.
+        try:
+            if self.instrument_connected.get("helmholtz"):
+                self.helmholtz.disable_output()
+        except Exception:  # noqa: BLE001
+            logger.exception("Early Helmholtz disable during shutdown failed")
 
         # 1. Stop background threads
         self._dyna_poller_stop.set()
@@ -1080,8 +1247,20 @@ class MeasureApp:
         except Exception:  # noqa: BLE001
             pass
 
+        # Disconnect Helmholtz first via dedicated path so output-disable is always
+        # attempted before driver session teardown.
+        if self.instrument_connected.get("helmholtz"):
+            try:
+                self._disconnect_helmholtz()
+            except Exception:  # noqa: BLE001
+                logger.exception("Helmholtz dedicated shutdown disconnect failed")
+            finally:
+                self.instrument_connected["helmholtz"] = False
+
         # Disconnect low-level objects directly
         for inst_key, bus_name in _KEY_TO_BUS.items():
+            if inst_key == "helmholtz":
+                continue
             if not self.instrument_connected.get(inst_key):
                 continue
             try:
@@ -1109,6 +1288,34 @@ class MeasureApp:
         except Exception:  # noqa: BLE001
             pass
 
+    def _helmholtz_currents_nonzero(self, eps_a: float = 1e-6) -> tuple[bool, float, float]:
+        """Return whether Helmholtz channel currents are non-zero, with values."""
+        try:
+            cur_a = float(self.helmholtz.actual_current_a)
+            cur_b = float(self.helmholtz.actual_current_b)
+        except Exception:
+            return (False, 0.0, 0.0)
+        nonzero = abs(cur_a) > eps_a or abs(cur_b) > eps_a
+        return (nonzero, cur_a, cur_b)
+
+    def _confirm_close_with_nonzero_helmholtz_current(self) -> bool:
+        """Warn before close if Helmholtz current is non-zero. Returns True to continue."""
+        if not self.instrument_connected.get("helmholtz"):
+            return True
+
+        nonzero, cur_a, cur_b = self._helmholtz_currents_nonzero()
+        if not nonzero:
+            return True
+
+        msg = (
+            "Helmholtz current is not zero.\n\n"
+            f"Current A: {cur_a:.6f} A\n"
+            f"Current B: {cur_b:.6f} A\n\n"
+            "Please ramp both currents down to zero before closing the program.\n"
+            "Do you want to close anyway?"
+        )
+        return bool(messagebox.askyesno("Helmholtz Current Warning", msg, icon="warning"))
+
     # ==================================================================
     # Helpers
     # ==================================================================
@@ -1117,6 +1324,214 @@ class MeasureApp:
             "Mock Mode",
             "Running in MOCKUP mode — no real instruments.",
         )
+
+    def _needs_dyna_cooling_confirmation(self, target_temp_k: float, current_temp_k: float | None) -> bool:
+        if current_temp_k is None:
+            return False
+        return (
+            float(current_temp_k) >= DYNA_COOLING_CONFIRM_THRESHOLD_K
+            and float(target_temp_k) < DYNA_COOLING_CONFIRM_THRESHOLD_K
+        )
+
+    def _show_dyna_cooling_confirmation_dialog(
+        self,
+        *,
+        current_temp_k: float,
+        target_temp_k: float,
+        source: str,
+    ) -> str:
+        decision = {"action": "abort"}
+        dialog = tk.Toplevel(self.root)
+        dialog.title("Dyna Cooling Safety")
+        dialog.transient(self.root)
+        dialog.resizable(False, False)
+
+        container = ttk.Frame(dialog, padding=12)
+        container.grid(row=0, column=0, sticky="nsew")
+        dialog.grid_columnconfigure(0, weight=1)
+        dialog.grid_rowconfigure(0, weight=1)
+
+        source_text = "script" if source.startswith("script") else "manual control"
+        ttk.Label(
+            container,
+            text=(
+                "Dyna is not in purged mode.\n"
+                "Cooling below 295 K requires the chamber to be purged and sealed."
+            ),
+            justify="left",
+        ).grid(row=0, column=0, columnspan=3, sticky="w")
+
+        ttk.Label(
+            container,
+            text=f"Source: {source_text}",
+            foreground="#666666",
+        ).grid(row=1, column=0, columnspan=3, sticky="w", pady=(8, 6))
+
+        def _close(action: str) -> None:
+            decision["action"] = action
+            try:
+                dialog.grab_release()
+            except Exception:
+                pass
+            dialog.destroy()
+
+        abort_btn = ttk.Button(container, text="Abort", command=lambda: _close("abort"))
+        abort_btn.grid(row=2, column=0, sticky="e", padx=(0, 6))
+        continue_btn = ttk.Button(container, text="Continue", command=lambda: _close("continue"))
+        continue_btn.grid(row=2, column=1, sticky="w", padx=(0, 6))
+        purge_btn = ttk.Button(
+            container,
+            text="Purge and Continue",
+            command=lambda: _close("purge_continue"),
+        )
+        purge_btn.grid(row=2, column=2, sticky="w")
+
+        dialog.protocol("WM_DELETE_WINDOW", lambda: _close("abort"))
+        dialog.update_idletasks()
+        try:
+            root_x = int(self.root.winfo_rootx())
+            root_y = int(self.root.winfo_rooty())
+            root_w = int(self.root.winfo_width())
+            root_h = int(self.root.winfo_height())
+            dlg_w = int(dialog.winfo_reqwidth())
+            dlg_h = int(dialog.winfo_reqheight())
+            pos_x = root_x + max(0, (root_w - dlg_w) // 2)
+            pos_y = root_y + max(0, (root_h - dlg_h) // 2)
+            dialog.geometry(f"+{pos_x}+{pos_y}")
+        except Exception:
+            pass
+        dialog.grab_set()
+        continue_btn.focus_set()
+        dialog.wait_window()
+        return str(decision["action"])
+
+    def _is_dyna_purged_state(self, chamber_val: object, chamber_status: object) -> bool:
+        try:
+            if chamber_val is not None and int(float(chamber_val)) == 1:
+                return True
+        except Exception:
+            pass
+
+        text = str(chamber_status).strip().lower() if chamber_status is not None else ""
+        return text in {"purged and sealed", "purge and seal", "purged/sealed"}
+
+    def _wait_for_dyna_purged(self, timeout_s: float = 1800.0, poll_s: float = 1.0) -> bool:
+        deadline = time.time() + max(1.0, float(timeout_s))
+
+        while time.time() < deadline:
+            try:
+                snap = self.get_dyna_snapshot()
+                if self._is_dyna_purged_state(snap.get("chamber_val"), snap.get("chamber_status")):
+                    return True
+            except Exception:
+                pass
+
+            try:
+                if self.bus.is_connected(INST_DYNA):
+                    chamber = self.bus.execute(INST_DYNA, "get_chamber")
+                    chamber_val = None
+                    chamber_status = None
+                    if isinstance(chamber, (list, tuple)):
+                        if len(chamber) >= 3:
+                            chamber_val = chamber[1]
+                            chamber_status = chamber[2]
+                        elif len(chamber) >= 2:
+                            chamber_val = chamber[1]
+                            chamber_status = chamber[1]
+                        elif len(chamber) >= 1:
+                            chamber_val = chamber[0]
+                            chamber_status = chamber[0]
+                    else:
+                        chamber_status = chamber
+
+                    if self._is_dyna_purged_state(chamber_val, chamber_status):
+                        return True
+            except Exception:
+                pass
+
+            if threading.current_thread() is threading.main_thread():
+                try:
+                    self.root.update_idletasks()
+                    self.root.update()
+                except Exception:
+                    pass
+
+            time.sleep(max(0.1, float(poll_s)))
+
+        return False
+
+    def confirm_dyna_low_temp_transition(self, target_temp_k: float, *, source: str = "manual") -> bool:
+        current_temp = self.current_temp
+        if current_temp is None:
+            try:
+                snap_temp = self.get_dyna_snapshot().get("temp_val")
+                current_temp = float(snap_temp) if snap_temp is not None else None
+            except Exception:
+                current_temp = None
+
+        if not self._needs_dyna_cooling_confirmation(target_temp_k, current_temp):
+            return True
+
+        try:
+            snap = self.get_dyna_snapshot()
+            if self._is_dyna_purged_state(snap.get("chamber_val"), snap.get("chamber_status")):
+                return True
+        except Exception:
+            pass
+
+        if threading.current_thread() is threading.main_thread():
+            action = self._show_dyna_cooling_confirmation_dialog(
+                current_temp_k=float(current_temp),
+                target_temp_k=float(target_temp_k),
+                source=source,
+            )
+            if action == "continue":
+                return True
+            if action == "purge_continue":
+                try:
+                    self.ui_bus.post_log("Setting Dyna chamber to Purge and Seal before cooling...")
+                    self.bus.execute(INST_DYNA, "set_chamber", 1)
+                    self.ui_bus.post_log("Waiting for Dyna chamber to reach Purged and Sealed state...")
+                    if self._wait_for_dyna_purged():
+                        self.ui_bus.post_log("Dyna chamber is Purged and Sealed. Cooling may proceed.")
+                        return True
+                    self.ui_bus.post_log("Timed out waiting for Dyna chamber to become Purged and Sealed.")
+                except Exception as exc:
+                    self.ui_bus.post_log(f"Failed to purge Dyna chamber: {exc}")
+                return False
+            return False
+
+        done = threading.Event()
+        result = {"action": "abort"}
+
+        def _prompt() -> None:
+            try:
+                result["action"] = self._show_dyna_cooling_confirmation_dialog(
+                    current_temp_k=float(current_temp),
+                    target_temp_k=float(target_temp_k),
+                    source=source,
+                )
+            finally:
+                done.set()
+
+        self.root.after(0, _prompt)
+        done.wait()
+        action = str(result.get("action", "abort"))
+        if action == "continue":
+            return True
+        if action == "purge_continue":
+            try:
+                self.ui_bus.post_log("Setting Dyna chamber to Purge and Seal before cooling...")
+                self.bus.execute(INST_DYNA, "set_chamber", 1)
+                self.ui_bus.post_log("Waiting for Dyna chamber to reach Purged and Sealed state...")
+                if self._wait_for_dyna_purged():
+                    self.ui_bus.post_log("Dyna chamber is Purged and Sealed. Cooling may proceed.")
+                    return True
+                self.ui_bus.post_log("Timed out waiting for Dyna chamber to become Purged and Sealed.")
+            except Exception as exc:
+                self.ui_bus.post_log(f"Failed to purge Dyna chamber: {exc}")
+            return False
+        return False
 
     def _auto_connect_all(self) -> None:
         """Auto-connect all instruments at startup (matching V2 behavior)."""

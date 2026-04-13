@@ -14,7 +14,11 @@ from __future__ import annotations
 KEITHLEY2600_ADDRESS = "USB0::0x05E6::0x2614::4083836::INSTR"
 KEITHLEY2450_ADDRESS = "GPIB0::18::INSTR"
 LOCKIN_ADDRESS = "GPIB0::8::INSTR"
-SWITCH_ADDRESS = "USB0::0x0957::0x0507::MY56482243::INSTR"
+SWITCH_BACKEND = "my_switch"  # "my_switch" | "keithley7001"
+SWITCH_ADDRESS_MY = "USB0::0x0957::0x0507::MY56482243::INSTR"
+SWITCH_ADDRESS_7001 = "GPIB0::7::INSTR"
+# Backward-compatible alias used in older code paths.
+SWITCH_ADDRESS = SWITCH_ADDRESS_MY
 
 #DYNA_HOST = '132.68.75.98'
 DYNA_HOST = "localhost"
@@ -56,6 +60,7 @@ HELMHOLTZ_MAX_CURRENT_PER_COIL_A = 1.5  # per-coil limit (current / 2)
 TEMP_MIN_K = 1.6
 TEMP_MAX_K = 400.0
 FIELD_MAX_OE = 140_000.0
+DYNA_COOLING_CONFIRM_THRESHOLD_K = 295.0
 
 # ============================================================================
 # Default operational parameters
@@ -65,6 +70,8 @@ HELMHOLTZ_MAX_RAMP_RATE_mA_per_s = 100.0
 DEFAULT_COMPLIANCE_V = 3.0
 DEFAULT_DYNA_FIELD_RATE = 50.0        # Oe/s (hardware-safe maximum)
 DEFAULT_DYNA_TEMP_RATE = 10.0         # K/min
+DYNA_TEMP_RATE_MIN_K_MIN = 0.0        # K/min (minimum allowed temperature rate)
+DYNA_TEMP_RATE_MAX_K_MIN = 50.0       # K/min (maximum allowed temperature rate)
 
 # Wait / stability
 STABILITY_POLL_INTERVAL_S = 2.0

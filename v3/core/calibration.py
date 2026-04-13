@@ -1,8 +1,8 @@
 """
 v3.core.calibration  —  Helmholtz and Hall-bar calibration constants and helpers.
 
-Centralizes all field ↔ current conversions to eliminate the inconsistent
-hardcoded constants scattered across V2  (341.71 vs 683.42 vs 1/341.71).
+Centralizes all field ↔ current conversions to eliminate inconsistent
+hardcoded constants.
 """
 
 from __future__ import annotations
@@ -17,8 +17,9 @@ class CalibrationConfig:
 
     Helmholtz coil system
     ---------------------
-    Two coils wired in series; each coil produces ``ga_per_coil`` Gauss per
-    Ampere.  Total field =  current  × num_coils × ga_per_coil.
+    ``ga_per_coil`` is kept as a legacy field name, but represents the
+    **total Helmholtz system gain** in Gauss per Ampere (G/A), not per-coil
+    gain.  ``num_coils`` is still used for total↔per-coil current splitting.
 
     Hall bar
     --------
@@ -49,7 +50,8 @@ class CalibrationConfig:
     _hall_mock_rng: random.Random = field(init=False, repr=False)
 
     def __post_init__(self) -> None:
-        self.ga_total = self.ga_per_coil * self.num_coils
+        # IMPORTANT: ga_per_coil is legacy-named and stores total Helmholtz gain.
+        self.ga_total = float(self.ga_per_coil)
         self._hall_mock_rng = random.Random(self.hall_mock_seed)
 
     # ------------------------------------------------------------------

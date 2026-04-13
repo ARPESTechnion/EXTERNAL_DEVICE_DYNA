@@ -1,5 +1,5 @@
 """
-v3.core.script_parser  —  DSL parser, validator, and executor.
+v3.core.script_parser  -  DSL parser, validator, and executor.
 
 Parses the experiment script language into structured command objects,
 validates them, and provides an executor that dispatches to the
@@ -83,10 +83,11 @@ LOOP_COMMANDS = frozenset({
     "scan_dyna_temp",
     "sweep_dyna_field",
     "sweep_dyna_temp",
-    "sweep_dyna_field",
-    "sweep_dyna_temp",
     "scan_helmholtz_field",
     "sweep_helmholtz_field",
+    "scan_ppms_field_and_fix_hall",
+    "time_sweep",
+    "for_loop",
 })
 
 MAX_LOOP_NESTING = 5
@@ -107,12 +108,14 @@ VALID_COMMANDS = frozenset({
     "measure_lockin",
     "continuous_measure_lockin",
     "full_measure",
+    "continuous_full_measure",
     "set_ppms_field_and_fix_hall",
     "scan_ppms_field_and_fix_hall",
     "auto_gain",
     "auto_phase",
     "auto_reserve",
     "set_lockin_time_constant",
+    "set_lockin_sensitivity",
     "set_lockin_filter",
     "set_lockin_frequency",
     "set_lockin_current",
@@ -141,12 +144,14 @@ INSTRUMENT_REQUIREMENTS: dict[str, list[str]] = {
     "measure_lockin": ["lockin"],
     "continuous_measure_lockin": ["lockin"],
     "full_measure": ["hall", "lockin", "switch"],
+    "continuous_full_measure": ["hall", "lockin"],
     "set_ppms_field_and_fix_hall": ["dyna", "helmholtz", "hall"],
     "scan_ppms_field_and_fix_hall": ["dyna", "helmholtz", "hall"],
     "auto_gain": ["lockin"],
     "auto_phase": ["lockin"],
     "auto_reserve": ["lockin"],
     "set_lockin_time_constant": ["lockin"],
+    "set_lockin_sensitivity": ["lockin"],
     "set_lockin_filter": ["lockin"],
     "set_lockin_frequency": ["lockin"],
     "set_lockin_current": ["lockin"],
@@ -169,14 +174,18 @@ MIN_POSITIONAL: dict[str, int] = {
     "close_channel": 1,       # channel_num
     "configure_channel": 5,   # channel ip vp vm im
     "set_lockin_time_constant": 1,  # seconds
+    "set_lockin_sensitivity": 1,  # index (0..26)
     "set_lockin_filter": 1,   # db_oct
     "set_lockin_frequency": 1, # freq_hz
     "set_lockin_current": 1,  # current_A
     "set_ppms_field_and_fix_hall": 2, # field_Oe target_hall_G
     "scan_ppms_field_and_fix_hall": 4, # start end step target_hall_G
     "full_measure": 1,        # channel
+    "continuous_full_measure": 0,
     "run_saved_script": 1,    # filename
     "wait_for": 2,            # event(s) + additional_time
+    "time_sweep": 2,          # sweep_time_s time_gap_s
+    "for_loop": 1,            # iterations
 }
 
 
@@ -197,19 +206,23 @@ ALLOWED_KWARGS: dict[str, set[str]] = {
         "use_autorange", "use_autophase", "sample_delay",
     },
     "continuous_measure_lockin": {
-        "channel", "what", "avg", "sample_delay", "excitation",
+        "channel", "what", "avg", "sample_delay",
     },
     "full_measure": {
         "time_between",
-        "hall_current", "hall_nplc", "hall_compliance", "hall_compliance_v",
-        "hall_voltage_range", "hall_filter", "hall_filter_count", "hall_tbm",
+        "hall_current", "hall_nplc", "hall_compliance",
+        "hall_voltage_range", "hall_filter", "hall_excitation", "tbm",
         "lockin_what", "lockin_current", "lockin_series_resistance", "lockin_avg",
         "lockin_start_sens", "lockin_use_autorange", "lockin_use_autophase", "lockin_sample_delay",
-        "current", "resistance",
+    },
+    "continuous_full_measure": {
+        "time_between",
+        "hall_nplc", "hall_compliance", "hall_voltage_range", "hall_filter",
+        "lockin_what", "lockin_avg", "lockin_use_autorange", "lockin_use_autophase", "lockin_sample_delay",
     },
     "set_lockin_current": {"series_resistance"},
-    "set_ppms_field_and_fix_hall": {"helmholtz_rate"},
-    "scan_ppms_field_and_fix_hall": {"rate"},
+    "set_ppms_field_and_fix_hall": {"helmholtz_rate", "max_current_change"},
+    "scan_ppms_field_and_fix_hall": {"rate", "helmholtz_rate", "max_current_change"},
     "sweep_dyna_field": {"gap_time"},
     "sweep_dyna_temp": {"gap_time"},
     "sweep_helmholtz_field": {"gap_time"},
@@ -275,7 +288,7 @@ class ScriptParser:
         for part in parts[1:]:
             if "=" in part:
                 key, value = part.split("=", 1)
-                kwargs[key] = value
+                kwargs[key.lower()] = value
             else:
                 token = part.strip().lower()
                 if name not in {"add_note"} and token in VALID_COMMANDS:
@@ -446,11 +459,14 @@ class ScriptValidator:
             "sweep_dyna_temp": [0, 1, 2],
             "sweep_helmholtz_field": [0, 1, 2],
             "set_lockin_time_constant": [0],
+            "set_lockin_sensitivity": [0],
             "set_lockin_filter": [0],
             "set_lockin_frequency": [0],
             "set_lockin_current": [0],
             "set_ppms_field_and_fix_hall": [0, 1],
             "scan_ppms_field_and_fix_hall": [0, 1, 2, 3],
+            "time_sweep": [0, 1],
+            "for_loop": [0],
         }
 
         positions = numeric_commands.get(cmd.name, [])
@@ -599,13 +615,33 @@ class ScriptValidator:
                     message="'set_lockin_time_constant' must be > 0 seconds",
                 ))
 
+        elif cmd.name == "set_lockin_sensitivity" and len(cmd.args) >= 1:
+            try:
+                sens_idx = int(float(cmd.args[0]))
+            except Exception:
+                return
+            if sens_idx < 0 or sens_idx > 26:
+                errors.append(ValidationError(
+                    line_number=cmd.line_number,
+                    message="'set_lockin_sensitivity' must be an integer index in range 0..26",
+                ))
+
         elif cmd.name == "full_measure" and len(cmd.args) >= 1:
             ch = cmd.args[0].strip().lower()
             if ch not in _CHANNEL_SET:
                 errors.append(ValidationError(
                     line_number=cmd.line_number,
-                    message=f"'full_measure' argument 1 must be channel name ({_CHANNEL_LIST_TEXT})",
+                    message=f"'{cmd.name}' argument 1 must be channel name ({_CHANNEL_LIST_TEXT})",
                 ))
+            self._validate_full_measure_kwargs(cmd, errors)
+
+        elif cmd.name == "continuous_full_measure":
+            if cmd.args:
+                errors.append(ValidationError(
+                    line_number=cmd.line_number,
+                    message="'continuous_full_measure' takes no positional arguments",
+                ))
+            self._validate_continuous_full_measure_kwargs(cmd, errors)
 
         elif cmd.name == "configure_channel":
             if cmd.args:
@@ -691,12 +727,86 @@ class ScriptValidator:
                         message=f"'{cmd.name} {key}' must be a boolean token (true/false)",
                     ))
 
-        if continuous and "excitation" in cmd.kwargs:
-            excitation = cmd.kwargs["excitation"].strip().lower()
-            if excitation not in {"on", "off", "keep"}:
+
+    def _validate_continuous_full_measure_kwargs(
+        self,
+        cmd: ParsedCommand,
+        errors: list[ValidationError],
+    ) -> None:
+        what = cmd.kwargs.get("lockin_what")
+        if what is not None:
+            allowed = {"x", "y", "r", "theta"}
+            tokens = [t.strip().lower() for t in what.split(",") if t.strip()]
+            invalid = sorted(set(t for t in tokens if t not in allowed))
+            if invalid:
                 errors.append(ValidationError(
                     line_number=cmd.line_number,
-                    message="'continuous_measure_lockin excitation' must be one of: on, off, keep",
+                    message="'continuous_full_measure lockin_what' unknown parameter(s): "
+                    + ", ".join(invalid),
+                ))
+
+        vr_token = cmd.kwargs.get("hall_voltage_range")
+        if vr_token is not None and not self._is_valid_voltage_range_token(vr_token):
+            errors.append(ValidationError(
+                line_number=cmd.line_number,
+                message=(
+                    "'continuous_full_measure hall_voltage_range' must be 'auto' "
+                    "or a numeric value with optional V/mV suffix"
+                ),
+            ))
+
+        for key in ("lockin_use_autorange", "lockin_use_autophase"):
+            if key not in cmd.kwargs:
+                continue
+            token = cmd.kwargs[key].strip().lower()
+            if token not in {"true", "false", "1", "0", "yes", "no", "on", "off"}:
+                errors.append(ValidationError(
+                    line_number=cmd.line_number,
+                    message=f"'continuous_full_measure {key}' must be a boolean token (true/false)",
+                ))
+
+    def _validate_full_measure_kwargs(
+        self,
+        cmd: ParsedCommand,
+        errors: list[ValidationError],
+    ) -> None:
+        what = cmd.kwargs.get("lockin_what")
+        if what is not None:
+            allowed = {"x", "y", "r", "theta"}
+            tokens = [t.strip().lower() for t in what.split(",") if t.strip()]
+            invalid = sorted(set(t for t in tokens if t not in allowed))
+            if invalid:
+                errors.append(ValidationError(
+                    line_number=cmd.line_number,
+                    message="'full_measure lockin_what' unknown parameter(s): "
+                    + ", ".join(invalid),
+                ))
+
+        vr_token = cmd.kwargs.get("hall_voltage_range")
+        if vr_token is not None and not self._is_valid_voltage_range_token(vr_token):
+            errors.append(ValidationError(
+                line_number=cmd.line_number,
+                message=(
+                    "'full_measure hall_voltage_range' must be 'auto' "
+                    "or a numeric value with optional V/mV suffix"
+                ),
+            ))
+
+        hall_excitation = cmd.kwargs.get("hall_excitation")
+        if hall_excitation is not None and hall_excitation.strip().lower() not in {"cycle", "keep"}:
+            errors.append(ValidationError(
+                line_number=cmd.line_number,
+                message="'full_measure hall_excitation' must be one of: cycle, keep",
+            ))
+
+        for key in ("lockin_use_autorange", "lockin_use_autophase"):
+            if key not in cmd.kwargs:
+                continue
+            token = cmd.kwargs[key].strip().lower()
+            if token not in {"true", "false", "1", "0", "yes", "no", "on", "off"}:
+                errors.append(ValidationError(
+                    line_number=cmd.line_number,
+                    message=f"'full_measure {key}' must be a boolean token (true/false)",
                 ))
 
     @staticmethod

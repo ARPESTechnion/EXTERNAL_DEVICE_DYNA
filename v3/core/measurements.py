@@ -1,9 +1,9 @@
 """
-v3.core.measurements  —  Pure-logic measurement functions.
+v3.core.measurements  -  Pure-logic measurement functions.
 
 Each measurement function receives a ``MeasurementContext`` and returns a
 ``dict[str, float]`` data-point.  They do NOT touch Tkinter, do NOT write
-CSV directly, and do NOT manage state — those responsibilities belong to
+CSV directly, and do NOT manage state - those responsibilities belong to
 the caller (ExperimentEngine / GUI layer).
 
 The ``MeasurementContext`` groups the shared dependencies that every
@@ -51,7 +51,7 @@ _DYNA_TEMP_RES_K = 1e-5
 
 
 # ============================================================================
-# MeasurementContext  —  shared dependencies for every measurement
+# MeasurementContext  -  shared dependencies for every measurement
 # ============================================================================
 @dataclass
 class MeasurementContext:
@@ -66,7 +66,7 @@ class MeasurementContext:
     helmholtz: HelmholtzController
     calibration: CalibrationConfig
 
-    # PPMS snapshot accessors — return current values, or NaN
+    # PPMS snapshot accessors - return current values, or NaN
     get_temp: Callable[[], float] = field(default=lambda: NAN)
     get_ppms_field: Callable[[], float] = field(default=lambda: NAN)
 
@@ -179,6 +179,7 @@ def measure_lockin(
     use_autorange: bool = True,
     use_autophase: bool = True,
     sample_delay: float = 0.05,
+    manage_excitation: bool = True,
     tau_idx: int = 0,
     filter_slope_idx: int = 0,
     frequency: float | None = None,
@@ -225,6 +226,7 @@ def measure_lockin(
         use_autorange=use_autorange,
         use_autophase=use_autophase,
         sample_delay=sample_delay,
+        manage_excitation=manage_excitation,
     )
 
     try:
@@ -336,14 +338,13 @@ def measure_lockin_continuous(
     sample_delay: float = 0.05,
     current: float | None = None,
     series_resistance: float | None = None,
-    excitation: str | None = None,
     frequency: float | None = None,
     tau_idx: int = 0,
 ) -> dict[str, Any]:
     """
-    Continuous lock-in measurement — no settling, no auto-adjust.
+    Continuous lock-in measurement - no settling, no auto-adjust.
 
-    Optionally toggles excitation on/off.
+    Excitation is kept ON throughout and after measurement (never turned off).
     """
     ctx.ui_bus.post(W_LED_LOCKIN, True)
 
@@ -354,15 +355,10 @@ def measure_lockin_continuous(
 
     output_voltage = current * series_resistance
 
-    # Handle excitation toggle
-    if excitation == "on":
-        ctx.bus.execute(INST_LOCKIN, "sine_output_on")
-        ctx.ui_bus.post(W_LOCKIN_OUTPUT_VOLTAGE, output_voltage)
-    elif excitation == "off":
-        ctx.bus.execute(INST_LOCKIN, "sine_output_off")
-        ctx.ui_bus.post(W_LOCKIN_OUTPUT_VOLTAGE, 0.0)
-    else:
-        ctx.ui_bus.post(W_LOCKIN_OUTPUT_VOLTAGE, output_voltage)
+    ctx.ui_bus.post(W_LOCKIN_OUTPUT_VOLTAGE, output_voltage)
+
+    # Always preserve excitation state (never turn off the output)
+    manage_excitation = False
 
     # Capture start conditions
     start_temp = ctx.get_temp()
@@ -381,6 +377,8 @@ def measure_lockin_continuous(
         use_autorange=False,
         use_autophase=False,
         sample_delay=sample_delay,
+        manage_excitation=manage_excitation,
+        wait_for_settling_when_no_autorange=False,
     )
 
     # Capture end conditions
@@ -714,7 +712,7 @@ def full_measure(
 
     Performs Hall measurement first, then Lock-in, and merges results.
     """
-    # Hall measurement (skip_write = True equivalent — we merge manually)
+    # Hall measurement (skip_write = True equivalent - we merge manually)
     hall_data = measure_hall(
         ctx,
         current_mA=hall_current_mA,
@@ -793,7 +791,7 @@ def wait_for_temp_stable(
 
             # Handle NaN
             if str(temp).lower() == "nan":
-                ctx.ui_bus.post_log("Warning: Temperature reading is NaN — treating as stable")
+                ctx.ui_bus.post_log("Warning: Temperature reading is NaN - treating as stable")
                 return True
 
         except Exception as e:
@@ -840,7 +838,7 @@ def wait_for_field_stable(
                 stable_count = 0
 
             if str(field_val).lower() == "nan":
-                ctx.ui_bus.post_log("Warning: Field reading is NaN — treating as stable")
+                ctx.ui_bus.post_log("Warning: Field reading is NaN - treating as stable")
                 return True
 
         except Exception as e:
@@ -980,12 +978,17 @@ def set_lockin_frequency(ctx: MeasurementContext, freq: float) -> None:
     ctx.bus.execute(INST_LOCKIN, "set_frequency", freq)
 
 
+def set_lockin_sensitivity(ctx: MeasurementContext, sens_idx: int) -> None:
+    """Set lock-in sensitivity by SR830 sensitivity index."""
+    ctx.bus.execute(INST_LOCKIN, "set_sensitivity", int(sens_idx))
+
+
 def set_lockin_current(
     ctx: MeasurementContext,
     current: float,
     series_resistance: float,
 ) -> float:
-    """Set lock-in excitation current via output voltage = I × R."""
+    """Set lock-in excitation current via output voltage = I x R."""
     lockin = ctx.bus.get_raw(INST_LOCKIN)
     if lockin is None:
         raise RuntimeError("Lock-in instrument is not connected")
@@ -1069,7 +1072,7 @@ def configure_channel(
     nums = [ip, vp, vm, im]
     for n in nums:
         if n < 1 or n > 8:
-            raise ValueError(f"Routing number {n} out of range (1–8)")
+            raise ValueError(f"Routing number {n} out of range (1-8)")
     if len(nums) != len(set(nums)):
         raise ValueError(f"Duplicate routing numbers: {nums}")
 

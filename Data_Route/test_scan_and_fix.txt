@@ -1,0 +1,4 @@
+set_helmholtz_field -1000 100
+wait_for helmholtz 10
+scan_ppms_field_and_fix_hall -20000 -100000 5000 -300 rate=50
+  measure_hall_field current=2 filter_count=10

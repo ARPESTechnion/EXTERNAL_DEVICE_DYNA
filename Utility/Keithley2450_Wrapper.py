@@ -26,6 +26,8 @@ class Keithley2450Wrapper:
         """
         self.instrument = PymeasureKeithley2450(resource_name)
         self.connected = True
+        self._default_timeout_ms = 30000
+        self._set_timeout_ms(self._default_timeout_ms)
         
         # Configure for rear terminals and 4-wire mode
         self.configure_terminals_and_sense()
@@ -37,6 +39,58 @@ class Keithley2450Wrapper:
         self._compliance_current = 0.1
         self._source_enabled = False
         self._voltage_filter_count = 10
+
+    def _set_timeout_ms(self, timeout_ms):
+        """Best-effort VISA timeout configuration in milliseconds."""
+        try:
+            adapter = getattr(self.instrument, "adapter", None)
+            if adapter is None:
+                return
+            connection = getattr(adapter, "connection", None)
+            if connection is not None and hasattr(connection, "timeout"):
+                connection.timeout = int(timeout_ms)
+                return
+            if hasattr(adapter, "timeout"):
+                adapter.timeout = int(timeout_ms)
+        except Exception:
+            # Keep wrapper resilient across pymeasure/adapter variants.
+            pass
+
+    def _set_measure_timeout(self, nplc, repetitions):
+        """
+        Set timeout based on integration time and averaging count.
+        1 NPLC is about 20 ms at 50 Hz mains.
+        """
+        reps = max(int(repetitions), 1)
+        integ = max(float(nplc), 0.0)
+        estimated_s = integ * 0.02 * reps
+        timeout_ms = int(max(self._default_timeout_ms, (estimated_s + 2.0) * 4000.0))
+        self._set_timeout_ms(timeout_ms)
+
+    @staticmethod
+    def _is_recoverable_comm_error(exc):
+        msg = str(exc).lower()
+        return (
+            "vi_error_tmo" in msg
+            or "timeout" in msg
+            or "not found in mapped values" in msg
+            or "invalid literal for int()" in msg
+        )
+
+    def _recover_comm_state(self):
+        """Clear parser/buffer state after a transport or parse failure."""
+        try:
+            self.instrument.write(":ABOR")
+        except Exception:
+            pass
+        try:
+            self.instrument.write("*CLS")
+        except Exception:
+            pass
+        try:
+            self.configure_terminals_and_sense(terminals='REAR', remote_sense=True)
+        except Exception:
+            pass
     
     def configure_terminals_and_sense(self, terminals='REAR', remote_sense=True):
         """
@@ -123,6 +177,8 @@ class Keithley2450Wrapper:
     def reset(self):
         """Reset the instrument to default state."""
         self.instrument.reset()
+        # Reset returns the SMU to defaults, so enforce project wiring mode.
+        self.configure_terminals_and_sense(terminals='REAR', remote_sense=True)
         self._source_current = 0
         self._source_voltage = 0
         self.disable_source()
@@ -191,20 +247,28 @@ class Keithley2450Wrapper:
         tuple
             (average_voltage, std_voltage) in V. If repetitions=1, std=0.0
         """
-        # Use pymeasure's built-in method which properly configures sense function
-        if repetitions <= 1:
-            self.instrument.measure_voltage(nplc=nplc, voltage=voltage, auto_range=auto_range)
-            return (self.instrument.voltage, 0.0)
-        
-        # Multiple measurements for software averaging
-        measurements = []
-        for _ in range(repetitions):
-            self.instrument.measure_voltage(nplc=nplc, voltage=voltage, auto_range=auto_range)
-            measurements.append(self.instrument.voltage)
-        
-        avg_voltage = np.mean(measurements)
-        std_voltage = np.std(measurements, ddof=1) if len(measurements) > 1 else 0.0
-        return (avg_voltage, std_voltage)
+        self._set_measure_timeout(nplc=nplc, repetitions=repetitions)
+        for attempt in range(2):
+            try:
+                # Use pymeasure's built-in method which properly configures sense function
+                if repetitions <= 1:
+                    self.instrument.measure_voltage(nplc=nplc, voltage=voltage, auto_range=auto_range)
+                    return (self.instrument.voltage, 0.0)
+
+                # Multiple measurements for software averaging
+                measurements = []
+                for _ in range(repetitions):
+                    self.instrument.measure_voltage(nplc=nplc, voltage=voltage, auto_range=auto_range)
+                    measurements.append(self.instrument.voltage)
+
+                avg_voltage = np.mean(measurements)
+                std_voltage = np.std(measurements, ddof=1) if len(measurements) > 1 else 0.0
+                return (avg_voltage, std_voltage)
+            except Exception as exc:
+                if attempt == 0 and self._is_recoverable_comm_error(exc):
+                    self._recover_comm_state()
+                    continue
+                raise
     
     def measure_current(self, nplc=1, current=1.05, auto_range=True, repetitions=1):
         """
@@ -226,20 +290,28 @@ class Keithley2450Wrapper:
         tuple
             (average_current, std_current) in A. If repetitions=1, std=0.0
         """
-        # Use pymeasure's built-in method which properly configures sense function
-        if repetitions <= 1:
-            self.instrument.measure_current(nplc=nplc, current=current, auto_range=auto_range)
-            return (self.instrument.current, 0.0)
-        
-        # Multiple measurements for software averaging
-        measurements = []
-        for _ in range(repetitions):
-            self.instrument.measure_current(nplc=nplc, current=current, auto_range=auto_range)
-            measurements.append(self.instrument.current)
-        
-        avg_current = np.mean(measurements)
-        std_current = np.std(measurements, ddof=1) if len(measurements) > 1 else 0.0
-        return (avg_current, std_current)
+        self._set_measure_timeout(nplc=nplc, repetitions=repetitions)
+        for attempt in range(2):
+            try:
+                # Use pymeasure's built-in method which properly configures sense function
+                if repetitions <= 1:
+                    self.instrument.measure_current(nplc=nplc, current=current, auto_range=auto_range)
+                    return (self.instrument.current, 0.0)
+
+                # Multiple measurements for software averaging
+                measurements = []
+                for _ in range(repetitions):
+                    self.instrument.measure_current(nplc=nplc, current=current, auto_range=auto_range)
+                    measurements.append(self.instrument.current)
+
+                avg_current = np.mean(measurements)
+                std_current = np.std(measurements, ddof=1) if len(measurements) > 1 else 0.0
+                return (avg_current, std_current)
+            except Exception as exc:
+                if attempt == 0 and self._is_recoverable_comm_error(exc):
+                    self._recover_comm_state()
+                    continue
+                raise
     
     def voltage_filter_count(self, count):
         """
