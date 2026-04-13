@@ -68,6 +68,8 @@ class HelmholtzTab(BaseTab):
         self._detached_ax = None
         self._detached_line_a = None
         self._detached_line_b = None
+        self._grid_enabled: bool = True
+        self._grid_buttons: list[ttk.Button] = []
 
     def create_widgets(self) -> None:
         # --- Connection header ---
@@ -259,6 +261,7 @@ class HelmholtzTab(BaseTab):
         self.canvas.get_tk_widget().pack(fill="both", expand=True)
         toolbar = NavigationToolbar2Tk(self.canvas, parent)
         toolbar.update()
+        self._add_toolbar_buttons(toolbar, lambda: self._autoscale_plot(self.ax, self.canvas))
 
     def _create_plot_components(self, parent: tk.Widget):
         fig = Figure(figsize=(6.2, 4.9), dpi=100, constrained_layout=True)
@@ -267,6 +270,7 @@ class HelmholtzTab(BaseTab):
         ax.set_xlabel("Time (s)")
         ax.set_ylabel("Resistance (Ω)")
         ax.set_title("Helmholtz Coils Resistance vs Time")
+        ax.grid(self._grid_enabled, which="both", linestyle="--", linewidth=0.6, alpha=0.35)
         line_a, = ax.plot([], [], "-o", label="Ch A", color="tab:blue", markersize=3)
         line_b, = ax.plot([], [], "-o", label="Ch B", color="tab:orange", markersize=3)
         ax.legend(loc="upper left", fontsize=9)
@@ -297,6 +301,10 @@ class HelmholtzTab(BaseTab):
         self._detached_canvas.get_tk_widget().pack(fill="both", expand=True)
         detached_toolbar = NavigationToolbar2Tk(self._detached_canvas, frame)
         detached_toolbar.update()
+        self._add_toolbar_buttons(
+            detached_toolbar,
+            lambda: self._autoscale_plot(self._detached_ax, self._detached_canvas),
+        )
         self._detached_plot_window = win
         win.bind("<Configure>", self._on_detached_window_resize)
         win.protocol("WM_DELETE_WINDOW", self._close_detached_plot_window)
@@ -342,6 +350,43 @@ class HelmholtzTab(BaseTab):
     def _update_plot_components(t_data, res_a, res_b, ax, line_a, line_b, canvas) -> None:
         line_a.set_data(t_data, res_a)
         line_b.set_data(t_data, res_b)
+        ax.relim()
+        ax.autoscale_view()
+        canvas.draw_idle()
+
+    def _add_toolbar_buttons(self, toolbar: tk.Widget, autoscale_cmd) -> None:
+        ttk.Button(toolbar, text="Autoscale", command=autoscale_cmd, width=10).pack(side="left", padx=(6, 0))
+        grid_btn = ttk.Button(toolbar, text="Grid On", command=self._toggle_grid, width=10)
+        grid_btn.pack(side="left", padx=(4, 0))
+        self._grid_buttons.append(grid_btn)
+        self._refresh_grid_button_labels()
+
+    def _refresh_grid_button_labels(self) -> None:
+        text = "Grid On" if self._grid_enabled else "Grid Off"
+        active_buttons: list[ttk.Button] = []
+        for btn in self._grid_buttons:
+            if btn.winfo_exists():
+                btn.configure(text=text)
+                active_buttons.append(btn)
+        self._grid_buttons = active_buttons
+
+    def _toggle_grid(self) -> None:
+        self._grid_enabled = not self._grid_enabled
+        for ax in (self.ax, self._detached_ax):
+            if ax is not None:
+                ax.grid(self._grid_enabled, which="both", linestyle="--", linewidth=0.6, alpha=0.35)
+        if self.canvas is not None:
+            self.canvas.draw_idle()
+        if self._detached_canvas is not None:
+            self._detached_canvas.draw_idle()
+        self._refresh_grid_button_labels()
+
+    @staticmethod
+    def _autoscale_plot(ax, canvas) -> None:
+        if ax is None or canvas is None:
+            return
+        ax.set_autoscalex_on(True)
+        ax.set_autoscaley_on(True)
         ax.relim()
         ax.autoscale_view()
         canvas.draw_idle()
@@ -731,12 +776,14 @@ class HelmholtzTab(BaseTab):
             self.line_b.set_data([], [])
             self.ax.set_autoscalex_on(True)
             self.ax.set_autoscaley_on(True)
+            self.ax.grid(self._grid_enabled, which="both", linestyle="--", linewidth=0.6, alpha=0.35)
             self.canvas.draw()
         if self._detached_canvas is not None and self._detached_ax is not None:
             self._detached_line_a.set_data([], [])
             self._detached_line_b.set_data([], [])
             self._detached_ax.set_autoscalex_on(True)
             self._detached_ax.set_autoscaley_on(True)
+            self._detached_ax.grid(self._grid_enabled, which="both", linestyle="--", linewidth=0.6, alpha=0.35)
             self._detached_canvas.draw()
         self.app.ui_bus.post_log(
             f"[{time.strftime('%H:%M:%S')}] Helmholtz plot reset — showing only new data."

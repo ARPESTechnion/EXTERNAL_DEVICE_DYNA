@@ -1,0 +1,131 @@
+VERSION 1.0 OBJECT
+BEGIN
+  MultiUse = 0
+END
+Attribute VB_Name = "Keithley2614B"
+
+Option Explicit
+
+' ===== VISA objects =====
+Dim rm As Object
+Dim inst As Object
+
+Const KEITHLEY2600_ADDRESS As String = "USB0::0x05E6::0x2614::4083836::INSTR"
+
+' =========================
+' INIT
+' =========================
+Public Function Init() As Boolean
+    On Error GoTo ErrHandler
+    
+    Set rm = CreateObject("VISA.ResourceManager")
+    Set inst = rm.Open(KEITHLEY2600_ADDRESS)
+    
+    inst.WriteString "*CLS" & vbLf
+    Wait(0.05)
+    
+    Init = True
+    Exit Function
+
+ErrHandler:
+    Init = False
+End Function
+
+' =========================
+' CONFIG: V SOURCE
+' =========================
+Public Function Config_setVasSource(ByVal VSource As Double, ByVal ILim As Double, ByVal IRange As Double) As Boolean
+    
+    inst.WriteString "*RST" & vbLf
+    Wait(0.05)
+    inst.WriteString "*CLS" & vbLf
+    Wait(0.05)
+    
+    inst.WriteString "smua.source.func = smua.OUTPUT_DCVOLTS" & vbLf
+    inst.WriteString "smua.source.levelv = " & VSource & vbLf
+    inst.WriteString "smua.source.limiti = " & ILim & vbLf
+    inst.WriteString "smua.measure.rangei = " & IRange & vbLf
+    
+    inst.WriteString "smua.source.autorangev = smua.AUTORANGE_ON" & vbLf
+    inst.WriteString "smua.measure.autorangei = smua.AUTORANGE_ON" & vbLf
+    
+    inst.WriteString "smua.sense = smua.SENSE_LOCAL" & vbLf
+    
+    Config_setVasSource = True
+End Function
+
+' =========================
+' CONFIG: I SOURCE (2W)
+' =========================
+Public Function Config_setIasSource_2W(ByVal ISource As Double, ByVal VLim As Double, ByVal IRange As Double) As Boolean
+    
+    inst.WriteString "*RST" & vbLf
+    Wait(0.05)
+    inst.WriteString "*CLS" & vbLf
+    Wait(0.05)
+    
+    inst.WriteString "smua.source.func = smua.OUTPUT_DCAMPS" & vbLf
+    inst.WriteString "smua.source.leveli = " & ISource & vbLf
+    inst.WriteString "smua.source.limitv = " & VLim & vbLf
+    inst.WriteString "smua.measure.rangei = " & IRange & vbLf
+    
+    inst.WriteString "smua.source.autorangei = smua.AUTORANGE_ON" & vbLf
+    inst.WriteString "smua.measure.autorangev = smua.AUTORANGE_ON" & vbLf
+    
+    inst.WriteString "smua.sense = smua.SENSE_LOCAL" & vbLf
+    
+    Config_setIasSource_2W = True
+End Function
+
+' =========================
+' CONFIG: I SOURCE (4W)
+' =========================
+Public Function Config_setIasSource_4W(ByVal ISource As Double, ByVal VLim As Double, ByVal IRange As Double) As Boolean
+    
+    inst.WriteString "*RST" & vbLf
+    Wait(0.05)
+    inst.WriteString "*CLS" & vbLf
+    Wait(0.05)
+    
+    inst.WriteString "smua.source.func = smua.OUTPUT_DCAMPS" & vbLf
+    inst.WriteString "smua.source.leveli = " & ISource & vbLf
+    inst.WriteString "smua.source.limitv = " & VLim & vbLf
+    inst.WriteString "smua.measure.rangei = " & IRange & vbLf
+    
+    inst.WriteString "smua.source.autorangei = smua.AUTORANGE_ON" & vbLf
+    inst.WriteString "smua.measure.autorangev = smua.AUTORANGE_ON" & vbLf
+    
+    inst.WriteString "smua.sense = smua.SENSE_REMOTE" & vbLf
+    
+    Config_setIasSource_4W = True
+End Function
+
+' =========================
+' READ RESISTANCE
+' =========================
+Public Function ReadRes(ByRef V As Double, ByRef I As Double, ByRef Res As Double) As Boolean
+    
+    Dim response As String
+    
+    inst.WriteString "smua.source.output = smua.OUTPUT_ON" & vbLf
+    Wait(0.1)
+    
+    ' Voltage
+    inst.WriteString "print(smua.measure.v())" & vbLf
+    response = inst.ReadString()
+    V = CDbl(response)
+    
+    ' Current
+    inst.WriteString "print(smua.measure.i())" & vbLf
+    response = inst.ReadString()
+    I = CDbl(response)
+    
+    ' Resistance
+    inst.WriteString "print(smua.measure.r())" & vbLf
+    response = inst.ReadString()
+    Res = CDbl(response)
+    
+    inst.WriteString "smua.source.output = smua.OUTPUT_OFF" & vbLf
+    
+    ReadRes = True
+End Function

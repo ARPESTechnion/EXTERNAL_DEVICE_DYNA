@@ -302,6 +302,7 @@ def measure_lockin(
     # Build data point
     data_point: dict[str, Any] = {
         "Time": ctx.data_mgr.elapsed_time(),
+        "LockIn_Average_Count": int(avg),
         "LockIn_Frequency": frequency,
         "LockIn_Sensitivity": sensitivity_v,
         "LockIn_R_lockin": series_resistance,
@@ -431,6 +432,7 @@ def measure_lockin_continuous(
 
     data_point: dict[str, Any] = {
         "Time": ctx.data_mgr.elapsed_time(),
+        "LockIn_Average_Count": int(avg),
         "LockIn_Frequency": frequency,
         "LockIn_Sensitivity": sensitivity_v,
         "LockIn_R_lockin": series_resistance,

@@ -231,6 +231,11 @@ class TestMeasureLockin(unittest.TestCase):
         events = ctx.ui_bus.drain()
         self.assertAlmostEqual(events[W_LOCKIN_OUTPUT_VOLTAGE], 0.004)
 
+    def test_records_lockin_average_count(self):
+        ctx = _make_context()
+        result = measure_lockin(ctx, current=0.001, series_resistance=1000.0, avg=17)
+        self.assertEqual(result["LockIn_Average_Count"], 17)
+
 
 class TestMeasureLockinContinuous(unittest.TestCase):
     def test_basic_continuous(self):
@@ -268,6 +273,16 @@ class TestMeasureLockinContinuous(unittest.TestCase):
             mock_lockin.measure.call_args.kwargs.get("wait_for_settling_when_no_autorange"),
             False,
         )
+
+    def test_records_lockin_average_count(self):
+        ctx = _make_context()
+        result = measure_lockin_continuous(
+            ctx,
+            current=0.001,
+            series_resistance=1000.0,
+            avg=23,
+        )
+        self.assertEqual(result["LockIn_Average_Count"], 23)
 
 
 # ============================================================================

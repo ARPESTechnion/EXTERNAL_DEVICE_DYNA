@@ -1,0 +1,41 @@
+VERSION 1.0 OBJECT
+BEGIN
+  MultiUse = -1 'True
+END
+Attribute VB_PredeclaredId = True
+Attribute VB_Creatable = True
+Attribute VB_Exposed = True
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Name = "PicoScope"
+'#Language "WWB-COM"
+'#Uses "..\Utils\Utils.obm"
+
+Dim outputFilePath As String
+Const sFilenamePattern = "PicoScopeData_%Y%m%d_%H%M"
+
+Option Explicit
+
+Private Sub Object_Initialize()
+		outputFilePath=Utils.systemDirectory() & "\Data\"
+End Sub
+Property Let FilePath(ByVal destination As String)
+ outputFilePath=destination
+End Property
+Property Get FilePath() As String
+	FilePath=outputFilePath
+End Property
+Function SaveText(Optional ByVal FileName As String) As Integer
+	Call Shell("cmd.exe /S /C" & "picoscope /a File.SaveAs.IO="+outputFilePath & FileName & Utils.DateAndTime(sFilenamePattern)+".csv", vbNormalFocus)
+	Call Shell("cmd.exe /S /C" & "picoscope /a File.SaveAs.IO="+outputFilePath & FileName & Utils.DateAndTime(sFilenamePattern)+".psdata", vbNormalFocus)
+End Function
+Function SaveImage(Optional ByVal FileName As String) As Integer
+	Call Shell("cmd.exe /S /C" & "picoscope /a File.SaveAs.IO="+outputFilePath & FileName & Utils.DateAndTime(sFilenamePattern)+".jpg", vbNormalFocus)
+	Call Shell("cmd.exe /S /C" & "picoscope /a File.SaveAs.IO="+outputFilePath & FileName & Utils.DateAndTime(sFilenamePattern)+".psdata", vbNormalFocus)
+	Wait(1)
+	Call Shell("cmd.exe /S /C" & "picoscope /a Run", vbNormalFocus)
+
+
+End Function
+Private Sub Object_Terminate()
+
+End Sub

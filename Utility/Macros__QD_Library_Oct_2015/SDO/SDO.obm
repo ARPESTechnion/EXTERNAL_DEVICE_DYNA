@@ -1,0 +1,442 @@
+VERSION 1.0 OBJECT
+BEGIN
+  MultiUse = 0  'False
+END
+Attribute VB_PredeclaredId = True
+Attribute VB_Creatable = True
+Attribute VB_Exposed = True
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Name = "SDO"
+' CAN SDO object library
+
+' ** SDO.obm
+' *
+' * (c) 2013 - Quantum Design, Inc.
+
+Private Const REVISION = "$Rev: 33918 $"
+Private Const SVN_ID = "$Id: SDO.obm 33918 2013-10-14 16:55:24Z dhurt $"
+
+Property Get Version() As Long
+	If InStr( 1, REVISION, ":" ) > 0  Then
+		Version = CLng(Split(REVISION,": ")(1))
+	Else
+		Version = -1
+	End If
+End Property
+
+Type TByteData
+	X(255) As Byte
+End Type
+Type TIntegerType
+	X As Integer
+End Type
+Type TLongType
+	X As Long
+End Type
+Type TSingleType
+	X As Single
+End Type
+Type TDoubleType
+	X As Double
+End Type
+
+Type SDO_Object
+	nodeID As Long
+	sdIndex As Long
+	sdSubIndex As Long
+	valType As VbVarType
+End Type
+
+Type ErrorInfo
+	CAN_Err As Long
+	SDO_Err As Long
+	errorDescription As String
+End Type
+
+Dim i As Integer
+Dim sdovar As Variant
+Dim sdolen As Long
+Dim sdoerr As Long
+Dim CANErr As Long
+Dim sdobyte As TByteData
+Dim bRetry As Boolean
+Dim numAttempts As Integer
+Dim printErrorsVal As Boolean
+Dim lastErrorVal As ErrorInfo
+
+Private Sub Object_Initialize()
+	numAttempts = 1
+	printErrorsVal = True
+End Sub
+
+Public Property Get attempts()
+	attempts = numAttempts
+End Property
+
+Public Property Let attempts(NewValue)
+	numAttempts = NewValue
+	If numAttempts < 1 Then numAttempts = 1
+End Property
+
+Public Property Get printErrors()
+	printErrors = printErrorsVal
+End Property
+
+Public Property Let printErrors(NewValue)
+	printErrorsVal = NewValue
+End Property
+
+Public Property Get lastError As ErrorInfo
+	lastError = lastErrorVal
+End Property
+
+Private Function ErrorString(errNum As Long, Optional bRead As Boolean = False) As String
+	' see "http://svnserver.qdusa.com/repos/167CR/CanOpenLib/trunk/Error%20Code%20cross%20link%20and%20def.xls" for error code reference
+	bRetry = False
+	Select Case errNum
+		Case &h05030000
+			ErrorString = "unspecified error occurred"
+			bRetry = True
+		Case &h08000000
+			ErrorString = "CAN Open internal error"
+		Case &h06090011
+			ErrorString = "subindex does not exist"
+		Case &h06010000
+			ErrorString = "unsupported access to an object"
+		Case &h06010001
+			ErrorString = "attempt to read a write only object"
+		Case &h06010002
+			ErrorString = "attempt to write a read only object"
+		Case &h06090031
+			ErrorString = "value of parameter too high"
+		Case &h06090032
+			ErrorString = "value of parameter too low"
+		Case &h06070010
+			ErrorString = "datatype does not match, length of service parameter does not match"
+		Case &h06070012
+			ErrorString = "datatype does not match, length of service parameter too high"
+		Case &h06070013
+			ErrorString = "datatype does not match, length of service parameter too low"
+		Case &h06040041
+			ErrorString = "object cannot be mapped to the appeal"
+		Case &h06040042
+			ErrorString = "the number and length of the ojects to be mapped would exceed PDO length"
+		Case &h06040043
+			ErrorString = "general parameter incompatibility error"
+		Case &h06020000
+			ErrorString = "object does not exist in object directory"
+			bRetry = True
+		Case &h08000021
+			ErrorString = "data cannot be transferred of stored to the application because of local control"
+			bRetry = True
+		Case &h08000022
+			ErrorString = "data cannot be transferred or stored to the application because of the present device state"
+			bRetry = True
+		Case &h06060000
+			If bRead Then
+				ErrorString = "load failed due to hardware error"
+			Else
+				ErrorString = "save failed due to hardware error"
+			End If
+			bRetry = True
+		Case &h06040047
+			ErrorString = "general interrupt error"
+			bRetry = True
+		Case &h060a0023
+			ErrorString = "resource not available"
+			bRetry = True
+		Case &h08000020
+			ErrorString = "data cannot be transferred or stored to the application"
+			bRetry = True
+		Case &h06090030
+			ErrorString = "value range of parameter exceeded"
+			bRetry = True
+		Case &h05040003
+			ErrorString = "invalid sequence number"
+			bRetry = True
+		Case &h05040002
+			ErrorString = "invalid block size"
+			bRetry = True
+		Case &h05040004
+			ErrorString = "CRC checksum error"
+			bRetry = True
+		Case &h05040001
+			ErrorString = "client/server command specifier not valid or unknown"
+			bRetry = True
+		Case &h05040005
+			ErrorString = "out of memory"
+			bRetry = True
+		Case Else
+			ErrorString = "error 0x" & Hex(errNum)
+			bRetry = True
+	End Select
+End Function
+
+' convenience function to declare an SDO
+Function BuildSDO(nodeID As Long, sdIndex As Long, sdSubIndex As Long, Optional ByVal valType As VbVarType = vbVariant) As SDO_Object
+	Dim r As SDO_Object
+	r.nodeID = nodeID
+	r.sdIndex = sdIndex
+	r.sdSubIndex = sdSubIndex
+	r.valType = valType
+	BuildSDO = r
+End Function
+
+Function WriteSDO_Obj(sdoObj As SDO_Object, value As Variant)
+	WriteSDO(sdoObj.nodeID, sdoObj.sdIndex, sdoObj.sdSubIndex, value, sdoObj.valType)
+End Function
+
+Function WriteSDO(nodeID As Long, sdIndex As Long, sdSubIndex As Long, ByVal value As Variant, Optional valType As VbVarType = vbVariant)
+	Dim tempInt As TIntegerType
+	Dim tempLong As TLongType
+	Dim tempSingle As TSingleType
+	Dim tempDouble As TDoubleType
+	Dim sType As String
+  	Dim iRetry As Integer
+  	Dim sError As String
+
+	If valType = vbVariant Then ' we really should be using IsMissing(valType) here but that does not work... :-(
+		valType = VarType(value)
+		sType = TypeName(value)
+	End If
+
+	If valType = vbBoolean Then 'don't do the next comparison unless it's a boolean, because the next comparison gives a type mismatch for strings
+		If value <> 0 Then value = 1 ' since we don't really do Booleans, make sure we only send 0 or 1 (apparently true = -1 in Basic)
+	End If
+
+	Select Case valType
+		Case vbByte
+			sdolen = 1
+			sType = "Byte"
+		Case vbBoolean
+			sdolen = 1
+			sType = "Boolean"
+		Case vbInteger
+			sdolen = 2
+			sType = "Integer"
+			tempInt.X = value
+			LSet sdobyte = tempInt
+		Case vbLong
+			sdolen = 4
+			sType = "Long"
+			tempLong.X = value
+			LSet sdobyte = tempLong
+		Case vbSingle
+			sdolen = 4
+			sType = "Single"
+			tempSingle.X = value
+			LSet sdobyte = tempSingle
+		Case vbDouble
+			sdolen = 8
+			sType = "Double"
+			tempDouble.X = value
+			LSet sdobyte = tempDouble
+		Case vbString
+			If Len(value) > 240 Then value = Left(value, 240)
+			sdolen = Len(value)
+			For i = 0 To sdolen - 1
+				sdobyte.X(i) = CByte(Asc(Mid(value,i+1,1)))
+			Next i
+			sdobyte.X(i) = CByte(0)
+			sType = "String"
+		Case Else ' not sure whether this is even supposed to happen but let's be safe and pass the maximum length...
+			If Len(value) > 240 Then value = LeftB(value, 240)
+			sdolen = Len(value)
+			For i = 0 To sdolen - 1
+				sdobyte.X(i) = MidB(value,i+1,1)
+			Next i
+			sType = "Unknown"
+	End Select
+	If sdolen = 1 Then
+		sdobyte.X(0) = value
+	End If
+	sdovar = sdobyte.X
+
+	For iRetry = 1 To numAttempts
+		CANErr = MultiVu.WriteSDO(nodeID,sdIndex,sdSubIndex,sdolen,sdovar,sdoerr)
+		If CANErr <> 0 Then
+			' first, figure out whether we should retry the operation based on the error received
+			' (we use the following call only to set bRetry properly)
+			ErrorString(CANErr)
+			If bRetry Then
+				If iRetry < numAttempts Then
+					sError = " - retrying..."
+					Wait(1)
+				Else
+					sError = " - giving up!"
+				End If
+			Else
+				' we are not going to try again - don't add more info to the log message and exit the retry loop
+				sError = ""
+				iRetry = numAttempts
+			End If
+			If (printErrorsVal) Then Debug.Print("WriteSDO returned error """ & ErrorString(sdoerr) & """ while writing """ & value & """ as " & sType & " to " & nodeID & ": 0x" & Hex(sdIndex) & ", 0x" & Hex(sdSubIndex) & sError)
+			lastErrorVal.CAN_Err = CANErr
+			lastErrorVal.SDO_Err = sdoerr
+			lastErrorVal.errorDescription = ErrorString(sdoerr)
+		Else
+			' no CANErr received - exit the retry loop
+			lastErrorVal.CAN_Err = 0
+			lastErrorVal.SDO_Err = 0
+			lastErrorVal.errorDescription = ""
+			iRetry = numAttempts
+		End If
+	Next iRetry
+End Function
+
+Function ReadSDO_Obj(sdoObj As SDO_Object) As Variant
+	ReadSDO_Obj = ReadSDO(sdoObj.nodeID,sdoObj.sdIndex,sdoObj.sdSubIndex,sdoObj.valType)
+End Function
+
+Function ReadSDO(nodeID As Long, sdIndex As Long, sdSubIndex As Long, Optional ByVal valType As VbVarType = vbVariant) As Variant
+	Dim tempSingle As TSingleType
+	Dim tempDouble As TDoubleType
+	Dim tempInteger	As TIntegerType
+	Dim tempLong As TLongType
+	Dim tempString As String
+	Dim tempByte As Byte
+	Dim iRetry As Integer
+	Dim sError As String
+
+	sdovar = sdobyte.X
+	For iRetry = 1 To numAttempts
+		CANErr = MultiVu.ReadSDO( nodeID,sdIndex,sdSubIndex,sdolen, sdovar,sdoerr )
+		If CANErr <> 0 Then
+			' first, figure out whether we should retry the operation based on the error received
+			' (we use the following call only to set bRetry properly)
+			ErrorString(CANErr)
+			If bRetry Then
+				If iRetry < numAttempts Then
+					sError = " - retrying..."
+					Wait(1)
+				Else
+					sError = " - giving up!"
+				End If
+			Else
+				' we are not going to try again - don't add more info to the log message and exit the retry loop
+				sError = ""
+				iRetry = numAttempts
+			End If
+			If (printErrorsVal) Then Debug.Print("ReadSDO returned error """ & ErrorString(sdoerr,True) & """ while reading " & nodeID & ": 0x" & Hex(sdIndex) & ", 0x" & Hex(sdSubIndex) & sError)
+			lastErrorVal.CAN_Err = CANErr
+			lastErrorVal.SDO_Err = sdoerr
+			lastErrorVal.errorDescription = ErrorString(sdoerr,True)
+		Else
+			' no CANErr received - exit the retry loop
+			lastErrorVal.CAN_Err = 0
+			lastErrorVal.SDO_Err = 0
+			lastErrorVal.errorDescription = ""
+			iRetry = numAttempts
+		End If
+	Next iRetry
+
+	For i = 0 To sdolen-1
+		sdobyte.X(i) = sdovar(i)
+	Next i
+
+	If valType = vbVariant Then ' we really should be using IsMissing(valType) here but that does not work... :-(
+		Select Case sdolen
+			Case 1
+				valType = vbByte
+			Case 2
+				valType = vbInteger
+			Case 4
+				valType = vbSingle ' we could have a long here but default to single - you'll have to pass valType vbLong for long!
+			Case 8
+				valType = vbDouble
+			Case Else
+				valType = vbString ' anything longer than 8 bytes will be considered a string
+		End Select
+	End If
+
+	Select Case valType
+		Case vbByte
+			tempByte = sdobyte.X(0)
+			ReadSDO = tempByte
+		Case vbInteger
+			LSet tempInteger = sdobyte
+			ReadSDO = tempInteger.X
+		Case vbLong
+			LSet tempLong = sdobyte
+			ReadSDO = tempLong.X
+		Case vbSingle
+			LSet tempSingle = sdobyte
+			ReadSDO = tempSingle.X
+		Case vbDouble
+			LSet tempDouble = sdobyte
+			ReadSDO = tempDouble.X
+		Case vbUserDefinedType
+			ReadSDO = sdobyte
+		Case vbString
+			tempString = ""
+			For i = 0 To sdolen - 1
+				If (sdobyte.X(i) <> 0) Then	tempString = tempString & Chr(sdobyte.X(i))
+			Next i
+			ReadSDO = tempString
+		Case Else ' this should never actually trigger unless we manually pass an unknown valType
+			ReadSDO = "Unexpected data type for SDORead"
+	End Select
+End Function
+
+Function getValueFromDomain(sdoData As TByteData, startOffset As Integer, VariableType As VbVarType, Optional length As Integer = 0, Optional swapBytes As Boolean = False) As Variant
+' NOTE: optional length parameter will ONLY be used for string variables, all others use the implicit length based on VariableType
+	Dim tempByteArray As TByteData
+	Dim tempSingle As TSingleType
+	Dim tempDouble As TDoubleType
+	Dim tempInteger	As TIntegerType
+	Dim tempLong As TLongType
+	Dim tempString As String
+	Dim tempByte As Byte
+	Dim i As Integer
+	Dim varLength As Integer
+
+	Select Case VariableType
+		Case vbByte
+			varLength = 1
+		Case vbInteger
+			varLength = 2
+		Case vbLong
+			varLength = 4
+		Case vbSingle
+			varLength = 4
+		Case vbDouble
+			varLength = 8
+		Case vbString
+			varLength = length
+	End Select
+
+	If (VariableType = vbByte) Then
+		getValueFromDomain = sdoData.X(startOffset)
+	ElseIf (VariableType = vbString) Then
+		tempString = ""
+		For i = 0 To varLength - 1
+			tempString = tempString & Chr(sdoData.X(i+startOffset))
+		Next i
+		getValueFromDomain = tempString
+	Else
+		For i = 0 To varLength-1
+			If (swapBytes) Then
+				tempByteArray.X(varLength-i-1) = sdoData.X(i+startOffset)
+			Else
+				tempByteArray.X(i) = sdoData.X(i+startOffset)
+			End If
+		Next i
+		Select Case VariableType
+			Case vbInteger
+				LSet tempInteger = tempByteArray
+				getValueFromDomain = tempInteger.X
+			Case vbLong
+				LSet tempLong = tempByteArray
+				getValueFromDomain = tempLong.X
+			Case vbSingle
+				LSet tempSingle = tempByteArray
+				getValueFromDomain = tempSingle.X
+			Case vbDouble
+				LSet tempDouble = tempByteArray
+				getValueFromDomain = tempDouble.X
+			Case Else
+			' return NULL for variable types we don't currently handle
+				getValueFromDomain = Null
+		End Select
+	End If
+End Function

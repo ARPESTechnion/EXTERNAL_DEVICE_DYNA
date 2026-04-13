@@ -1,0 +1,66 @@
+VERSION 1.0 OBJECT
+BEGIN
+  MultiUse = -1 'True
+END
+Attribute VB_PredeclaredId = True
+Attribute VB_Creatable = True
+Attribute VB_Exposed = False
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Name = "PPMSUtils"
+' PPMSUtils.obm
+'Customer release object
+
+'#uses "Utils.obm"
+
+Private Const RevNum = "$Rev: 33918 $"
+Dim PPMSMultiVuObject As Object
+
+Private Sub Object_Initialize()
+	If Utils.SystemType = TSystemType.PPMS_System Then	Set PPMSMultiVuObject = CreateObject("QD.MULTIVU.PPMS.1")
+End Sub
+
+Property Get Version() As Long
+	Version = CLng(Split(RevNum,": ")(1))
+End Property
+
+Function GetPPMSChannelData(Channel As Integer, Optional Fast As Long = 1) As Variant
+	Dim resultStr As String
+	Dim iChannel As Integer
+	Dim Page As Integer
+
+	If ( Channel > 63 ) Then
+		iChannel = Channel - 64
+		Page = 2
+	ElseIf (Channel > 31 ) Then
+		iChannel = Channel - 32
+		Page = 1
+	Else
+		iChannel = Channel
+		Page = 0
+	End If
+
+	On Error GoTo NoValue
+
+	If ( Channel = -1 ) Then ' get the timestamp only
+		GetPPMSData_LateBound(0,resultStr,Fast,Page,0)
+		'PPMS.GetPpmsData(0,resultStr,Fast,Page,0)
+		resultStr = Utils.ParseStringList(resultStr)(1)
+	Else
+		GetPPMSData_LateBound(2^iChannel,resultStr,Fast,Page,0)
+		'PPMS.GetPpmsData(2^iChannel,resultStr,Fast,Page,0)
+		resultStr = Utils.ParseStringList(resultStr)(2)
+	End If
+	GetPPMSChannelData = CDbl(resultStr)
+	Exit Function
+
+	NoValue:
+	GetPPMSChannelData = "----"
+End Function
+
+Public Function GetPPMSData_LateBound(ByVal DataFlags As Long, ByRef DataString As String, ByVal Fast As Long, ByVal Page As Long, ByVal Group As Long) As Long
+	GetPPMSData_LateBound = CallByName(PPMSMultiVuObject, "GetPpmsData", vbMethod, DataFlags, DataString, Fast, Page, Group)
+End Function
+
+Public Function SendPpmsCommand_LateBound(ByVal PpmsCommand As String, ByRef PpmsReply As String, ByRef ErrorReply As String, ByVal Device As Long, ByVal timeout As Double) As Long
+	SendPpmsCommand_LateBound = CallByName(PPMSMultiVuObject, "SendPpmsCommand", vbMethod, PpmsCommand, PpmsReply, ErrorReply, Device, timeout)
+End Function

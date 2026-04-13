@@ -1,0 +1,276 @@
+VERSION 1.0 OBJECT
+BEGIN
+  MultiUse = 0  'False
+END
+Attribute VB_PredeclaredId = True
+Attribute VB_Creatable = True
+Attribute VB_Exposed = True
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Name = "LSBridge"
+'LSBridge.obm
+'Final Test Object
+
+'Object to encapsulate communication to the Lake Shore 370 AC Resistance Brdige
+'Note that all functions are designed to return true if successful, false otherwise
+'However, this functionality does not work because the GPIB functions don't return 0 when they fail.
+
+'#Uses "..\Utils\Utils.obm"
+
+Option Explicit
+
+'Private  G As New GPIB 'don't allow outside user direct GPIB access.
+Const Address As Integer = 12 'GPIB address of instrument
+
+'Define allowed LS excitation voltages
+'The enumeration is in the right order for the LS excitation codes, but we need to start at 1 instead of 0.
+Public Enum TLSExcitV
+	V_2uV = 1
+	V_6uV
+	V_20uV
+	V_63uV
+	V_200uV
+	V_632uV
+	V_2mV
+	V_6mV
+	V_20mV
+	V_63mV
+	V_200mV
+	V_632mV
+End Enum
+
+'Define allowed LS excitation currents
+'The enumeration is in the right order for the LS excitation codes, but we need to start at 1 instead of 0.
+Public Enum TLSExcitI
+	I_1pA = 1
+	I_3pA
+	I_10pA
+	I_32pA
+	I_100pA
+	I_316pA
+	I_1nA
+	I_3nA
+	I_10nA
+	I_32nA
+	I_100nA
+	I_316nA
+	I_1uA
+	I_3uA
+	I_10uA
+	I_32uA
+	I_100uA
+	I_316uA
+	I_1mA
+	I_3mA
+	I_10mA
+	I_32mA
+End Enum
+
+'Define allowed LS resistance ranges
+'The enumeration is in the right order for the LS resistance range codes, but we need to start at 1 instead of 0.
+Public Enum TLSResRange
+	R_2_mOhm = 1
+	R_6_mOhm
+	R_20_mOhm
+	R_63_mOhm
+	R_200_mOhm
+	R_632_mOhm
+	R_2_Ohm
+	R_6_Ohm
+	R_20_Ohm
+	R_63_Ohm
+	R_200_Ohm
+	R_632_Ohm
+	R_2_kOhm
+	R_6_kOhm
+	R_20_kOhm
+	R_63_kOhm
+	R_200_kOhm
+	R_632_kOhm
+	R_2_MegOhm
+	R_6_MegOhm
+	R_20_MegOhm
+	R_63_MegOhm
+End Enum
+
+'Enumerate LS excitation modes
+'This enumeration gets the LS codes right
+Private Enum TExcitMode
+	Voltage
+	Current
+End Enum
+
+'Enumerate autoranging on/off
+'This enumeration gets the LS codes right
+Public Enum TAutorange
+	AR_Off
+	AR_On
+End Enum
+
+
+'function to initialize bridge. It will return False if not successful, true otherwise
+Public Function Init() As Boolean
+	Dim s As String
+	Dim result As Integer
+	'add LS bridge to GPIB
+	result = GPIB.AddDevice(Address, 13, 1)
+	'return codes from AddDevice are:
+	 '   +ud - device handle
+	 '    -101 - invalid argument
+	 '   -102 - GPIB0 Not found
+	 '   -103 - device already connected
+	 '   -104 - device Not found
+	 '   -105 - attempting To use PPMS
+	 '     0  - NI Error code
+	 '    -ni - NI Error code
+
+	If (result < 0 And result <> -103) Then '< 0 indicates an error unless -103, which is already connected
+		Init = False
+		Exit Function
+	End If
+
+	'clear device. This seems to be necessary to get reliable communication
+	If GPIB.SendString(Address, "*CLS")<>1 Then
+		Init = False
+		Exit Function
+	End If
+
+	'it seems that we must also read a result after sending the clear command
+	If GPIB.GetString(Address, s)<>1 Then
+		Init = False
+		Exit Function
+	End If
+
+	Init = True
+
+End Function
+
+'function to read one temperature
+Public Function ReadTemp(ByRef Temp As Single) As Boolean
+	Dim s As String
+
+	'get a temperature reading from the LS bridge
+	If GPIB.SendString(Address, "RDGK?")<>1 Then
+		ReadTemp = False
+		Exit Function
+	End If
+
+	'make sure we don't try to talk too fast!
+	Wait(0.005)
+
+	If GPIB.GetString(Address, s)<>1 Then
+		ReadTemp = False
+		Exit Function
+	End If
+
+	'convert result to a single float and return it
+	Temp =  CSng(s)
+	ReadTemp = True
+End Function
+
+'function to read one resistance
+Public Function ReadRes(ByRef Res As Single) As Boolean
+	Dim s As String
+
+	'get a temperature reading from the LS bridge
+	If  GPIB.SendString(Address, "RDGR?")<>1 Then
+		ReadRes = False
+		Exit Function
+	End If
+
+	'make sure we don't try to talk too fast!
+	Wait(0.005)
+
+	If GPIB.GetString(Address, s)<>1 Then
+		ReadRes = False
+		Exit Function
+	End If
+
+	'convert result to a single float and return it
+	Res =  CSng(s)
+	ReadRes = True
+End Function
+
+'function to set voltage excitation
+Public Function SetVoltageExcit(V As TLSExcitV, Optional AutoRange As TAutorange = AR_On) As Boolean
+	Dim s As String
+	Dim R_range As Integer
+
+	'get the current resistance range so that we can set it and avoid an annoying autorange
+	If Not GetResRange(R_range) Then
+		SetVoltageExcit = False
+		Exit Function
+	End If
+
+	'construct the string
+	s = "RDGRNG "
+	s = s & "0, " 'all channels
+	s = s & CStr(Voltage) & ", " 'set voltage mode
+	s = s & CStr(V) & ", " 'voltage excitation code
+	s = s & CStr(R_range) & ", " 'resistance range.
+	s = s & CStr(AutoRange) & ", " 'autorange on or off
+	s = s & "0" 'excitation on
+
+	'now send it!
+	If GPIB.SendString(Address, s)<>1 Then
+		SetVoltageExcit = False
+		Exit Function
+	End If
+
+	SetVoltageExcit = True
+
+End Function
+
+'function to set current excitation
+Public Function SetCurrentExcit(I As TLSExcitI, Optional AutoRange As TAutorange = AR_On) As Boolean
+	Dim s As String
+	Dim R_range As Integer
+
+	'get the current resistance range so that we can set it and avoid an annoying autorange
+	If Not GetResRange(R_range) Then
+		SetCurrentExcit = False
+		Exit Function
+	End If
+
+	'construct the string
+	s = "RDGRNG "
+	s = s & "0, " 'all channels
+	s = s & CStr(Current) & ", " 'set current mode
+	s = s & CStr(I) & ", " 'current excitation code
+	s = s & CStr(R_range) & ", " 'resistance range.
+	s = s & CStr(AutoRange) & ", " 'autorange on or off
+	s = s & "0" 'excitation on
+
+	'now send it!
+	If GPIB.SendString(Address, s) <>1Then
+		SetCurrentExcit = False
+		Exit Function
+	End If
+
+	SetCurrentExcit = True
+
+End Function
+
+'get current resistance range from LSBridge
+Private Function GetResRange(ByRef Range As Integer) As Boolean
+	Dim s As String
+	Dim RdgList() As Variant
+
+	If GPIB.SendString(Address, "RDGRNG?")<>1 Then
+		GetResRange = False
+		Exit Function
+	End If
+
+	If GPIB.GetString(Address, s)<>1 Then
+		GetResRange = False
+		Exit Function
+	End If
+
+	RdgList = Utils.ParseStringList(s)
+
+	Range = CInt( RdgList(2) ) 'resistance range is third element
+	GetResRange = True
+End Function
+
+Private Sub Object_Initialize()
+	Init()
+End Sub

@@ -1,0 +1,644 @@
+VERSION 1.0 OBJECT
+BEGIN
+  MultiUse = -1 'True
+END
+Attribute VB_PredeclaredId = True
+Attribute VB_Creatable = True
+Attribute VB_Exposed = False
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Name = "Utils"
+'#Language "WWB-COM"
+
+' Utils.obm
+'Customer release object
+' * (c) 2013 - Quantum Design, Inc.
+
+Private Const REVISION = "$Rev: 41283 $"
+Private Const SVN_ID = "$Id: Utils.obm 41283 2015-05-08 20:45:18Z andreas $"
+
+Property Get Version() As Long
+	If InStr( 1, REVISION, ":" ) > 0  Then
+		Version = CLng(Split(REVISION,": ")(1))
+	Else
+		Version = -1
+	End If
+End Property
+
+Private Const OFFSET_4 = 4294967296#
+Private Const MAXINT_4 = 2147483647
+Private Const OFFSET_2 = 65536
+Private Const MAXINT_2 = 32767
+
+Dim bHasMultiVuTimeStamp As Boolean
+Dim MultiVuObject As Object
+Dim timerStart As Date
+Dim systemDir As String
+Dim iSystemType As Integer
+
+Private Type TByteData
+	X(255) As Byte
+End Type
+
+Private Type TDoubleType
+	X As Double
+End Type
+
+Private Type TSingleType
+	X As Single
+End Type
+
+'Note: do not use names like "DynaCool" here, because they will hide the DynaCool object that we use for OLE (e.g. DynaCool.GetTemperature won't work)
+Public Enum TSystemType
+	Unknown
+	PPMS_System
+	SVSM_System
+	VersaLab_System
+	DynaCool_System
+End Enum
+
+
+Private Sub Object_Initialize()
+	Dim objectCreated As Boolean
+ 	objectCreated = False
+ 	systemDir = ""
+
+	' try to set the system type using the process name.
+ 	SetSystemTypeFromProcessName()
+
+ 	' If we got a system type other than Unknown, then go directly to the appropriate section
+ 	' Otherwise, try to guess the system type, starting with SVSM
+	Select Case iSystemType
+	Case TSystemType.Unknown
+		GoTo SVSMSection
+	Case TSystemType.PPMS_System
+		GoTo PPMSSection
+	Case TSystemType.SVSM_System
+		GoTo SVSMSection
+	Case TSystemType.VersaLab_System
+		GoTo VersaLabSection
+	Case TSystemType.DynaCool_System
+		GoTo DynaCoolSection
+	End Select
+
+	' try to create a late-binding reference to our MultiVu object
+	' to determine whether we can use MultiVu.GetTimestamp() without
+	' getting an error during compile
+SVSMSection:
+	On Error GoTo DynaCoolSection
+	Set MultiVuObject = CreateObject("QD.MULTIVU.MPMS3.1")		' SVSM
+	objectCreated = True
+	systemDir = "C:\QDSquidVSM"
+DynaCoolSection:
+	If (Not objectCreated) Then
+		On Error GoTo PPMSSection
+		Set MultiVuObject = CreateObject("QD.MULTIVU.DYNACOOL.1")	' DynaCool
+		objectCreated = True
+		systemDir = "C:\QDDynaCool"
+	End If
+PPMSSection:
+	If (Not objectCreated) Then
+		On Error GoTo VersaLabSection
+		Set MultiVuObject = CreateObject("QD.MULTIVU.PPMS.1")		' PPMS
+		objectCreated = True
+		systemDir = "C:\QDPPMS"
+	End If
+VersaLabSection:
+	If (Not objectCreated) Then
+		On Error GoTo NoTimeStamp
+		Set MultiVuObject = CreateObject("QD.MULTIVU.VERSALAB.1")	' VersaLab
+		objectCreated = True
+		systemDir = "C:\QDVersaLab"
+	End If
+	' now that we have our MultiVu object, try to call GetTimeStamp() on it to determine availability
+	If (objectCreated) Then
+		bHasMultiVuTimeStamp = False
+		On Error GoTo NoTimeStamp
+		CallByName(MultiVuObject,"GetTimeStamp",vbMethod)
+		bHasMultiVuTimeStamp = True
+NoTimeStamp:
+		On Error GoTo 0
+	End If
+	timerStart = Now()
+End Sub
+
+Property Get SystemType() As TSystemType
+	SystemType = iSystemType
+End Property
+
+Private Sub SetSystemTypeFromProcessName()
+	'Get the process name, and then try to set the system type from it
+	Const STR_LEN = 255
+	Dim myExeName As String
+	myExeName = String(STR_LEN, vbNullChar)
+	Dim result As ULong
+	result = GetModuleFileName(0, myExeName, STR_LEN)
+	If result>0 Then
+		myExeName = UCase(myExeName)
+		If InStr(myExeName, "PPMSMVU.EXE") Then
+			iSystemType = TSystemType.PPMS_System
+		ElseIf InStr(myExeName, "SQUIDVSM.EXE") Then
+			iSystemType = TSystemType.SVSM_System
+		ElseIf InStr(myExeName, "VERSALAB.EXE") Then
+			iSystemType = TSystemType.VersaLab_System
+		ElseIf InStr(myExeName, "DYNACOOL.EXE") Then
+			iSystemType = TSystemType.DynaCool_System
+		Else
+			iSystemType = TSystemType.Unknown
+		End If
+	Else
+		iSystemType = TSystemType.Unknown
+	End If
+End Sub
+
+Private Declare Function GetModuleFileName Lib "Kernel32" ( _
+	ByVal hProcess As ULong, _
+	ByVal ExeName As String, _
+	ByVal lengthExeName As ULong) As ULong
+
+Property Get systemDirectory() As String
+	systemDirectory = systemDir
+End Property
+
+Private Type SHITEMID
+	cb As Long
+	abID As Byte
+End Type
+Private Type ITEMIDLIST
+	mkid As SHITEMID
+End Type
+Private Declare Function SHGetSpecialFolderLocation Lib "shell32.dll" (ByVal hwndOwner As Long, ByVal nFolder As Long, pidl As ITEMIDLIST) As Long
+Private Declare Function SHGetPathFromIDList Lib "shell32.dll" Alias "SHGetPathFromIDListA"  (ByVal pidl As  Long, ByVal pszPath As String) As Long
+
+Private Function GetSpecialFolder(CSIDL As Long) As String
+'private function to get WIndows-specific folders - available CSIDL are:
+' Documents
+'	My Documents				CSIDL_PERSONAL					&H05	(user)\My Documents
+'	My Pictures					CSIDL_MYPICTURES				&H27	(user)\My Documents\My Pictures
+'	My Music					CSIDL_MYMUSIC					&H0D	(user)\My Documents\My Music
+'	My Videos					CSIDL_MYVIDEO					&H0E	(user)\My Documents\My Videos
+'	Common documents			CSIDL_COMMON_DOCUMENTS			&H2E	(All users)\Documents
+'	Common Pictures				CSIDL_COMMON_PICTURES			&H36	(All users)\Documents\My Pictures
+'	Common Music				CSIDL_COMMON_MUSIC				&H35	(All users)\Documents\My Music
+'	Common Videos				CSIDL_COMMON_VIDEO				&H37	(All users)\Documents\My Videos
+' Start menu
+'	Start menu					CSIDL_STARTMENU					&H0B	(user)\Start Menu
+'	Programs					CSIDL_PROGRAMS					&H02	(user)\Start Menu\Programs
+'	Startup						CSIDL_STARTUP					&H07	(user)\Start Menu\Programs\Startup
+'	Common start menu			CSIDL_COMMON_STARTMENU			&H16	(All users)\Start Menu
+'	Common programs				CSIDL_COMMON_PROGRAMS			&H17	(All users)\Start Menu\Programs
+'	Common Startup				CSIDL_COMMON_STARTUP			&H18	(All users)\Start Menu\Programs\Startup
+' Shell folders
+'	Desktop						CSIDL_DESKTOPDIRECTORY			&H10	(user)\Desktop
+'	Favorites					CSIDL_FAVORITES					&H06	(user)\Favorites
+'	Recent documents			CSIDL_RECENT					&H08	(user)\Recent
+'	Send To...					CSIDL_SENDTO					&H09	(user)\SendTo
+'	Templates					CSIDL_TEMPLATES					&H15	(user)\Templates
+'	Common desktop				CSIDL_COMMON_DESKTOPDIRECTORY	&H19	(All users)\Desktop
+'	Common favorites			CSIDL_COMMON_FAVORITES			&H1F	(All users)\Favourites
+'	Common templates			CSIDL_COMMON_TEMPLATES			&H2D	(All users)\Templates
+' Data folders
+'	Application data			CSIDL_APPDATA					&H1A	(user)\Application Data
+'	Local application data		CSIDL_LOCAL_APPDATA				&H1C	(user)\Local Settings\Application Data
+'	Common application data		CSIDL_COMMON_APPDATA			&H23	(All users)\Application Data
+' IE folders
+'	Temporary internet files	CSIDL_INTERNET_CACHE			&H20
+'	IE Cookies					CSIDL_COOKIES					&H21
+'	IE History					CSIDL_HISTORY					&H22
+' System folders
+'	Windows directory			CSIDL_WINDOWS					&H24	C:\Windows
+'	System directory			CSIDL_SYSTEM					&H25	C:\Windows\System32
+'	Fonts						CSIDL_FONTS						&H14	C:\Windows\Fonts
+'	Program files				CSIDL_PROGRAM_FILES				&H26	C:\Program Files
+'	Common files				CSIDL_PROGRAM_FILES_COMMON		&H2B	C:\Program Files\Common Files
+'	User profile				CSIDL_PROFILE					&H28	(user)
+' Admin tools
+'	Common admin tools			CSIDL_COMMON_ADMINTOOLS			&H2F	(All users)\Start Menu\Programs\Administrative Tools
+'	Admin tools					CSIDL_ADMINTOOLS				&H30	{user}\Start Menu\Programs\Administrative Tools4	The Windows folder.
+	Const NOERROR = 0
+
+	Dim r As Long
+	Dim IDL As ITEMIDLIST
+	Dim Path As String
+	r = SHGetSpecialFolderLocation(100, CSIDL, IDL)
+	If r = NOERROR Then
+		Path$ = Space$(512)
+		r = SHGetPathFromIDList(IDL.mkid.cb,Path$)
+		GetSpecialFolder = Left$(Path, InStr(Path, Chr$(0)) - 1)
+		Exit Function
+	End If
+	GetSpecialFolder = ""
+End Function
+
+Function GetDesktopFolder() As String
+'returns the path to the current user's Desktop Folder
+	GetDesktopFolder = GetSpecialFolder(&H10)
+End Function
+
+Function GetTimestamp() As Double
+'returns the MultiVu time stamp (If available) Or a time stamp that does Not Reset at midnight
+	If (bHasMultiVuTimeStamp) Then
+		GetTimestamp = CallByName(MultiVuObject,"GetTimeStamp",vbMethod)
+	Else
+		' DateDiff only gives integer seconds so we use the fractional part of Timer() for better resolution
+		timeStamp = Timer()
+		GetTimestamp = CDbl(DateDiff("s",timerStart,Now()))+timeStamp-Round(timeStamp)
+	End If
+End Function
+
+Function UnsignedToLong(value As Double) As Long
+    If value < 0 Or value >= OFFSET_4 Then Error 6 ' Overflow
+    UnsignedToLong = value - IIf(value <= MAXINT_4,0,OFFSET_4)
+End Function
+
+Function LongToUnsigned(value As Long) As Double
+    LongToUnsigned = value + IIf(value < 0,OFFSET_4,0)
+End Function
+
+Function UnsignedToInteger(value As Long) As Integer
+    If value < 0 Or value >= OFFSET_2 Then Error 6 ' Overflow
+    UnsignedToInteger = value - IIf(value <= MAXINT_2,0,OFFSET_2)
+End Function
+
+Function IntegerToUnsigned(value As Integer) As Long
+    IntegerToUnsigned = value + IIf(value < 0,OFFSET_2,0)
+End Function
+
+Function Max(ParamArray values() As Variant) As Variant
+	Dim i As Integer
+	Dim max_value As Variant
+
+  max_value = values(LBound(values))
+  For i = LBound(values) + 1 To UBound(values)
+    If max_value < values(i) Then max_value = values(i)
+  Next i
+
+  Max = max_value
+End Function
+
+Function Min(ParamArray values() As Variant) As Variant
+	Dim i As Integer
+	Dim min_value As Variant
+
+  min_value = values(LBound(values))
+  For i = LBound(values) + 1 To UBound(values)
+    If min_value > values(i) Then min_value = values(i)
+  Next i
+
+  Min = min_value
+End Function
+
+Function NaN(Optional ByVal datatype As VbVarType = vbSingle) As Variant
+	Dim NaNBytes As TByteData
+	Dim NaNDbl As TDoubleType
+	Dim NaNSgl As TSingleType
+	Dim byteCount As Integer
+
+	If (datatype = vbSingle) Then
+		byteCount = 4
+	ElseIf (datatype = vbDouble) Then
+		byteCount = 8
+	Else
+		MsgBox("Illegal Datatype.",vbOkOnly+vbCritical+vbExclamation,"NaN() Error")
+		Exit Function
+	End If
+
+	For i = 1 To byteCount
+		NaNBytes.X(i) = 255
+	Next i
+
+	If (datatype = vbSingle) Then
+		LSet NaNSgl = NaNBytes
+		NaN = NaNSgl.X
+	Else
+		LSet NaNDbl = NaNBytes
+		NaN = NaNDbl.X
+	End If
+End Function
+
+Function isNaN(ByVal value As Variant) As Boolean
+	isNaN = (CStr(value) = "-1.#QNAN")
+End Function
+
+
+Function LinearFit(xData() As Double, yData() As Double) As Double()
+' calculate the coefficients of a linear regression fit through xData/yData
+' y = a + b*x
+' a = LinearFit(xData,yData)(0)
+' b = LinearFit(xData,yData)(1)
+
+	If (UBound(xData) <> UBound(yData)) Then
+		MsgBox("xData and yData arrays need to have the same length.",vbOkOnly+vbCritical+vbExclamation,"LinearFit Error")
+		Exit Function
+	ElseIf (UBound(xData) < 2) Then
+		MsgBox("At least two data points are required for a linear fit.",vbOkOnly+vbCritical+vbExclamation,"LinearFit Error")
+		Exit Function
+	End If
+
+	Dim sumX As Double
+	Dim sumY As Double
+	Dim sumXY As Double
+	Dim sumXX As Double
+	Dim results(0 To 1) As Double
+
+	sumX = 0
+	sumY = 0
+	sumXY = 0
+	sumXX = 0
+
+	For i = 1 To UBound(xData)
+		sumX = sumX + xData(i)
+		sumY = sumY + yData(i)
+		sumXY = sumXY + (xData(i) * yData(i))
+		sumXX = sumXX + (xData(i) * xData(i))
+	Next i
+
+	results(0) = ((sumXX * sumY) - (sumX * sumXY))/((UBound(xData) * sumXX) - (sumX * sumX))
+	results(1) = ((UBound(xData) * sumXY) - (sumX * sumY))/((UBound(xData) * sumXX) - (sumX * sumX))
+	LinearFit = results
+End Function
+
+Function FormatNumber(Number As Variant, Prec As Integer) As String
+	Dim sFormatString As String
+	If ( Prec <> 0 ) Then
+		sFormatString = "0." & String(Prec,"0")
+	Else
+		sFormatString = "0"
+	End If
+	FormatNumber = Format(Number,sFormatString)
+End Function
+
+Function ParseStringList(StringList As String, Optional Separator As String = ",") As Variant
+	Dim Fields() As String
+	Dim List() As Variant
+	Dim i As Integer
+
+	If StringList <> "" Then
+		' Split the string at the comma characters
+		Fields() = Split(StringList, Separator)
+
+		ReDim List(UBound(Fields))
+		For i = 0 To UBound(Fields)
+	    	List(i) = Trim(Fields(i))
+		Next
+		ParseStringList = List
+	End If
+End Function
+
+'function to create a string with the current date and time
+'default format is yyyymmdd-hhmmss
+'this is useful for naming a data file with the creation time and date
+Function DateAndTime(Optional ByVal FormatString As String = "%Y%m%d-%H%M%S") As String
+	' FormatString placeholders (most of them copied from unix's date() function):
+	'	%a     locale's abbreviated weekday name (Sun..Sat)
+	'	%A     locale's full weekday name, variable length (Sunday..Saturday)
+	'	%b     locale's abbreviated month name (Jan..Dec)
+	'	%B     locale's full month name, variable length (January..December)
+	'	%C     century  (year  divided  by  100	and  truncated	to an integer) [00-99]
+	'	%d     day of month (01..31)
+	'	%D     date (mm/dd/yy)
+	'	%e     day of month, blank padded ( 1..31)
+	'	%F     same as %Y-%m-%d
+    '   %h     same as %b
+	'	%H     hour (00..23)
+	'	%I     hour (01..12)
+	'	%k     hour ( 0..23)
+	'	%l     hour ( 1..12)
+	'	%m     month (01..12)
+	'	%M     minute (00..59)
+	'	%p     locale's upper case AM or PM indicator (blank in many locales)
+	'	%P     locale's lower case am or pm indicator (blank in many locales)
+	'	%r     time, 12-hour (hh:mm:ss [AP]M)
+	'	%R     time, 24-hour (hh:mm)
+	'	%S     second (00..60); the 60 is necessary to accommodate a leap  second
+	'	%T     time, 24-hour (hh:mm:ss)
+	'	%u     day of week (1..7);  1 represents Monday
+	'	%w     day of week (0..6);  0 represents Sunday
+	'	%x     locale's date representation (mm/dd/yy)
+	'	%X     locale's time representation (%H:%M:%S)
+	'	%y     last two digits of year (00..99)
+	'	%Y     year (1970...)
+	' replace placeholders in FormatString, adding zeroes if needed for each part
+	' compound formats first
+	FormatString = Replace(FormatString,"%D","%m/%d/%y")
+	FormatString = Replace(FormatString,"%x","%m/%d/%y")
+	FormatString = Replace(FormatString,"%F","%Y-%m-%d")
+	FormatString = Replace(FormatString,"%r","%I:%M:%S %p")
+	FormatString = Replace(FormatString,"%R","%H:%M")
+	FormatString = Replace(FormatString,"%T","%H:%M:%S")
+	FormatString = Replace(FormatString,"%X","%H:%M:%S")
+	FormatString = Replace(FormatString,"%h","%b")
+	' simple replacements
+	FormatString = Replace(FormatString,"%A",WeekdayName(Weekday(Now)))
+	FormatString = Replace(FormatString,"%a",Left(WeekdayName(Weekday(Now)),3))
+	FormatString = Replace(FormatString,"%u",CStr((Weekday(Now)-1) Mod 7))
+	FormatString = Replace(FormatString,"%w",CStr(Weekday(Now)-1))
+	FormatString = Replace(FormatString,"%B",MonthName(Month(Now)))
+	FormatString = Replace(FormatString,"%b",Left(MonthName(Month(Now)),3))
+	FormatString = Replace(FormatString,"%C",Left("0" & CStr(Year(Now)),2))
+	FormatString = Replace(FormatString,"%Y",CStr(Year(Now)))
+	FormatString = Replace(FormatString,"%y",Right(CStr(Year(Now)),2))
+	FormatString = Replace(FormatString,"%m",Right("0" & CStr(Month(Now)),2))
+	FormatString = Replace(FormatString,"%d",Right("0" & CStr(Day(Now)),2))
+	FormatString = Replace(FormatString,"%e",CStr(Day(Now)))
+	FormatString = Replace(FormatString,"%H",Right("0" & CStr(Hour(Now)),2))
+	FormatString = Replace(FormatString,"%I",Right("0" & CStr(Hour(Now) Mod 12),2))
+	FormatString = Replace(FormatString,"%k",CStr(Hour(Now)))
+	FormatString = Replace(FormatString,"%l",CStr(Hour(Now) Mod 12))
+	FormatString = Replace(FormatString,"%M",Right("0" & CStr(Minute(Now)),2))
+	If ( Hour(Now) >= 12 ) Then
+		FormatString = Replace(FormatString,"%p","PM")
+		FormatString = Replace(FormatString,"%P","pm")
+	Else
+		FormatString = Replace(FormatString,"%p","AM")
+		FormatString = Replace(FormatString,"%P","am")
+	End If
+	DateAndTime = Replace(FormatString,"%S",Right("0" & CStr(Second(Now)),2))
+End Function
+
+Function SanitizeNameString(Fin As String) As String
+' This removes all characters except alpha numberic and -_.  It's handy for filename input (not paths)
+	Dim i As Integer
+	Dim Fout As String
+	Fout = ""
+	Dim ch As String
+	For i = 1 To Len(Fin)
+		ch = Mid(Fin,i,1)
+		If ((Asc(ch)>=48) And (Asc(ch)<=57)) Or ((Asc(ch)>=65) And (Asc(ch)<=90)) Or ((Asc(ch)>=97) And (Asc(ch)<=122)) Or (ch="_") Or (ch="-")  Or (ch=".") Then Fout = Fout & ch
+	Next
+
+	SanitizeNameString = Fout
+End Function
+
+Function GetNearestUnusedFileName(fname As String) As String
+' Pass in something like "C:\QdPpms\Data\HighZ.dat" and this may return "C:\QdPpms\Data\HighZ_000001.dat"
+' "C:\QdPpms\Data\HighZ.dat" exists already.
+	Dim i As Integer
+	Dim st As String
+	i = 0
+	If Dir(fname)<>"" Then
+		Do
+			i = i + 1
+			posdot = InStrRev(fname,".")
+			st = Left(fname,posdot-1) & "_" & Format(i,"000000") & "." & Right(fname,Len(fname) - posdot)
+		Loop Until Dir(st)=""
+		GetNearestUnusedFileName = st
+	Else
+		GetNearestUnusedFileName = fname
+	End If
+End Function
+
+Sub CreateFolderHierarchy(FullPath As String)
+    Dim pathParts() As String
+    Dim iStart As Integer
+    Dim iEnd As Integer
+    Dim partialPath As String
+
+    partialPath = ""
+    pathParts = Split(FullPath, "\")
+    ' make sure things work correctly when working with network locations
+    If (Left(FullPath, 2) = "\\" And UBound(pathParts) >= 3) Then
+        pathParts(3) = "\\" & pathParts(2) & "\" & pathParts(3)
+        iStart = 3
+    Else
+        iStart = 0
+    End If
+    iEnd = UBound(pathParts) - IIf(Right(FullPath,1) = "\",0,1)
+    For i = iStart To UBound(pathParts)
+        partialPath = partialPath & pathParts(i) & "\"
+        If Len(Dir(partialPath, vbDirectory)) = 0 Then MkDir (partialPath)
+    Next i
+End Sub
+
+Sub CheckForRequiredVersion(scriptName As String,thisVersion As Long,minimumVersion As Long)
+	If (minimumVersion > thisVersion) Then
+		MsgBox("The current script requires a newer version of '" & scriptName & "'" & vbCrLf & "to run. Please update '" & scriptName & "' to its latest version.",vbCritical + vbOkOnly, "Missing Scripting Components")
+		Exit All
+	End If
+End Sub
+
+Sub Append2String(ByRef targetString As String, ByVal stringToAdd As String)
+	targetString = targetString & stringToAdd
+End Sub
+
+Function Power(X As Double,Y As Integer) As Double
+	Dim p, i
+    p = 1
+    For i = 1 To Y
+        p = p*X
+    Next i
+    Power = p
+End Function
+
+' ShellAndWaitForTermination from <http://www.vbaccelerator.com/home/VB/Code/Libraries/Shell_Projects/Shell_And_Wait_For_Completion/article.asp>
+Private Declare Sub Sleep Lib "kernel32" ( _
+    ByVal dwMilliseconds As Long)
+Private Declare Function GetExitCodeProcess Lib "kernel32" ( _
+    ByVal hProcess As Long, lpExitCode As Long) As Long
+Private Declare Function timeGetTime Lib "winmm.dll" () As Long
+Private Declare Function OpenProcess Lib "kernel32" ( _
+    ByVal dwDesiredAccess As Long, ByVal bInheritHandle As Long, ByVal dwProcessId As Long) As Long
+Private Const STILL_ACTIVE = &H103
+Private Const PROCESS_QUERY_INFORMATION = &H400
+Private Declare Function CloseHandle Lib "kernel32" ( _
+    ByVal hObject As Long) As Long
+
+Public Function ShellAndWaitForTermination( _
+        sShell As String, _
+        Optional ByVal eWindowStyle As VbAppWinStyle = vbNormalFocus, _
+        Optional ByRef sError As String, _
+        Optional ByVal lTimeOut As Long = 2000000000 _
+    ) As Boolean
+	Dim hProcess As Long
+	Dim lR As Long
+	Dim lTimeStart As Long
+	Dim bSuccess As Boolean
+
+	On Error GoTo ShellAndWaitForTerminationError
+
+    ' This is v2 which is somewhat more reliable:
+    hProcess = OpenProcess(PROCESS_QUERY_INFORMATION, False, Shell(sShell, eWindowStyle))
+    If (hProcess = 0) Then
+        sError = "This program could not determine whether the process started." & _
+             "Please watch the program and check it completes."
+        ' Only fail if there is an error - this can happen
+        ' when the program completes too quickly.
+    Else
+        bSuccess = True
+        lTimeStart = timeGetTime()
+        Do
+            ' Get the status of the process
+            GetExitCodeProcess hProcess, lR
+            ' Sleep during wait to ensure the other process gets
+            ' processor slice:
+            DoEvents: Sleep 100
+            If (timeGetTime() - lTimeStart > lTimeOut) Then
+                ' Too long!
+                sError = "The process has timed out."
+                lR = 0
+                bSuccess = False
+            End If
+        Loop While lR = STILL_ACTIVE
+    End If
+    ShellAndWaitForTermination = bSuccess
+
+    Exit Function
+
+ShellAndWaitForTerminationError:
+    sError = Err.Description
+    Exit Function
+End Function
+
+' Helium 4 saturation temperature as a function of vapor pressure
+' copied from the qdusa.com website java app:
+' http://svnserver.qdusa.com/repos/software/java/HeVapor/
+Function CalculateHe4Temperature(PressureTorr As Double) As Double
+	Const HE4_CROSS_PRESSURE = 5041.8
+	Const TORR_TO_PA = 133.322368
+	Dim PressurePascal As Double
+	Dim He4A1(0 To 9) As Double
+	Dim He4B1 As Double, He4C1 As Double
+	He4A1(0) = 1.392408
+	He4A1(1) = 0.527153
+	He4A1(2) = 0.166756
+	He4A1(3) = 0.050988
+	He4A1(4) = 0.026514
+	He4A1(5) = 0.001975
+	He4A1(6) = -0.017976
+	He4A1(7) = 0.005409
+	He4A1(8) = 0.013259
+	He4A1(9) = 0
+	He4B1 = 5.6
+	He4C1 = 2.9
+
+	Dim He4A2(0 To 9) As Double
+	Dim He4B2 As Double, He4C2 As Double
+	He4A2(0) = 3.146631
+	He4A2(1) = 1.357655
+	He4A2(2) = 0.413923
+	He4A2(3) = 0.091159
+	He4A2(4) = 0.016349
+	He4A2(5) = 0.001826
+	He4A2(6) = -0.004325
+	He4A2(7) = -0.004973
+	He4A2(8) = 0
+	He4A2(9) = 0
+	He4B2 = 10.3
+	He4C2 = 1.9
+
+	PressurePascal = PressureTorr * TORR_TO_PA
+
+	Dim I As Integer
+	Dim out As Double
+	out = 0
+	If PressurePascal < HE4_CROSS_PRESSURE Then
+		For I = 0 To 9
+			out = out + He4A1(I)*((Log(PressurePascal)-He4B1)/He4C1)^I
+		Next
+	Else
+		For I = 0 To 9
+			out = out + He4A2(I)*((Log(PressurePascal)-He4B2)/He4C2)^I
+		Next
+	End If
+
+	CalculateHe4Temperature = out
+End Function

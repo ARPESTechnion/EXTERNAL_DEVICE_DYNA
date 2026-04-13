@@ -80,6 +80,9 @@ class DynaTab(BaseTab):
         self._detached_ax_field = None
         self._detached_line_temp = None
         self._detached_line_field = None
+        self._grid_enabled: bool = True
+        self._grid_buttons: list[ttk.Button] = []
+        self._xlink_guard: bool = False
 
     def create_widgets(self) -> None:
         self._conn_header = ConnectionHeader(
@@ -317,6 +320,11 @@ class DynaTab(BaseTab):
         toolbar = NavigationToolbar2Tk(self.canvas, parent, pack_toolbar=False)
         toolbar.pack(side="top", fill="x")
         toolbar.update()
+        self._add_toolbar_buttons(
+            toolbar,
+            lambda: self._autoscale_axes(self.ax_temp, self.ax_field, self.canvas),
+        )
+        self._install_x_link_callbacks(self.ax_temp, self.ax_field, self.canvas)
 
         controls = ttk.Frame(parent)
         controls.pack(fill="x", padx=5, pady=(6, 0))
@@ -343,7 +351,7 @@ class DynaTab(BaseTab):
     def _create_plot_components(self, parent: tk.Widget):
         fig = Figure(figsize=(6.9, 6.0), dpi=100, constrained_layout=True)
         ax_temp = fig.add_subplot(211)
-        ax_field = fig.add_subplot(212)
+        ax_field = fig.add_subplot(212, sharex=ax_temp)
         ax_temp.tick_params(axis="both", which="both", direction="in")
         ax_field.tick_params(axis="both", which="both", direction="in")
         ax_temp.set_ylabel("Temp (K)")
@@ -351,6 +359,7 @@ class DynaTab(BaseTab):
         ax_field.set_xlabel("Time (s)")
         ax_temp.margins(x=0.02)
         ax_field.margins(x=0.02)
+        self._apply_grid_to_axes(ax_temp, ax_field)
         line_temp, = ax_temp.plot([], [], color="tab:red", marker="o", linestyle="-", markersize=4)
         line_field, = ax_field.plot([], [], color="tab:green", marker="o", linestyle="-", markersize=4)
         canvas = FigureCanvasTkAgg(fig, master=parent)
@@ -381,7 +390,16 @@ class DynaTab(BaseTab):
         self._detached_canvas.get_tk_widget().pack(fill="both", expand=True)
         detached_toolbar = NavigationToolbar2Tk(self._detached_canvas, frame)
         detached_toolbar.update()
+        self._add_toolbar_buttons(
+            detached_toolbar,
+            lambda: self._autoscale_axes(
+                self._detached_ax_temp,
+                self._detached_ax_field,
+                self._detached_canvas,
+            ),
+        )
         self._detached_plot_window = win
+        self._install_x_link_callbacks(self._detached_ax_temp, self._detached_ax_field, self._detached_canvas)
         win.bind("<Configure>", self._on_detached_window_resize)
         win.protocol("WM_DELETE_WINDOW", self._close_detached_plot_window)
         self.update_plot()
@@ -444,6 +462,64 @@ class DynaTab(BaseTab):
         line_temp.set_data(t_data, temp_data)
         line_field.set_data(t_data, field_data)
         for ax in (ax_temp, ax_field):
+            ax.relim()
+            ax.autoscale_view()
+        canvas.draw_idle()
+
+    def _add_toolbar_buttons(self, toolbar: tk.Widget, autoscale_cmd) -> None:
+        ttk.Button(toolbar, text="Autoscale", command=autoscale_cmd, width=10).pack(side="left", padx=(6, 0))
+        grid_btn = ttk.Button(toolbar, text="Grid On", command=self._toggle_grid, width=10)
+        grid_btn.pack(side="left", padx=(4, 0))
+        self._grid_buttons.append(grid_btn)
+        self._refresh_grid_button_labels()
+
+    def _install_x_link_callbacks(self, upper_ax, lower_ax, canvas) -> None:
+        if upper_ax is None or lower_ax is None or canvas is None:
+            return
+        upper_ax.callbacks.connect("xlim_changed", lambda _ax: self._sync_x_limits(upper_ax, lower_ax, canvas))
+        lower_ax.callbacks.connect("xlim_changed", lambda _ax: self._sync_x_limits(lower_ax, upper_ax, canvas))
+
+    def _sync_x_limits(self, source_ax, target_ax, canvas) -> None:
+        if source_ax is None or target_ax is None or canvas is None or self._xlink_guard:
+            return
+        try:
+            self._xlink_guard = True
+            target_ax.set_xlim(source_ax.get_xlim())
+            canvas.draw_idle()
+        finally:
+            self._xlink_guard = False
+
+    def _apply_grid_to_axes(self, *axes) -> None:
+        for ax in axes:
+            if ax is None:
+                continue
+            ax.grid(self._grid_enabled, which="both", linestyle="--", linewidth=0.6, alpha=0.35)
+
+    def _refresh_grid_button_labels(self) -> None:
+        text = "Grid On" if self._grid_enabled else "Grid Off"
+        active_buttons: list[ttk.Button] = []
+        for btn in self._grid_buttons:
+            if btn.winfo_exists():
+                btn.configure(text=text)
+                active_buttons.append(btn)
+        self._grid_buttons = active_buttons
+
+    def _toggle_grid(self) -> None:
+        self._grid_enabled = not self._grid_enabled
+        self._apply_grid_to_axes(self.ax_temp, self.ax_field, self._detached_ax_temp, self._detached_ax_field)
+        if self.canvas is not None:
+            self.canvas.draw_idle()
+        if self._detached_canvas is not None:
+            self._detached_canvas.draw_idle()
+        self._refresh_grid_button_labels()
+
+    @staticmethod
+    def _autoscale_axes(ax_temp, ax_field, canvas) -> None:
+        if canvas is None or ax_temp is None or ax_field is None:
+            return
+        for ax in (ax_temp, ax_field):
+            ax.set_autoscalex_on(True)
+            ax.set_autoscaley_on(True)
             ax.relim()
             ax.autoscale_view()
         canvas.draw_idle()

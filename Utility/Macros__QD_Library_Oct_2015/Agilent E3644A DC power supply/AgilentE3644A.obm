@@ -1,0 +1,119 @@
+VERSION 1.0 OBJECT
+BEGIN
+  MultiUse = 0  'False
+END
+Attribute VB_PredeclaredId = True
+Attribute VB_Creatable = True
+Attribute VB_Exposed = True
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Name = "AgilentE3644A"
+'AgilentE3644A.obm
+'Final Test Object
+
+'Object to encapsulate communication to the AgilentE3644A
+'Note that all functions are designed to return true if successful, false otherwise
+'However, this functionality does not work because the GPIB functions don't return 0 when they fail.
+
+'#Uses "..\Utils\Utils.obm"
+
+Option Explicit
+
+Private G As New GPIB 'don't allow outside user direct GPIB access.
+Const AgilentE3644A As Integer = 13 'GPIB address of instrument
+'function to initialize bridge. It will return False if not successful, true otherwise
+Public Function Init() As Boolean
+	Dim s As String
+	Dim result As Integer
+	'add LS bridge to GPIB
+	result = GPIB.AddDevice(AgilentE3644A, 13, 1)
+    Debug.Print "AgilentE3644A Status = " & result
+
+    If (result < 0) Then '< 0 indicates an error unless -103, which is already connected
+		Init = False
+		Exit Function
+	End If
+
+	'clear device. This seems to be necessary to get reliable communication
+    If GPIB.SendString(AgilentE3644A, "*CLS"  & vbCrLf)<>1 Then
+		Init = False
+		Exit Function
+	End If
+    Wait(0.01)
+	Init = True
+
+End Function
+'function to configure the LCR meter to sweep a list of frequencies
+Public Function Config() As Boolean
+    'Reset machine
+    GPIB.SendString(AgilentE3644A, "VOLTage:RANGe P20V" & vbCrLf)
+    Wait(0.01)
+    GPIB.SendString(AgilentE3644A, "VOLTage:PROTection 20" & vbCrLf)
+    Wait(0.01)
+    GPIB.SendString(AgilentE3644A, "VOLTage:PROTection:STATe On" & vbCrLf)
+    Wait(0.01)
+	SetHeatCur(0)
+	Wait(0.01)
+    Config = True
+
+End Function
+'function to set heater voltage
+Public Function ReadVolCur(ByRef Vol As Double, ByRef Cur As Double, ByRef modeConstCur As Integer) As Boolean
+    Dim sVol As String
+    Dim sCur As String
+    Dim status As String
+    GPIB.SendString(AgilentE3644A, "MEASure?")
+    Wait(0.01)
+    GPIB.GetString(AgilentE3644A, sVol)
+    Wait(0.01)
+    Vol = CDbl(sVol)
+    GPIB.SendString(AgilentE3644A, "MEASure:CURRent?")
+    Wait(0.01)
+    GPIB.GetString(AgilentE3644A, sCur)
+    Wait(0.01)
+    Cur = CDbl(sCur)
+    GPIB.SendString(AgilentE3644A, "STAT:QUES:ENAB 3")
+    Wait(0.01)
+    GPIB.SendString(AgilentE3644A, "STATus:QUEStionable:CONDition?")
+    Wait(0.01)
+    GPIB.GetString(AgilentE3644A, status)
+    modeConstCur = CInt(status)
+' If ‘‘0’’ is returned, the power supply is in Output Off Or unregulated state. If ‘‘1’’ Is returned, the power supply Is In the CC operating mode And If ‘‘2’’ Is returned, the power supply Is In the CV operating mode. If ‘‘3’’ Is returned, the power supply Is In failure.
+    ReadVolCur = True
+End Function
+'function to set heater current
+Public Function SetHeatCur(ByRef heatCur As Double) As Boolean
+    If heatCur <= 0.01 And heatCur >= -0.01 Then   ' 10mA max current!!!! wichtig fuer das Versalab weil die draehte nicht mehr aushalten
+        GPIB.SendString(AgilentE3644A, "APPLy 20, " & heatCur & vbCrLf)
+        Wait(0.01)
+        SetHeatCur = True
+    Else
+        SetHeatCur = False
+    End If
+End Function
+'function to set heater voltage
+Public Function SetHeatVol(ByRef heatVol As Double) As Boolean
+    GPIB.SendString(AgilentE3644A, "APPLy " & heatVol & ", 0.01" & vbCrLf) ' 10mA max current!!!! wichtig fuer das Versalab weil die draehte nicht mehr aushalten
+    Wait(1)
+    SetHeatVol = True
+End Function
+'function to set output ON
+Public Function SetOutputON() As Boolean
+    Dim Vol As Double
+    Dim Cur As Double
+    Dim modeConstCur As Integer
+    ReadVolCur(Vol, Cur, modeConstCur)
+    If Cur <= 0.01 And Cur >= -0.01 Then   ' 10mA max current!!!! wichtig fuer das Versalab weil die draehte nicht mehr aushalten
+        GPIB.SendString(AgilentE3644A, "Output 1" & vbCrLf)
+    Wait(0.01)
+        SetOutputON = True
+    Else
+        GPIB.SendString(AgilentE3644A, "Output 0" & vbCrLf)
+        SetOutputON = False
+    End If
+End Function
+'function to set output ON
+Public Function SetOutputOFF() As Boolean
+    GPIB.SendString(AgilentE3644A, "Output 0")
+    Wait(0.01)
+    SetOutputOFF = True
+End Function

@@ -36,8 +36,8 @@ class HallTab(BaseTab):
     _HALL_BAR_PRESETS_V_PER_G: dict[str, float] = {
         "Wire Hall Bar 1": 2.1508e-05,
         "Wire Hall Bar 2": 2.1540e-05,
-        "Bond Hall Bar 1": 1.9057e-05,
-        "Bond Hall Bar 2": 1.9072e-05,
+        "Bond Hall Bar 1": -1.9057e-05,
+        "Bond Hall Bar 2": -1.9647e-05,
     }
     _CUSTOM_PRESET_NAME = "Custom"
 
@@ -113,7 +113,7 @@ class HallTab(BaseTab):
             ("Filter Count:", self.k2450_filter_count, make_float_validator(1.0, 100.0)),
             ("TBM delay (s):", self.k2450_tbm, make_float_validator(0.0, 10.0)),
             ("Hall Offset (V):", self.k2450_hall_offset, make_float_validator(-5.0, 5.0)),
-            ("V→Gauss (G/V):", self.k2450_hall_v2gauss, make_float_validator(1e-6, 1e7)),
+            ("V→Gauss (G/V):", self.k2450_hall_v2gauss, make_float_validator(-1e7, 1e7)),
         ]
 
         row_offset = 2
@@ -296,9 +296,18 @@ class HallTab(BaseTab):
             self.k2450_current.set(2.0)
             self.k2450_nplc.set(10)
             self.k2450_filter_count.set(100)
+
+            # Capture Tk-backed values on the main thread before starting the worker.
+            voltage_range_raw = str(self.k2450_voltage_range.get())
+            auto_range = voltage_range_raw.lower() == "auto"
+            voltage_range = None if auto_range else float(voltage_range_raw)
+            compliance_v = float(self.k2450_compliance_v.get())
+            tbm = float(self.k2450_tbm.get())
+            hall_v2gauss = float(self.k2450_hall_v2gauss.get())
+
             worker = threading.Thread(
                 target=self._measure_and_apply_offset_worker,
-                args=(popup,),
+                args=(popup, compliance_v, tbm, voltage_range, auto_range, hall_v2gauss),
                 daemon=True,
                 name="hall-offset-measure",
             )
@@ -307,24 +316,29 @@ class HallTab(BaseTab):
         measure_btn.configure(command=_run_offset)
         self._center_toplevel(popup, width=560, height=260)
 
-    def _measure_and_apply_offset_worker(self, popup: tk.Toplevel) -> None:
+    def _measure_and_apply_offset_worker(
+        self,
+        popup: tk.Toplevel,
+        compliance_v: float,
+        tbm: float,
+        voltage_range: float | None,
+        auto_range: bool,
+        hall_v2gauss: float,
+    ) -> None:
         try:
             from v3.core.measurements import measure_hall
 
             ctx = self.app.make_context()
-            voltage_range_raw = str(self.k2450_voltage_range.get())
-            auto_range = voltage_range_raw.lower() == "auto"
-            voltage_range = None if auto_range else float(voltage_range_raw)
 
             result = measure_hall(
                 ctx,
                 current_mA=2.0,
                 nplc=10,
-                compliance_v=self.k2450_compliance_v.get(),
+                compliance_v=compliance_v,
                 voltage_range=voltage_range,
                 auto_range=auto_range,
                 filter_count=100,
-                tbm=self.k2450_tbm.get(),
+                tbm=tbm,
             )
 
             voltage = float(result.get("Hall Voltage", 0.0))
@@ -332,13 +346,9 @@ class HallTab(BaseTab):
             voltage_error = abs(float(result.get("Hall Voltage Error", 0.0)))
             field_error = abs(float(result.get("Hall Field Error", 0.0)))
 
-            try:
-                v2g = float(self.k2450_hall_v2gauss.get())
-                if abs(v2g) > 1e-12:
-                    step_v = 0.001 / abs(v2g)
-                    voltage = round(voltage / step_v) * step_v
-            except Exception:
-                pass
+            if abs(hall_v2gauss) > 1e-12:
+                step_v = 0.001 / abs(hall_v2gauss)
+                voltage = round(voltage / step_v) * step_v
 
             def _apply() -> None:
                 self.k2450_hall_offset.set(voltage)

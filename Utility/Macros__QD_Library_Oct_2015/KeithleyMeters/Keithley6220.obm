@@ -1,0 +1,97 @@
+VERSION 1.0 OBJECT
+BEGIN
+  MultiUse = 0  'False
+END
+Attribute VB_PredeclaredId = True
+Attribute VB_Creatable = True
+Attribute VB_Exposed = True
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Name = "Keithley6220"
+'Keithley6220.obm
+'Final Test Object
+
+'Object to encapsulate communication to the Keithley 6220 and 2182 via a serial connection
+'Note that all functions are designed to return true if successful, false otherwise
+'However, this functionality does not work because the GPIB functions don't return 0 when they fail.
+
+'#Uses "..\Utils\Utils.obm"
+
+Option Explicit
+
+'Private  G As New GPIB 'don't allow outside user direct GPIB access.
+Const Address As Integer = 5 'GPIB address of instrument
+'function to initialize bridge. It will return False if not successful, true otherwise
+Public Function Init() As Boolean
+	Dim s As String
+	Dim result As Integer
+	'add LS bridge to GPIB
+	result = GPIB.AddDevice(Address, 13, 1)
+	'return codes from AddDevice are:
+	 '   +ud - device handle
+	 '    -101 - invalid argument
+	 '   -102 - GPIB0 Not found
+	 '   -103 - device already connected
+	 '   -104 - device Not found
+	 '   -105 - attempting To use PPMS
+	 '     0  - NI Error code
+	 '    -ni - NI Error code
+
+	If (result < 0 And result <> -103) Then '< 0 indicates an error unless -103, which is already connected
+		Init = False
+		Exit Function
+	End If
+
+	'clear device. This seems to be necessary to get reliable communication
+	If GPIB.SendString(Address, "*CLS"  & vbCrLf)<>1 Then
+		Init = False
+		Exit Function
+	End If
+
+	Init = True
+
+End Function
+'function to configure the LCR meter to sweep a list of frequencies
+Public Function Config() As Boolean
+	'Reset machine
+	GPIB.SendString(Address, "*RST" & vbCrLf)
+	Wait(0.005)
+	GPIB.SendString(Address, "*CLS" & vbCrLf)
+	Wait(0.005)
+
+	'Switch to autorange
+	GPIB.SendString(Address, "SOUR:CURR:RANG:AUTO ON" & vbCrLf)
+	Wait(0.005)
+
+	'Sets up and configures baud rate for communication with the 2182
+	GPIB.SendString(Address, ":SYST:COMM:SER:TERM CRLF" & vbCrLf)
+	Wait(0.005)
+	GPIB.SendString(Address, ":SYST:COMM:SER:BAUD 19200" & vbCrLf)
+	Wait(0.005)
+
+	'Send set up commands To 2182
+	'Sends trigger to voltmeter for channel 1
+	GPIB.SendString(Address, "SYST:COMM:SER:SEND ':TRIG:COUN 1'" & vbCrLf)
+	Wait(0.005)
+	GPIB.SendString(Address, "SYST:COMM:SER:SEND ':SAMP:COUN 1'" & vbCrLf)
+	Wait(0.005)
+
+	'Set the DVM
+	GPIB.SendString(Address, "SYST:COMM:SER:SEND ':SENS:FUNC VOLT'" & vbCrLf)
+	Wait(0.005)
+
+	'Select channel 1
+	GPIB.SendString(Address, "SYST:COMM:SER:SEND ':SENS:CHAN 1'" & vbCrLf)
+	Wait(0.005)
+	'Turn on autoranging
+	GPIB.SendString(Address, "SYST:COMM:SER:SEND ':SENS:VOLT:CHAN1:RANG:AUTO ON'" & vbCrLf)
+	Wait(0.005)
+
+	Config = True
+
+End Function
+'function to read one resistance
+Public Function ReadRes(ByRef Res As Double) As Boolean
+
+
+	ReadRes = True
+End Function

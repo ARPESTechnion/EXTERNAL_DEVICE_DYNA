@@ -117,6 +117,8 @@ class ResultsTab(BaseTab):
         self._errorbar_chk_g2: ttk.Checkbutton | None = None
         self._fit_combo_g1: ttk.Combobox | None = None
         self._fit_combo_g2: ttk.Combobox | None = None
+        self._plots_grid_enabled: bool = True
+        self._plots_grid_button: ttk.Button | None = None
         self._channel_colors: dict[str, str] = {
             "a": "tab:blue",
             "b": "tab:orange",
@@ -930,7 +932,7 @@ class ResultsTab(BaseTab):
             ("Filter Count:", hall.k2450_filter_count, make_float_validator(1.0, 100.0)),
             ("TBM delay (s):", hall.k2450_tbm, make_float_validator(0.0, 10.0)),
             ("Hall Offset (V):", hall.k2450_hall_offset, make_float_validator(-5.0, 5.0)),
-            ("V→Gauss (G/V):", hall.k2450_hall_v2gauss, make_float_validator(1e-6, 1e7)),
+            ("V→Gauss (G/V):", hall.k2450_hall_v2gauss, make_float_validator(-1e7, 1e7)),
         ]
         for idx, (label, var, validator) in enumerate(entries, start=2):
             ttk.Label(sf, text=label).grid(row=idx, column=0, sticky="w", padx=5, pady=2)
@@ -1010,6 +1012,8 @@ class ResultsTab(BaseTab):
         self.ax2 = self.fig.add_subplot(212)
         self.ax1.tick_params(axis="both", which="both", direction="in")
         self.ax2.tick_params(axis="both", which="both", direction="in")
+        self._apply_plot_grid(self.ax1)
+        self._apply_plot_grid(self.ax2)
         self.fig.subplots_adjust(
             left=0.16, right=0.97, top=0.95, bottom=0.10, hspace=0.48
         )
@@ -1022,6 +1026,10 @@ class ResultsTab(BaseTab):
             from matplotlib.backends.backend_tkagg import NavigationToolbar2Tk
             toolbar = NavigationToolbar2Tk(self.canvas, parent)
             toolbar.update()
+            ttk.Button(toolbar, text="Autoscale", command=self._autoscale_all_graphs, width=10).pack(side="left", padx=(6, 0))
+            self._plots_grid_button = ttk.Button(toolbar, command=self._toggle_plots_grid, width=10)
+            self._plots_grid_button.pack(side="left", padx=(4, 0))
+            self._refresh_plot_grid_button_label()
         except Exception:
             pass
 
@@ -1044,6 +1052,8 @@ class ResultsTab(BaseTab):
             self.ax2.set_ylabel(self.y2_var.get())
             self.ax1.tick_params(axis="both", which="both", direction="in")
             self.ax2.tick_params(axis="both", which="both", direction="in")
+            self._apply_plot_grid(self.ax1)
+            self._apply_plot_grid(self.ax2)
             self._last_rendered_graph_data = {1: {}, 2: {}}
             self._set_errorbar_control_state(1, False)
             self._set_errorbar_control_state(2, False)
@@ -1179,6 +1189,7 @@ class ResultsTab(BaseTab):
             else:
                 ax.set_ylabel(y_label)
             ax.tick_params(axis="both", which="both", direction="in")
+            self._apply_plot_grid(ax)
             if plotted_series > 0 and (len(selected_channels) > 1 or fit_enabled):
                 ax.legend(loc="best", fontsize=8)
 
@@ -1332,6 +1343,48 @@ class ResultsTab(BaseTab):
     def _on_link_x_axis_toggled(self) -> None:
         if self.link_x_axis_var.get():
             self._sync_x_limits_from(1)
+
+    def _autoscale_graph(self, graph_index: int) -> None:
+        if self.canvas is None:
+            return
+        ax = self.ax1 if graph_index == 1 else self.ax2
+        ax.relim(visible_only=True)
+        ax.autoscale_view()
+        if self.link_x_axis_var.get():
+            self._sync_x_limits_from(graph_index)
+        self.canvas.draw_idle()
+
+    def _autoscale_all_graphs(self) -> None:
+        if self.canvas is None:
+            return
+        self.ax1.set_autoscalex_on(True)
+        self.ax1.set_autoscaley_on(True)
+        self.ax2.set_autoscalex_on(True)
+        self.ax2.set_autoscaley_on(True)
+        self.ax1.relim(visible_only=True)
+        self.ax2.relim(visible_only=True)
+        self.ax1.autoscale_view()
+        self.ax2.autoscale_view()
+        if self.link_x_axis_var.get():
+            self._sync_x_limits_from(1)
+        self.canvas.draw_idle()
+
+    def _apply_plot_grid(self, ax) -> None:
+        ax.grid(self._plots_grid_enabled, which="both", linestyle="--", linewidth=0.6, alpha=0.35)
+
+    def _refresh_plot_grid_button_label(self) -> None:
+        if self._plots_grid_button is None or not self._plots_grid_button.winfo_exists():
+            return
+        self._plots_grid_button.configure(text=("Grid On" if self._plots_grid_enabled else "Grid Off"))
+
+    def _toggle_plots_grid(self) -> None:
+        if self.canvas is None:
+            return
+        self._plots_grid_enabled = not self._plots_grid_enabled
+        self._apply_plot_grid(self.ax1)
+        self._apply_plot_grid(self.ax2)
+        self._refresh_plot_grid_button_label()
+        self.canvas.draw_idle()
 
     def _on_xlim_changed(self, source_graph_index: int) -> None:
         if not self.link_x_axis_var.get() or self._xlink_guard:

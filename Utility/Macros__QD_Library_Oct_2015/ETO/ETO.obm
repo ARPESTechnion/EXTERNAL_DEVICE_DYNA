@@ -1,0 +1,420 @@
+VERSION 1.0 OBJECT
+BEGIN
+  MultiUse = 0  'False
+END
+Attribute VB_PredeclaredId = True
+Attribute VB_Creatable = True
+Attribute VB_Exposed = True
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Name = "ETO"
+'ETO.obm
+'Engineering prototype SAX object for CAN ACT
+
+'#Uses "..\SDO\SDO.obm"
+
+Option Explicit
+
+Enum TGain
+	A_1X
+	B_3X
+	C_10X
+	D_30X
+	E_100X
+	F_300X
+	G_900X
+	H_3000X
+	I_9000X
+	J_30000X
+	K_90000X
+End Enum
+
+Enum IRange
+	A_100nA
+	B_1uA
+	C_10uA
+	D_100uA
+	E_1mA
+	F_10mA
+	G_100mA
+End Enum
+
+Enum Mode
+	Resistance
+	dVdI
+	IV
+	Oscilloscope
+End Enum
+
+
+
+
+Dim ETOID As Long
+
+Private Sub Object_Initialize()
+'set the default values for the ACT
+	ETOID = 19
+End Sub
+
+'Read ETO firmware Value
+Function ReadFirmwareRev() As String
+	ReadFirmwareRev = SDO.ReadSDO(ETOID,&h100A,0, vbString)
+End Function
+'Set Module Mode
+Function Set_Mode(Mode As Byte)
+	Dim Address As Long
+	Address = &h6050
+	SDO.WriteSDO(ETOID, Address, 2, Mode)
+End Function
+
+'Trigger Ch1
+Function Trigger1()
+	Dim Address As Long
+	Address = &h6050
+	SDO.WriteSDO(ETOID, Address, 4, CByte(1))
+End Function
+
+
+'Trigger Ch2
+Function Trigger2()
+	Dim Address As Long
+	Address = &h6050
+	SDO.WriteSDO(ETOID, Address, 5, CByte(1))
+End Function
+
+'Initialize DSP
+Function InitDSP()
+	Dim Address As Long
+	Address = &h6050
+	SDO.WriteSDO(ETOID, Address, 6, CByte(1))
+End Function
+'Set Frequency
+Function Set_Frequency(Channel As Integer, F As Single)
+	Dim Address As Long
+	Address = &h6010 + Channel*&h100
+	SDO.WriteSDO(ETOID, Address, 1, F)
+End Function
+
+'Set Current Range
+Function Set_I_Range(Channel As Integer, Range As Byte)
+	Dim Address As Long
+	Address = &h6010 + Channel*&h100
+	SDO.WriteSDO(ETOID, Address, 3, Range)
+End Function
+
+Function Set_AC_Current(Channel As Integer, F As Single)
+	Dim Address As Long
+	Address = &h6010 + Channel*&h100
+	SDO.WriteSDO(ETOID,Address,6,F)
+End Function
+
+Function Set_Feedback_Enable(Channel As Integer, J As Byte)
+	Dim Address As Long
+	Address = &h6010 + Channel*&h100
+	SDO.WriteSDO(ETOID, Address, 9, J)
+End Function
+
+Function Set_Output_Enable(Channel As Integer, J As Byte)
+	Dim Address As Long
+	Address = &h6010 + Channel*&h100
+	SDO.WriteSDO(ETOID, Address, 8, J)
+End Function
+
+'Set Averaging Time
+Function Set_Ave_Time(Channel As Integer, F As Single)
+	Dim Address As Long
+	Address = &h6060 + Channel*&h100
+	SDO.WriteSDO(ETOID,Address, 1, F)
+End Function
+
+'Set DC Current
+Function Set_DC_Current(Channel As Integer, F As Single)
+	Dim Address As Long
+	Address = &h6010 + Channel*&h100
+	SDO.WriteSDO(ETOID,Address, 7, F)
+End Function
+
+'Read DC Offset
+Function Read_DC_Offset(Channel As Integer) As Single
+	Dim Address As Long
+	Address = &h6010 + Channel*&h100
+	Read_DC_Offset = SDO.ReadSDO(ETOID,Address, 7, vbSingle)
+End Function
+
+'Read Frequency
+Function Read_Frequency(Channel As Integer)  As Single
+	Dim Address As Long
+	Address = &h6010 + Channel*&h100
+	Read_Frequency = SDO.ReadSDO(ETOID, Address, 2, vbSingle)
+End Function
+
+'Read Averaging Time
+Function Read_Ave_Time(Channel As Integer) As Single
+	Dim Address As Long
+	Address = &h6060 + Channel*&h100
+	Read_Ave_Time = SDO.ReadSDO(ETOID,Address, 2, vbSingle)
+End Function
+
+'Read Resistance
+Function Read_Resistance(Channel As Integer)  As Single
+	Dim Address As Long
+	Address = &h6060 + Channel*&h100
+	Read_Resistance = SDO.ReadSDO(ETOID, Address, 8, vbSingle)
+End Function
+
+'Read Phase Angle
+Function Read_Phase_Angle(Channel As Integer)  As Single
+	Dim Address As Long
+	Address = &h6060 + Channel*&h100
+	Read_Phase_Angle = SDO.ReadSDO(ETOID, Address, 6, vbSingle)
+End Function
+
+'Read Phase Delay
+Function Read_Phase_Delay(Channel As Integer)  As Single
+	Dim Address As Long
+	Address = &h6060 + Channel*&h100
+	Read_Phase_Delay = SDO.ReadSDO(ETOID, Address, 7, vbSingle)
+End Function
+
+'Read AC MDAC Counts
+Function Read_AC_MDAC_Counts(Channel As Integer)  As Integer
+	Dim Address As Long
+	Address = &h6010 + Channel*&h100
+	Read_AC_MDAC_Counts = SDO.ReadSDO(ETOID, Address, 11, vbInteger)
+End Function
+
+'Select Preamp
+Function Set_Preamp(Channel As Integer, J As Byte)
+	Dim Address As Long
+	Address = &h6020 + Channel*&h100
+	SDO.WriteSDO(ETOID,Address, 1, J)
+End Function
+
+'Set Preamp Gain
+Function Set_PGA_Gain(Channel As Integer, J As Byte)
+	Dim Address As Long
+	Address = &h6020 + Channel*&h100
+	SDO.WriteSDO(ETOID,Address, 2, J)
+End Function
+
+'Set Module Gain
+Function Set_Module_Gain(Channel As Integer, J As Byte)
+	Dim Address As Long
+	Address = &h6020 + Channel*&h100
+	SDO.WriteSDO(ETOID,Address, 3, J)
+End Function
+
+'Set Total Gain
+Function Set_Total_Gain(Channel As Integer, Gain As Integer)
+	Select Case Gain
+	Case 0
+		Set_Preamp(Channel, 1)
+		Set_PGA_Gain(Channel, 0)
+		Set_Module_Gain(Channel, 0)
+'		Debug.Print 0
+	Case 1
+		Set_Preamp(Channel, 1)
+		Set_PGA_Gain(Channel, 0)
+		Set_Module_Gain(Channel, 1)
+'		Debug.Print 1
+	Case 2
+		Set_Preamp(Channel, 1)
+		Set_PGA_Gain(Channel, 1)
+		Set_Module_Gain(Channel, 0)
+'		Debug.Print 2
+	Case 3
+		Set_Preamp(Channel, 1)
+		Set_PGA_Gain(Channel, 1)
+		Set_Module_Gain(Channel, 1)
+'		Debug.Print 3
+	Case 4
+		Set_Preamp(Channel, 1)
+		Set_PGA_Gain(Channel, 2)
+		Set_Module_Gain(Channel, 0)
+'		Debug.Print 4
+	Case 5
+		Set_Preamp(Channel, 3)
+		Set_PGA_Gain(Channel, 0)
+		Set_Module_Gain(Channel, 0)
+'		Debug.Print 5
+	Case 6
+		Set_Preamp(Channel, 3)
+		Set_PGA_Gain(Channel, 0)
+		Set_Module_Gain(Channel, 1)
+'		Debug.Print 6
+	Case 7
+		Set_Preamp(Channel, 3)
+		Set_PGA_Gain(Channel, 1)
+		Set_Module_Gain(Channel, 0)
+'		Debug.Print 7
+	Case 8
+		Set_Preamp(Channel, 3)
+		Set_PGA_Gain(Channel, 1)
+		Set_Module_Gain(Channel, 1)
+'		Debug.Print 8
+	Case 9
+		Set_Preamp(Channel, 3)
+		Set_PGA_Gain(Channel, 2)
+		Set_Module_Gain(Channel, 0)
+'		Debug.Print 9
+	Case 10
+		Set_Preamp(Channel, 3)
+		Set_PGA_Gain(Channel, 2)
+		Set_Module_Gain(Channel, 1)
+'		Debug.Print 10
+	End Select
+
+
+End Function
+
+'Send Current Range Corrections
+Function Send_I_Range_CFs(Channel As Integer, Range As Integer, ACGain_CF As Single, Phase_Delay As Single, Freq1 As Single, Freq2 As Single, DCGain_CF As Single)
+	Dim Address As Long
+	Address = &h6014 + Channel*&h100
+	SDO.WriteSDO(ETOID,Address, 1, CByte(Range))
+	SDO.WriteSDO(ETOID,Address, 2, ACGain_CF)
+	SDO.WriteSDO(ETOID,Address, 3, Phase_Delay)
+	SDO.WriteSDO(ETOID,Address, 4, Freq1)
+	SDO.WriteSDO(ETOID,Address, 5, Freq2)
+	SDO.WriteSDO(ETOID,Address, 6, DCGain_CF)
+End Function
+
+'Send PGA Gain Correction Factor
+Function Send_PGA_CFs(Channel As Integer, Range As Integer, GainCF As Single, Delay As Single)
+	Dim Address As Long
+	Address = &h6021 + Channel*&h100
+	SDO.WriteSDO(ETOID,Address, CLng(Range + 1), GainCF)
+	SDO.WriteSDO(ETOID,Address, CLng(Range + 4), Delay)
+End Function
+
+
+' Turn Off Channel
+Function Turn_Channel_Off(Channel As Integer)
+	Set_AC_Current(Channel,0)
+	Set_DC_Current(Channel,0)
+	Set_I_Range(Channel, 6)
+	Set_Feedback_Enable(Channel, 0)
+	Set_Output_Enable(Channel, 0)
+	Set_Preamp(Channel, 0)
+End Function
+
+'Send HGA Corrections
+Function Send_LNA_CFs(Channel As Integer, GainCF As Single, Delay As Single)
+	Dim Address As Long
+	Address = &h6022 + Channel*&h100
+	SDO.WriteSDO(ETOID,Address, 1, GainCF)
+	SDO.WriteSDO(ETOID,Address, 2, Delay)
+End Function
+
+'Set module phase delay
+Function Set_Module_Delay(Channel As Integer, Delay As Single)
+	Dim Address As Long
+	Address = &h6061 + Channel*&h100
+	SDO.WriteSDO(ETOID,Address, 1, Delay)
+End Function
+
+'Set AC MDAC Offset
+Function Set_AC_MDAC_Offset(Channel As Integer, Offset As Integer)
+	Dim Address As Long
+	Address = &h6013 + Channel*&h100
+	SDO.WriteSDO(ETOID,Address,1,Offset)
+End Function
+
+'Set AC MDAC Gain CF
+Function Set_AC_MDAC_Gain_CF(Channel As Integer, GainCF As Single)
+	Dim Address As Long
+	Address = &h6013 + Channel*&h100
+	SDO.WriteSDO(ETOID,Address, 3, GainCF)
+End Function
+
+'Set DC MDAC Offset
+Function Set_DC_MDAC_Offset(Channel As Integer, Offset As Integer)
+	Dim Address As Long
+	Address = &h6013 + Channel*&h100
+	SDO.WriteSDO(ETOID,Address, 2, Offset)
+End Function
+
+'Set DC MDAC Gain CF
+Function Set_DC_MDAC_Gain_CF(Channel As Integer, GainCF As Single)
+	Dim Address As Long
+	Address = &h6013 + Channel*&h100
+	SDO.WriteSDO(ETOID,Address, 4, GainCF)
+End Function
+
+'Set ADC Volts Conversion Correction
+Function Set_ADC_CF(Channel As Integer, ADCCF As Single)
+	Dim Address As Long
+	Address = &h6061 + Channel*&h100
+	SDO.WriteSDO(ETOID,Address, 4, ADCCF)
+End Function
+
+'Set Module 1X Gain CF
+Function SetModule_1X_Gain_CF(Channel As Integer, GainCF As Single)
+	Dim Address As Long
+	Address = &h6061 + Channel*&h100
+	SDO.WriteSDO(ETOID,Address, 2, GainCF)
+End Function
+
+'Set Module 3X Gain CF
+Function SetModule_3X_Gain_CF(Channel As Integer, GainCF As Single)
+	Dim Address As Long
+	Address = &h6061 + Channel*&h100
+	SDO.WriteSDO(ETOID,Address, 3, GainCF)
+End Function
+
+'Read ADC Peak Voltage
+Function Read_ADC_Peak_Volts(Channel As Integer) As Single
+	Dim Address As Long
+
+	Address = &h6060 + Channel*&h100
+	Read_ADC_Peak_Volts = SDO.ReadSDO(ETOID,Address, 3, vbSingle)
+
+End Function
+
+'Send High Z Corrections
+Function Send_HighZ_CFs(Channel As Integer, GainCF As Single, Delay As Single)
+	Dim Address As Long
+	Address = &h6023 + Channel*&h100
+	SDO.WriteSDO(ETOID,Address, 1, GainCF)
+	SDO.WriteSDO(ETOID,Address, 2, Delay)
+End Function
+
+Sub Zero_Head_CFs(ByVal Channel As Integer)
+	Dim II As Integer
+
+	For II = 0 To 1
+		Send_I_Range_CFs(Channel, II, 1, 0, 1, 0, 1)
+		Wait(0.1)
+	Next II
+
+	For II = 2 To 6
+		Send_I_Range_CFs(Channel, II, 1, 0, 0, 1, 1)
+		Wait(0.1)
+	Next II
+
+	For II = 0 To 2
+		Send_PGA_CFs(Channel, II, 1, 0)
+	Next II
+
+	Send_LNA_CFs(Channel, 1, 0)
+
+	Send_HighZ_CFs(Channel, 1, 0)
+
+End Sub
+
+'Read 1-Pole Corrected Resistance
+Function Read_Corr_Resistance(ByVal Channel As Integer)  As Single
+	Dim Address As Long
+	Address = &h6060 + Channel*&h100
+	Read_Corr_Resistance = SDO.ReadSDO(ETOID, Address, 9, vbSingle)
+End Function
+
+'Read AC current amplitude.
+Function Read_AC_Amplitude(Channel As Integer) As Single
+	Dim Address As Long
+	Address = &h6010 + Channel*&h100
+	Read_AC_Amplitude = SDO.ReadSDO(ETOID,Address, 6, vbSingle)
+End Function
+
+Private Sub Object_Terminate()
+
+End Sub
