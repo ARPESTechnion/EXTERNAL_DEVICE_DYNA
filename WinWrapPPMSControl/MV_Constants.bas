@@ -68,6 +68,7 @@ Public MV_RunName As String
 Public MV_HelmLogPath As String
 Public MV_LastError As String
 Public MV_SessionStartTimer As Double
+Public MV_SessionStartDate As Date
 
 ' Runtime parameters (editable from scripts)
 Public MV_HelmCompliance_V As Double
@@ -108,14 +109,16 @@ Public Sub MV_ResetDefaults()
 End Sub
 
 Public Sub MV_StartSessionClock()
+    MV_SessionStartDate = Date
     MV_SessionStartTimer = Timer
 End Sub
 
 Public Function MV_GetSessionElapsedSeconds() As Double
     Dim elapsed As Double
-    elapsed = Timer - MV_SessionStartTimer
+    elapsed = (CDbl(Date - MV_SessionStartDate) * 86400#) + (Timer - MV_SessionStartTimer)
     If elapsed < 0# Then
-        elapsed = elapsed + 86400#
+        ' Defensive clamp for rare system clock adjustments.
+        elapsed = 0#
     End If
     MV_GetSessionElapsedSeconds = elapsed
 End Function

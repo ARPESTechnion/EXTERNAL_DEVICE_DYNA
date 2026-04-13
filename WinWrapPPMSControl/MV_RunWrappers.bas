@@ -24,73 +24,26 @@ End Function
 Public Function MV_CloseSession() As Boolean
     On Error Resume Next
     Call K2600_OutputOff()
+    Call K2450_OutputOff()
     Call K2600_Disconnect()
     Call K2450_Disconnect()
     Call MV_GPIB_CloseAll()
     MV_CloseSession = True
 End Function
 
-Public Function Run_HelmholtzPoint(ByVal targetField_Oe As Double, ByVal rate_G_per_s As Double, Optional ByVal measureHall As Boolean = False, Optional ByVal hallTBM_s As Double = 0.05) As Boolean
-    Dim tRel As Double
-    Dim tempK As Double
-    Dim fieldOe As Double
-    Dim rA As Double
-    Dim rB As Double
-    Dim hallV As Double
+Public Function Full_MeasureAndLog(Optional ByVal tbm_s As Double = 0.05) As Boolean
+    Dim v As Double
     Dim hallOe As Double
 
-    If Not Helm_SetField(targetField_Oe, rate_G_per_s) Then
-        Run_HelmholtzPoint = False
+    v = Hall_MeasureVoltage_V(tbm_s)
+    If Not MV_IsFinite(v) Then
+        MV_SetError "Hall voltage read failed"
+        Full_MeasureAndLog = False
         Exit Function
     End If
 
-    If Not Helm_WaitStable(30#, MV_DEFAULT_CURRENT_TOL_A, MV_DEFAULT_STABLE_COUNT) Then
-        Run_HelmholtzPoint = False
-        Exit Function
-    End If
-
-    Call DYNA_WaitForTempFieldStable(60#)
-
-    If Not Helm_MeasureResistances_Ohm(MV_HelmNPLC, rA, rB) Then
-        Run_HelmholtzPoint = False
-        Exit Function
-    End If
-
-    hallV = -9.9E99
-    hallOe = -9.9E99
-    If measureHall Then
-        hallV = Hall_MeasureVoltage_V(hallTBM_s)
-        If Not MV_IsFinite(hallV) Then
-            MV_SetError "Hall voltage read failed"
-            Run_HelmholtzPoint = False
-            Exit Function
-        End If
-        hallOe = Hall_ComputeField_Oe(hallV)
-    End If
-
-    tempK = DYNA_GetTemperature_K()
-    fieldOe = DYNA_GetField_Oe()
-    tRel = MV_GetSessionElapsedSeconds()
-
-    If Not Log_WriteHelmholtzRow(tRel, tempK, fieldOe, targetField_Oe, MV_LastCurrentA_A, MV_LastCurrentB_A, MV_HelmCompliance_V, MV_HelmNPLC, rA, rB, MV_HallCurrent_mA, MV_HallCompliance_V, MV_HallNPLC, hallV, hallOe) Then
-        Run_HelmholtzPoint = False
-        Exit Function
-    End If
-
-    Run_HelmholtzPoint = True
-End Function
-
-Public Function Run_HelmholtzPointWithHall(ByVal targetField_Oe As Double, ByVal rate_G_per_s As Double, Optional ByVal hallTBM_s As Double = 0.05) As Boolean
-    Run_HelmholtzPointWithHall = Run_HelmholtzPoint(targetField_Oe, rate_G_per_s, True, hallTBM_s)
-End Function
-
-Public Function Run_Combined_Dyna_Helm_Point(ByVal targetTemp_K As Double, ByVal targetField_Oe As Double, ByVal rate_G_per_s As Double) As Boolean
-    If Not DYNA_SetTempAndWait(targetTemp_K, 1#, 0, 600#) Then
-        Run_Combined_Dyna_Helm_Point = False
-        Exit Function
-    End If
-
-    Run_Combined_Dyna_Helm_Point = Run_HelmholtzPoint(targetField_Oe, rate_G_per_s)
+    hallOe = Hall_ComputeField_Oe(v)
+    Full_MeasureAndLog = Helm_WriteLogRow(v, hallOe)
 End Function
 
 Public Function SelfTest_Connections() As Boolean
@@ -117,5 +70,6 @@ End Function
 Public Function SelfTest_SafeAbort() As Boolean
     On Error Resume Next
     Call K2600_OutputOff()
+    Call K2450_OutputOff()
     SelfTest_SafeAbort = True
 End Function

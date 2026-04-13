@@ -103,10 +103,11 @@ Public Function Hall_Configure(ByVal current_mA As Double, ByVal compliance_V As
 
     If Not MV_GPIB_Write(MV_K2450_Device, "*RST") Then GoTo Fail
     If Not MV_GPIB_Write(MV_K2450_Device, "ROUT:TERM REAR") Then GoTo Fail
-    If Not MV_GPIB_Write(MV_K2450_Device, "SENS:VOLT:RSEN ON") Then GoTo Fail
     If Not MV_GPIB_Write(MV_K2450_Device, "SOUR:FUNC CURR") Then GoTo Fail
     If Not MV_GPIB_Write(MV_K2450_Device, "SOUR:CURR " & CStr(current_mA / 1000#)) Then GoTo Fail
-    If Not MV_GPIB_Write(MV_K2450_Device, "SENS:VOLT:PROT " & CStr(compliance_V)) Then GoTo Fail
+    If Not MV_GPIB_Write(MV_K2450_Device, "SOUR:CURR:VLIM " & CStr(compliance_V)) Then GoTo Fail
+    If Not MV_GPIB_Write(MV_K2450_Device, "SENS:FUNC 'VOLT'") Then GoTo Fail
+    If Not MV_GPIB_Write(MV_K2450_Device, "SENS:VOLT:RSEN ON") Then GoTo Fail
     If Not MV_GPIB_Write(MV_K2450_Device, "SENS:VOLT:NPLC " & CStr(nplc)) Then GoTo Fail
 
     MV_K2450_OutputEnabled = False
@@ -178,13 +179,6 @@ End Function
 Public Function Hall_MeasureAndLog(Optional ByVal tbm_s As Double = 0.05) As Boolean
     Dim v As Double
     Dim hallOe As Double
-    Dim tRel As Double
-    Dim tempK As Double
-    Dim fieldOe As Double
-    Dim currentA_A As Double
-    Dim currentB_A As Double
-    Dim resistanceA_Ohm As Double
-    Dim resistanceB_Ohm As Double
 
     v = Hall_MeasureVoltage_V(tbm_s)
     If Not MV_IsFinite(v) Then
@@ -194,40 +188,7 @@ Public Function Hall_MeasureAndLog(Optional ByVal tbm_s As Double = 0.05) As Boo
     End If
 
     hallOe = Hall_ComputeField_Oe(v)
-
-    If Not Helm_GetAppliedCurrents_A(currentA_A, currentB_A) Then
-        currentA_A = MV_LastCurrentA_A
-        currentB_A = MV_LastCurrentB_A
-    End If
-
-    resistanceA_Ohm = -9.9E99
-    resistanceB_Ohm = -9.9E99
-    Call Helm_MeasureResistances_Ohm(MV_HelmNPLC, resistanceA_Ohm, resistanceB_Ohm)
-
-    tempK = DYNA_GetTemperature_K()
-    fieldOe = DYNA_GetField_Oe()
-    tRel = MV_GetSessionElapsedSeconds()
-
-    If Not Log_WriteHelmholtzRow(tRel, _
-                                 tempK, _
-                                 fieldOe, _
-                                 MV_LastTargetField_Oe, _
-                                 currentA_A, _
-                                 currentB_A, _
-                                 MV_HelmCompliance_V, _
-                                 MV_HelmNPLC, _
-                                 resistanceA_Ohm, _
-                                 resistanceB_Ohm, _
-                                 MV_HallCurrent_mA, _
-                                 MV_HallCompliance_V, _
-                                 MV_HallNPLC, _
-                                 v, _
-                                 hallOe) Then
-        Hall_MeasureAndLog = False
-        Exit Function
-    End If
-
-    Hall_MeasureAndLog = True
+    Hall_MeasureAndLog = Helm_WriteLogRow(v, hallOe)
 End Function
 
 Public Function Hall_CalibrateOffset_V(Optional ByVal tbm_s As Double = 0.05) As Boolean

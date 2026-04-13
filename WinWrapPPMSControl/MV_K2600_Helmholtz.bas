@@ -1,4 +1,6 @@
 '#Uses "C:\Users\Ilay\OneDrive - Technion\Desktop\MC_Projects\Extarnal_Device_Dyna\WinWrapPPMSControl\MV_Constants.bas"
+'#Uses "C:\Users\Ilay\OneDrive - Technion\Desktop\MC_Projects\Extarnal_Device_Dyna\WinWrapPPMSControl\MV_DynaHelpers.bas"
+'#Uses "C:\Users\Ilay\OneDrive - Technion\Desktop\MC_Projects\Extarnal_Device_Dyna\WinWrapPPMSControl\MV_HelmholtzLog.bas"
 '#Uses "C:\Users\Ilay\OneDrive - Technion\Desktop\MC_Projects\Extarnal_Device_Dyna\WinWrapPPMSControl\MV_GpibIO.bas"
 
 Option Explicit
@@ -154,6 +156,9 @@ Public Function Helm_ConfigSource(ByVal compliance_V As Double, ByVal nplc As Do
     MV_HelmCompliance_V = compliance_V
     MV_HelmNPLC = nplc
 
+    If Not MV_GPIB_Write(MV_K2600_Device, "display.smua.measure.func = display.MEASURE_OHMS") Then GoTo Fail
+    If Not MV_GPIB_Write(MV_K2600_Device, "display.smub.measure.func = display.MEASURE_OHMS") Then GoTo Fail
+
     If Not MV_GPIB_Write(MV_K2600_Device, "smua.sense = smua.SENSE_LOCAL") Then GoTo Fail
     If Not MV_GPIB_Write(MV_K2600_Device, "smub.sense = smub.SENSE_LOCAL") Then GoTo Fail
 
@@ -190,6 +195,7 @@ Public Function K2600_OutputOn() As Boolean
         K2600_OutputOn = False
         Exit Function
     End If
+    
     If Not MV_GPIB_Write(MV_K2600_Device, "smub.source.output = smub.OUTPUT_ON") Then
         K2600_OutputOn = False
         Exit Function
@@ -239,12 +245,15 @@ Public Function Helm_SetField(ByVal targetField_Oe As Double, ByVal rate_G_per_s
     Helm_SetField = True
 End Function
 
-Public Function Helm_WaitStable(ByVal timeout_s As Double, ByVal tolCurrent_A As Double, ByVal stableCount As Integer) As Boolean
+Public Function Helm_WaitStable(ByVal timeout_s As Double, Optional ByVal delay_s As Double = 0#) As Boolean
     Dim q As String
     Dim iA As Double
     Dim iB As Double
     Dim okCount As Integer
     Dim t0 As Double
+    Dim remainingDelay_s As Double
+    Dim waitChunk_s As Double
+    Dim secondsLeft As Long
 
     If MV_K2600_Device = "" Then
         MV_SetError "K2600 not connected"
@@ -262,13 +271,27 @@ Public Function Helm_WaitStable(ByVal timeout_s As Double, ByVal tolCurrent_A As
         If Not MV_GPIB_Query(MV_K2600_Device, "print(smub.source.leveli)", q) Then GoTo Fail
         iB = CDbl(q)
 
-        If Abs(iA - MV_LastCurrentA_A) <= tolCurrent_A And Abs(iB - MV_LastCurrentB_A) <= tolCurrent_A Then
+        If Abs(iA - MV_LastCurrentA_A) <= 0.0001 And Abs(iB - MV_LastCurrentB_A) <= 0.0001 Then
             okCount = okCount + 1
         Else
             okCount = 0
         End If
 
-        If okCount >= stableCount Then
+        If okCount >= 2 Then
+            If delay_s > 0# Then
+                MV_Log "Waiting for Helmholtz stabilizitaion"
+                remainingDelay_s = delay_s
+                Do While remainingDelay_s > 0#
+                    secondsLeft = CLng(Int(remainingDelay_s + 0.999999))
+                    MV_Log "Extra wait time remaining: " & CStr(secondsLeft) & " s"
+
+                    waitChunk_s = 1#
+                    If remainingDelay_s < waitChunk_s Then waitChunk_s = remainingDelay_s
+                    MV_WaitSeconds waitChunk_s
+                    DoEvents
+                    remainingDelay_s = remainingDelay_s - waitChunk_s
+                Loop
+            End If
             Helm_WaitStable = True
             Exit Function
         End If
@@ -280,6 +303,75 @@ Public Function Helm_WaitStable(ByVal timeout_s As Double, ByVal tolCurrent_A As
 Fail:
     MV_SetError "Helmholtz stability timeout"
     Helm_WaitStable = False
+End Function
+
+Public Function Helm_WriteLogRow(Optional ByVal hallVoltage_V As Double = -9.9E99, _
+                                  Optional ByVal hallField_Oe As Double = -9.9E99) As Boolean
+    Dim attempt As Integer
+    Dim currentA_A As Double
+    Dim currentB_A As Double
+    Dim resistanceA_Ohm As Double
+    Dim resistanceB_Ohm As Double
+    Dim tRel As Double
+    Dim tempK As Double
+    Dim fieldOe As Double
+    Dim currOk As Boolean
+
+    ' Retry current read; fall back to last-known on failure with a warning
+    currOk = False
+    For attempt = 1 To 2
+        If Helm_GetAppliedCurrents_A(currentA_A, currentB_A) Then
+            currOk = True
+            Exit For
+        End If
+        MV_WaitSeconds 0.05
+        DoEvents
+    Next attempt
+    If Not currOk Then
+        currentA_A = MV_LastCurrentA_A
+        currentB_A = MV_LastCurrentB_A
+        MV_Log "[HELM][WARN] Current read failed after retries, using last-known: A=" & CStr(currentA_A) & " B=" & CStr(currentB_A)
+    End If
+
+    MV_LastCurrentA_A = currentA_A
+    MV_LastCurrentB_A = currentB_A
+    MV_LastTotalCurrent_A = currentA_A + currentB_A
+
+    ' Retry resistance read; log warning and leave as -9.9E99 if both attempts fail
+    resistanceA_Ohm = -9.9E99
+    resistanceB_Ohm = -9.9E99
+    For attempt = 1 To 2
+        If Helm_MeasureResistances_Ohm(MV_HelmNPLC, resistanceA_Ohm, resistanceB_Ohm) Then
+            Exit For
+        End If
+        MV_WaitSeconds 0.05
+        DoEvents
+    Next attempt
+    If resistanceA_Ohm = -9.9E99 Then MV_Log "[HELM][WARN] Resistance read failed after retries, logging as blank"
+
+    tRel = MV_GetSessionElapsedSeconds()
+    tempK = DYNA_GetTemperature_K()
+    fieldOe = DYNA_GetField_Oe()
+
+    Helm_WriteLogRow = Log_WriteHelmholtzRow(tRel, _
+                                             tempK, _
+                                             fieldOe, _
+                                             MV_LastTargetField_Oe, _
+                                             currentA_A, _
+                                             currentB_A, _
+                                             MV_HelmCompliance_V, _
+                                             MV_HelmNPLC, _
+                                             resistanceA_Ohm, _
+                                             resistanceB_Ohm, _
+                                             MV_HallCurrent_mA, _
+                                             MV_HallCompliance_V, _
+                                             MV_HallNPLC, _
+                                             hallVoltage_V, _
+                                             hallField_Oe)
+End Function
+
+Public Function Helm_MeasureAndLog() As Boolean
+    Helm_MeasureAndLog = Helm_WriteLogRow()
 End Function
 
 Public Function Helm_GetAppliedCurrents_A(ByRef currentA_A As Double, ByRef currentB_A As Double) As Boolean

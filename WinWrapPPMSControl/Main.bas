@@ -1,8 +1,9 @@
-
+ 
 '#Uses "C:\Users\Ilay\OneDrive - Technion\Desktop\MC_Projects\Extarnal_Device_Dyna\WinWrapPPMSControl\MV_Constants.bas"
 '#Uses "C:\Users\Ilay\OneDrive - Technion\Desktop\MC_Projects\Extarnal_Device_Dyna\WinWrapPPMSControl\MV_HelmholtzLog.bas"
 '#Uses "C:\Users\Ilay\OneDrive - Technion\Desktop\MC_Projects\Extarnal_Device_Dyna\WinWrapPPMSControl\MV_K2600_Helmholtz.bas"
 '#Uses "C:\Users\Ilay\OneDrive - Technion\Desktop\MC_Projects\Extarnal_Device_Dyna\WinWrapPPMSControl\MV_K2450_Hall.bas"
+'#Uses "C:\Users\Ilay\OneDrive - Technion\Desktop\MC_Projects\Extarnal_Device_Dyna\WinWrapPPMSControl\MV_IV_PostAnalysis.bas"
 '#Uses "C:\Users\Ilay\OneDrive - Technion\Desktop\MC_Projects\Extarnal_Device_Dyna\WinWrapPPMSControl\MV_RunWrappers.bas"
 '#Uses "C:\Users\Ilay\OneDrive - Technion\Desktop\MC_Projects\Extarnal_Device_Dyna\WinWrapPPMSControl\MV_GpibIO.bas"
 
@@ -10,14 +11,16 @@ Option Explicit
 
 Private Sub PrintStartupDefaults()
     Dim maxFieldG As Double
+    Dim maxCurrentPerChA As Double
     maxFieldG = MV_HELM_G_PER_A_TOTAL * MV_HELM_MAX_TOTAL_CURRENT_A
+    maxCurrentPerChA = MV_HELM_MAX_TOTAL_CURRENT_A / 2#
 
     MV_Log "========== WinWrapPPMSControl Defaults =========="
     MV_Log "mapping_version = " & MV_MAPPING_VERSION
     MV_Log ""
     MV_Log "Helmholtz"
     MV_Log "  G_per_A_total = " & CStr(MV_HELM_G_PER_A_TOTAL)
-    MV_Log "  max_current_per_ch_A = " & CStr(MV_HELM_MAX_TOTAL_CURRENT_A / 2#)
+    MV_Log "  max_current_per_ch_A = " & CStr(maxCurrentPerChA)
     MV_Log "  max_total_current_A = " & CStr(MV_HELM_MAX_TOTAL_CURRENT_A)
     MV_Log "  max_field_G = " & CStr(maxFieldG)
     MV_Log "  max_rate_G_per_s = " & CStr(MV_HELM_MAX_RATE_G_PER_S)
@@ -47,19 +50,16 @@ Private Sub PrintFunctionCatalog()
     MV_Log "  K2600_Connect([resource]) / K2600_Disconnect()"
     MV_Log "  Helm_ConfigSource(compliance_V, nplc)"
     MV_Log "  Helm_SetField(targetField_Oe, rate_G_per_s)"
-    MV_Log "  Helm_GetField_Oe()"
-    MV_Log "  Helm_WaitStable(timeout_s, tolCurrent_A, stableCount)"
-    MV_Log "  Helm_GetAppliedCurrents_A(currentA_A, currentB_A)"
+    MV_Log "  Helm_WaitStable(timeout_s, [delay_s])"
     MV_Log "  Helm_MeasureResistances_Ohm(nplc, resistanceA_Ohm, resistanceB_Ohm)"
+    MV_Log "  Helm_MeasureAndLog()"
     MV_Log ""
     MV_Log "Hall (K2450)"
     MV_Log "  K2450_Connect([resource]) / K2450_Disconnect()"
-    MV_Log "  K2450_OutputOn() / K2450_OutputOff() / K2450_IsOutputOn()"
     MV_Log "  Hall_ApplyPreset(name), Hall_SetCalibration(vPerG, vOffset_V)"
     MV_Log "  Hall_Configure(current_mA, compliance_V, nplc, avgFilter)"
-    MV_Log "  Hall_MeasureVoltage_V([tbm_s]), Hall_ComputeField_Oe(voltage_V)"
-    MV_Log "  Hall_MeasureAndLog([tbm_s])  -- appends Hall data into Helmholtz log"
-    MV_Log "  Hall_CalibrateOffset_V([tbm_s])"
+    MV_Log "  Hall_MeasureVoltage_V(), Hall_ComputeField_Oe(voltage_V)"
+    MV_Log "  Hall_MeasureAndLog(), Hall_CalibrateOffset_V()"
     MV_Log ""
     MV_Log "DynaCool + Data"
     MV_Log "  DYNA_GetTemperature_K(), DYNA_GetField_Oe()"
@@ -71,9 +71,7 @@ Private Sub PrintFunctionCatalog()
     MV_Log "  MV_SetDebugMode(True/False)  -- toggles [GPIB][W/Q/R] trace output"
     MV_Log ""
     MV_Log "Run wrappers"
-    MV_Log "  Run_HelmholtzPoint(targetField_Oe, rate_G_per_s, [measureHall], [hallTBM_s])"
-    MV_Log "  Run_HelmholtzPointWithHall(targetField_Oe, rate_G_per_s, [hallTBM_s])"
-    MV_Log "  Run_Combined_Dyna_Helm_Point(targetTemp_K, targetField_Oe, rate_G_per_s)"
+    MV_Log "  Full_MeasureAndLog([tbm_s])"
     MV_Log "===================================================="
 End Sub
 
@@ -125,9 +123,7 @@ Public Sub Test_NoHardware_Logger()
                                      2.5 + CDbl(i), _
                                      MV_HallCurrent_mA, _
                                      MV_HallCompliance_V, _
-                                     MV_HallNPLC, _
-                                     0.001 * CDbl(i), _
-                                     10# * CDbl(i)) Then
+                                     MV_HallNPLC) Then
             MV_Log "[TEST][LOGGER] FAIL write row " & CStr(i) & ": " & MV_LastError
             Call MV_CloseSession()
             Exit Sub
@@ -146,6 +142,50 @@ Public Sub Test_NoHardware_All()
     Call Test_Logger_HeaderCheck()
     Call Test_Sweep_RowPerPoint()
     MV_Log "==================================="
+End Sub
+
+Public Sub Test_VISA32_Connection()
+    ' Test VISA32 backend connectivity
+    ' Note: This test will FAIL if hardware is not present, which is expected.
+    ' The test verifies that VISA32.DLL interface is working and connection attempts
+    ' are being made via the new VISA backend (not MultiVu.GPIB).
+    
+    Dim k2600Key As String
+    Dim k2450Key As String
+    Dim ok As Boolean
+    
+    MV_Log "========== VISA32 Connection Test =========="
+    
+    ' Enable debug logging to see VISA calls
+    Call MV_SetDebugMode(True)
+    
+    MV_Log "[VISA32-TEST] Attempting K2600 connection..."
+    ok = K2600_Connect()
+    If ok Then
+        MV_Log "[VISA32-TEST] K2600 successfully connected"
+        Call K2600_Disconnect()
+        MV_Log "[VISA32-TEST] K2600 disconnected"
+    Else
+        MV_Log "[VISA32-TEST] K2600 connection FAILED (hardware may not be present): " & MV_LastError
+    End If
+    
+    MV_Log "[VISA32-TEST] Attempting K2450 connection..."
+    ok = K2450_Connect()
+    If ok Then
+        MV_Log "[VISA32-TEST] K2450 successfully connected"
+        Call K2450_Disconnect()
+        MV_Log "[VISA32-TEST] K2450 disconnected"
+    Else
+        MV_Log "[VISA32-TEST] K2450 connection FAILED (hardware may not be present): " & MV_LastError
+    End If
+    
+    ' Clean up any open sessions
+    Call MV_GPIB_CloseAll()
+    
+    ' Disable debug logging
+    Call MV_SetDebugMode(False)
+    
+    MV_Log "========== VISA32 Test Complete =========="
 End Sub
 
 Public Sub Test_K2600_Connection()
@@ -287,8 +327,7 @@ Public Sub Test_Logger_HeaderCheck()
 
     Call Log_WriteHelmholtzRow(0#, 300#, 0#, 0#, 0#, 0#, _
                                MV_HelmCompliance_V, MV_HelmNPLC, _
-                               1#, 1#, _
-                               MV_HallCurrent_mA, MV_HallCompliance_V, MV_HallNPLC)
+                               1#, 1#, MV_HallCurrent_mA, MV_HallCompliance_V, MV_HallNPLC)
     Call MV_CloseSession()
 
     fileNum = FreeFile

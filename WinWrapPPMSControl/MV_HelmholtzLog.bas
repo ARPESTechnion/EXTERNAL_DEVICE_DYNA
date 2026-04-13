@@ -52,8 +52,8 @@ Public Function MV_InitHelmholtzLog(ByVal filePath As String) As Boolean
 
     Set MV_HelmDataFile = New MultiVuDataFile
     MV_HelmDataFile.AddColumn COL_TEMP_K
-    MV_HelmDataFile.AddColumn COL_FIELD_OE, mvStartupAxisY1
-    MV_HelmDataFile.AddColumn COL_TARGET_FIELD_OE
+    MV_HelmDataFile.AddColumn COL_FIELD_OE
+    MV_HelmDataFile.AddColumn COL_TARGET_FIELD_OE, mvStartupAxisY1
     MV_HelmDataFile.AddColumn COL_TOTAL_CURRENT_A, mvStartupAxisY2
     MV_HelmDataFile.AddColumn COL_CURRENT_A_A
     MV_HelmDataFile.AddColumn COL_CURRENT_B_A
