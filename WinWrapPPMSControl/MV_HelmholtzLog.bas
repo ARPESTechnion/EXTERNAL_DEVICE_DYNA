@@ -7,7 +7,7 @@ Private MV_HelmDataFile As Object
 
 Private Const COL_TEMP_K As String = "Temperature (K)"
 Private Const COL_FIELD_OE As String = "Field (Oe)"
-Private Const COL_TARGET_FIELD_OE As String = "Target Field (Oe)"
+Private Const COL_HELMHOLTZ_FIELD_OE As String = "Helmholtz Field (Oe)"
 Private Const COL_TOTAL_CURRENT_A As String = "Helmholtz Current Total (A)"
 Private Const COL_CURRENT_A_A As String = "Applied Current ChA (A)"
 Private Const COL_CURRENT_B_A As String = "Applied Current ChB (A)"
@@ -53,7 +53,7 @@ Public Function MV_InitHelmholtzLog(ByVal filePath As String) As Boolean
     Set MV_HelmDataFile = New MultiVuDataFile
     MV_HelmDataFile.AddColumn COL_TEMP_K
     MV_HelmDataFile.AddColumn COL_FIELD_OE
-    MV_HelmDataFile.AddColumn COL_TARGET_FIELD_OE, mvStartupAxisY1
+    MV_HelmDataFile.AddColumn COL_HELMHOLTZ_FIELD_OE, mvStartupAxisY1
     MV_HelmDataFile.AddColumn COL_TOTAL_CURRENT_A, mvStartupAxisY2
     MV_HelmDataFile.AddColumn COL_CURRENT_A_A
     MV_HelmDataFile.AddColumn COL_CURRENT_B_A
@@ -79,7 +79,7 @@ End Function
 Public Function Log_WriteHelmholtzRow(ByVal time_s As Double, _
                                       ByVal temp_K As Double, _
                                       ByVal field_Oe As Double, _
-                                      ByVal targetField_Oe As Double, _
+                                      ByVal helmholtzField_Oe As Double, _
                                       ByVal currentA_A As Double, _
                                       ByVal currentB_A As Double, _
                                       ByVal helmCompliance_V As Double, _
@@ -106,8 +106,8 @@ Public Function Log_WriteHelmholtzRow(ByVal time_s As Double, _
     rowData(4) = temp_K
     rowData(5) = COL_FIELD_OE
     rowData(6) = field_Oe
-    rowData(7) = COL_TARGET_FIELD_OE
-    rowData(8) = targetField_Oe
+    rowData(7) = COL_HELMHOLTZ_FIELD_OE
+    rowData(8) = helmholtzField_Oe
     rowData(9) = COL_TOTAL_CURRENT_A
     rowData(10) = currentA_A + currentB_A
     rowData(11) = COL_CURRENT_A_A

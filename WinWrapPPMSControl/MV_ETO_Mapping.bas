@@ -7,7 +7,7 @@ Private Function MV_JoinKV(ByVal k As String, ByVal v As String) As String
     MV_JoinKV = k & "=" & v
 End Function
 
-Private Function MV_BuildMappingComment(ByVal targetField_Oe As Double, _
+Private Function MV_BuildMappingComment(ByVal helmholtzField_Oe As Double, _
                                         ByVal totalCurrent_A As Double, _
                                         ByVal compliance_V As Double, _
                                         ByVal hallCurrent_mA As Double, _
@@ -19,7 +19,7 @@ Private Function MV_BuildMappingComment(ByVal targetField_Oe As Double, _
     Dim s As String
 
     s = "EXTMAP," & MV_JoinKV("mapping_version", MV_MAPPING_VERSION)
-    s = s & "," & MV_JoinKV("ch" & CStr(MV_CH_TARGET_FIELD), CStr(targetField_Oe))
+    s = s & "," & MV_JoinKV("ch" & CStr(MV_CH_TARGET_FIELD), CStr(helmholtzField_Oe))
     s = s & "," & MV_JoinKV("ch" & CStr(MV_CH_TOTAL_CURRENT), CStr(totalCurrent_A))
     s = s & "," & MV_JoinKV("ch" & CStr(MV_CH_COMPLIANCE), CStr(compliance_V))
 
@@ -50,7 +50,7 @@ EH:
     Data_AddComment = False
 End Function
 
-Public Function Data_WriteETOExtendedRow(ByVal targetField_Oe As Double, _
+Public Function Data_WriteETOExtendedRow(ByVal helmholtzField_Oe As Double, _
                                          ByVal appliedCurrent_A As Double, _
                                          ByVal compliance_V As Double, _
                                          ByVal hallCurrent_mA As Double, _
@@ -61,7 +61,7 @@ Public Function Data_WriteETOExtendedRow(ByVal targetField_Oe As Double, _
                                          ByVal hallAvgFilter As Integer) As Boolean
     Dim payload As String
 
-    payload = MV_BuildMappingComment(targetField_Oe, _
+    payload = MV_BuildMappingComment(helmholtzField_Oe, _
                                      appliedCurrent_A, _
                                      compliance_V, _
                                      hallCurrent_mA, _

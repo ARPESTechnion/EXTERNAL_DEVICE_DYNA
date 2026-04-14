@@ -47,12 +47,12 @@ EH:
     DYNA_SetTempAndWait = False
 End Function
 
-Public Function DYNA_SetField(ByVal targetField_Oe As Double, ByVal rate_Oe_per_s As Double) As Boolean
+Public Function DYNA_SetField(ByVal field_Oe As Double, ByVal rate_Oe_per_s As Double) As Boolean
     ' Sends a field command to the DynaCool superconducting magnet and returns immediately.
     ' mode 0 = linear, driven = 1 (energises persistent switch).
     ' Call DYNA_WaitForTempFieldStable() or DYNA_SetFieldAndWait() to block until settled.
     On Error GoTo EH
-    DynaCool.SetField targetField_Oe, rate_Oe_per_s, 0, 1
+    DynaCool.SetField field_Oe, rate_Oe_per_s, 0, 1
     DYNA_SetField = True
     Exit Function
 EH:
@@ -60,9 +60,9 @@ EH:
     DYNA_SetField = False
 End Function
 
-Public Function DYNA_SetFieldAndWait(ByVal targetField_Oe As Double, ByVal rate_Oe_per_s As Double, ByVal timeout_s As Double) As Boolean
+Public Function DYNA_SetFieldAndWait(ByVal field_Oe As Double, ByVal rate_Oe_per_s As Double, ByVal timeout_s As Double) As Boolean
     ' Sends field command then blocks until the magnet reports stable.
-    If Not DYNA_SetField(targetField_Oe, rate_Oe_per_s) Then
+    If Not DYNA_SetField(field_Oe, rate_Oe_per_s) Then
         DYNA_SetFieldAndWait = False
         Exit Function
     End If

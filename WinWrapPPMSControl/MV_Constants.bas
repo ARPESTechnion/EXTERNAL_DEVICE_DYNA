@@ -79,6 +79,7 @@ Public MV_HallNPLC As Double
 Public MV_HallAvgFilter As Integer
 Public MV_HallVPerG As Double
 Public MV_HallVOffset As Double
+Public MV_PostAnalysisStepIndex As Long
 
 ' Mapping slots (frozen v1)
 Public Const MV_CH_TARGET_FIELD As Integer = 1
@@ -104,6 +105,7 @@ Public Sub MV_ResetDefaults()
     MV_HallAvgFilter = MV_DEFAULT_HALL_FILTER_COUNT
     MV_HallVPerG = MV_HALL_V_PER_G_WIRE_1
     MV_HallVOffset = MV_DEFAULT_HALL_OFFSET_V
+    MV_PostAnalysisStepIndex = 0
 
     MV_LastError = ""
 End Sub

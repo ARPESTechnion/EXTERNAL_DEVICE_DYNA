@@ -116,7 +116,7 @@ SECTION 2: HELMHOLTZ FIELD CONTROL
 set_helmholtz_field <field_Oe> <rate_Oe/s>
   Description: Set Helmholtz coil field to a specific value
   Arguments:
-    field_Oe      - Target field in Oersteds (float)
+    field_Oe      - Helmholtz field in Oersteds (float)
     rate_Oe/s     - Ramp rate in Oe/s (float)
   Calibration: 2 × 341.71 G/A = 683.42 G per Ampere
   Example: set_helmholtz_field 100 5.0

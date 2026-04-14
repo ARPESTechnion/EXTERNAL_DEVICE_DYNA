@@ -19,6 +19,16 @@ Public Type IV_BlockResult
     isValid As Boolean          ' True if fit succeeded and data is meaningful
 End Type
 
+Private Function IV_TryParseDouble(ByVal textValue As String, ByRef outValue As Double) As Boolean
+    On Error GoTo ParseFail
+    outValue = CDbl(Trim$(textValue))
+    IV_TryParseDouble = True
+    Exit Function
+ParseFail:
+    outValue = 0#
+    IV_TryParseDouble = False
+End Function
+
 Public Function IV_LinearRegression(currentArray() As Double, _
                                      voltageArray() As Double, _
                                      ByRef slope As Double, _
@@ -104,23 +114,57 @@ Public Function IV_ExtractBlockFromFile(filePath As String, _
     ' voltageColIndex: column index for voltage data
     ' Returns True on success with results in 'result' structure
     
+    Dim avgTime_s As Double
+    Dim gainValue As Double
+    Dim hasAvg As Boolean
+    Dim hasGain As Boolean
+
+    IV_ExtractBlockFromFile = IV_ExtractBlockWithMetadataFromFile(filePath, _
+                                                                  blockIndex, _
+                                                                  currentColIndex, _
+                                                                  voltageColIndex, _
+                                                                  -1, _
+                                                                  -1, _
+                                                                  result, _
+                                                                  avgTime_s, _
+                                                                  gainValue, _
+                                                                  hasAvg, _
+                                                                  hasGain)
+End Function
+
+Public Function IV_ExtractBlockWithMetadataFromFile(filePath As String, _
+                                                     blockIndex As Long, _
+                                                     currentColIndex As Long, _
+                                                     voltageColIndex As Long, _
+                                                     averagingTimeColIndex As Long, _
+                                                     gainColIndex As Long, _
+                                                     ByRef result As IV_BlockResult, _
+                                                     ByRef averagingTime_s As Double, _
+                                                     ByRef gainValue As Double, _
+                                                     Optional ByRef hasAveragingTime As Boolean = False, _
+                                                     Optional ByRef hasGain As Boolean = False) As Boolean
     Dim fso As Object
     Dim file As Object
     Dim currentArray() As Double
     Dim voltageArray() As Double
     Dim rowCount As Long
-    Dim startRow As Long
-    Dim endRow As Long
-    Dim currentRow As Long
     Dim lineText As String
     Dim parts() As String
     Dim i As Long
-    Dim j As Long
-    Dim dataIdx As Long
     Dim isDataSection As Boolean
-    
+    Dim blockStartRow As Long
+    Dim iA_mA As Double
+    Dim vV As Double
+    Dim okI As Boolean
+    Dim okV As Boolean
+
     On Error GoTo EH
-    
+
+    averagingTime_s = 0#
+    gainValue = 0#
+    hasAveragingTime = False
+    hasGain = False
+
     ' Initialize result
     result.blockIndex = blockIndex
     result.startRowIndex = blockIndex * 1023
@@ -130,113 +174,221 @@ Public Function IV_ExtractBlockFromFile(filePath As String, _
     result.fitQuality_R2 = 0#
     result.rowCount = 0
     result.isValid = False
-    
+
     ' Open file
     Set fso = CreateObject("Scripting.FileSystemObject")
     If Not fso.FileExists(filePath) Then
         MV_SetError "IV file not found: " & filePath
-        IV_ExtractBlockFromFile = False
+        IV_ExtractBlockWithMetadataFromFile = False
         Exit Function
     End If
-    
+
     Set file = fso.OpenTextFile(filePath, 1) ' ForReading
     If file Is Nothing Then
         MV_SetError "Cannot open IV file: " & filePath
-        IV_ExtractBlockFromFile = False
+        IV_ExtractBlockWithMetadataFromFile = False
         Exit Function
     End If
-    
-    ' Skip header and find [Data] section
-    isDataSection = False
-    currentRow = 0
-    dataIdx = 0
-    
+
     ReDim currentArray(0 To 1022)
     ReDim voltageArray(0 To 1022)
-    
+
+    ' Find [Data] marker
+    isDataSection = False
     While Not file.AtEndOfStream
         lineText = file.ReadLine
-        
-        ' Look for [Data] section marker
         If InStr(lineText, "[Data]") > 0 Then
             isDataSection = True
-            GoTo SkipToBlock
+            Exit While
         End If
     Wend
-    
-SkipToBlock:
+
     If Not isDataSection Then
-        ' [Data] section not found
         file.Close
         MV_SetError "No [Data] section found in IV file"
-        IV_ExtractBlockFromFile = False
+        IV_ExtractBlockWithMetadataFromFile = False
         Exit Function
     End If
-    
-    ' Skip rows until we reach the start of the target block
-    For i = 1 To result.startRowIndex
+
+    ' Skip CSV header row right after [Data]
+    If file.AtEndOfStream Then GoTo EarlyEOF
+    lineText = file.ReadLine
+
+    ' Skip blank separator line (QD ETO format: one blank line follows the column header)
+    If file.AtEndOfStream Then GoTo EarlyEOF
+    lineText = file.ReadLine
+
+    ' Skip rows until start of target block
+    blockStartRow = result.startRowIndex
+    For i = 1 To blockStartRow
         If file.AtEndOfStream Then GoTo EarlyEOF
         lineText = file.ReadLine
     Next i
-    
-    ' Read 1023 rows for this block
+
     rowCount = 0
     For i = 1 To 1023
-        If file.AtEndOfStream Then GoTo BlockComplete
-        
+        If file.AtEndOfStream Then Exit For
+
         lineText = file.ReadLine
-        
-        ' Parse CSV: split by comma
         parts = Split(lineText, ",")
-        
-        If UBound(parts) >= voltageColIndex Then
-            On Error Resume Next
-            currentArray(rowCount) = CDbl(parts(currentColIndex)) / 1000#
-            voltageArray(rowCount) = CDbl(parts(voltageColIndex))
-            On Error GoTo EH
-            rowCount = rowCount + 1
+
+        If UBound(parts) >= currentColIndex And UBound(parts) >= voltageColIndex Then
+            okI = IV_TryParseDouble(parts(currentColIndex), iA_mA)
+            okV = IV_TryParseDouble(parts(voltageColIndex), vV)
+
+            If okI And okV Then
+                currentArray(rowCount) = iA_mA / 1000#
+                voltageArray(rowCount) = vV
+
+                If (Not hasAveragingTime) And averagingTimeColIndex >= 0 Then
+                    If UBound(parts) >= averagingTimeColIndex Then
+                        hasAveragingTime = IV_TryParseDouble(parts(averagingTimeColIndex), averagingTime_s)
+                    End If
+                End If
+
+                If (Not hasGain) And gainColIndex >= 0 Then
+                    If UBound(parts) >= gainColIndex Then
+                        hasGain = IV_TryParseDouble(parts(gainColIndex), gainValue)
+                    End If
+                End If
+
+                rowCount = rowCount + 1
+            End If
         End If
     Next i
-    
-BlockComplete:
+
     file.Close
-    
+
     If rowCount < 2 Then
-        ' Not enough valid data points
         result.rowCount = rowCount
         result.isValid = False
-        IV_ExtractBlockFromFile = True
+        IV_ExtractBlockWithMetadataFromFile = True
         Exit Function
     End If
-    
-    ' Resize arrays to actual count
+
     ReDim Preserve currentArray(0 To rowCount - 1)
     ReDim Preserve voltageArray(0 To rowCount - 1)
-    
+
     result.rowCount = rowCount
-    
-    ' Perform linear regression
+
     If Not IV_LinearRegression(currentArray, voltageArray, result.resistance_Ohm, result.offset_V, result.fitQuality_R2) Then
         result.isValid = False
-        IV_ExtractBlockFromFile = True
+        IV_ExtractBlockWithMetadataFromFile = True
         Exit Function
     End If
-    
+
     result.isValid = True
-    IV_ExtractBlockFromFile = True
+    IV_ExtractBlockWithMetadataFromFile = True
     Exit Function
-    
+
 EarlyEOF:
     file.Close
     MV_SetError "Unexpected end of file while reading IV block " & CStr(blockIndex)
-    IV_ExtractBlockFromFile = False
+    IV_ExtractBlockWithMetadataFromFile = False
     Exit Function
-    
+
 EH:
     On Error Resume Next
     If Not file Is Nothing Then file.Close
-    MV_SetError "IV_ExtractBlockFromFile error: " & Err.Description
-    IV_ExtractBlockFromFile = False
+    MV_SetError "IV_ExtractBlockWithMetadataFromFile error: " & Err.Description
+    IV_ExtractBlockWithMetadataFromFile = False
+End Function
+
+Public Function IV_ExtractBlockTempFieldFromFile(filePath As String, _
+                                                 blockIndex As Long, _
+                                                 ByRef temp_K As Double, _
+                                                 ByRef field_Oe As Double) As Boolean
+    Dim fso As Object
+    Dim file As Object
+    Dim lineText As String
+    Dim parts() As String
+    Dim i As Long
+    Dim blockStartRow As Long
+    Dim isDataSection As Boolean
+    Dim okTemp As Boolean
+    Dim okField As Boolean
+
+    On Error GoTo EH
+
+    temp_K = -9.9E99
+    field_Oe = -9.9E99
+
+    Set fso = CreateObject("Scripting.FileSystemObject")
+    If Not fso.FileExists(filePath) Then
+        MV_SetError "IV file not found: " & filePath
+        IV_ExtractBlockTempFieldFromFile = False
+        Exit Function
+    End If
+
+    Set file = fso.OpenTextFile(filePath, 1)
+    If file Is Nothing Then
+        MV_SetError "Cannot open IV file: " & filePath
+        IV_ExtractBlockTempFieldFromFile = False
+        Exit Function
+    End If
+
+    isDataSection = False
+    While Not file.AtEndOfStream
+        lineText = file.ReadLine
+        If InStr(lineText, "[Data]") > 0 Then
+            isDataSection = True
+            Exit While
+        End If
+    Wend
+
+    If Not isDataSection Then
+        file.Close
+        MV_SetError "No [Data] section found in IV file"
+        IV_ExtractBlockTempFieldFromFile = False
+        Exit Function
+    End If
+
+    If file.AtEndOfStream Then GoTo EarlyEOF
+    lineText = file.ReadLine   ' CSV column header
+
+    ' Skip blank separator line (QD ETO format: one blank line follows the column header)
+    If file.AtEndOfStream Then GoTo EarlyEOF
+    lineText = file.ReadLine
+
+    blockStartRow = blockIndex * 1023
+    For i = 1 To blockStartRow
+        If file.AtEndOfStream Then GoTo EarlyEOF
+        lineText = file.ReadLine
+    Next i
+
+    If file.AtEndOfStream Then GoTo EarlyEOF
+    lineText = file.ReadLine
+    parts = Split(lineText, ",")
+
+    If UBound(parts) < 3 Then
+        file.Close
+        MV_SetError "IV block row does not contain temperature/field columns"
+        IV_ExtractBlockTempFieldFromFile = False
+        Exit Function
+    End If
+
+    okTemp = IV_TryParseDouble(parts(2), temp_K)
+    okField = IV_TryParseDouble(parts(3), field_Oe)
+
+    file.Close
+
+    If Not okTemp Then temp_K = -9.9E99
+    If Not okField Then field_Oe = -9.9E99
+
+    IV_ExtractBlockTempFieldFromFile = True
+    Exit Function
+
+EarlyEOF:
+    file.Close
+    MV_SetError "Unexpected end of file while reading IV block context " & CStr(blockIndex)
+    IV_ExtractBlockTempFieldFromFile = False
+    Exit Function
+
+EH:
+    On Error Resume Next
+    If Not file Is Nothing Then file.Close
+    MV_SetError "IV_ExtractBlockTempFieldFromFile error: " & Err.Description
+    IV_ExtractBlockTempFieldFromFile = False
 End Function
 
 Public Function PostMeasureAnalysis(filePath As String, _

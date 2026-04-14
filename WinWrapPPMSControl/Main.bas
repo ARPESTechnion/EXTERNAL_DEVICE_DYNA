@@ -4,6 +4,7 @@
 '#Uses "C:\Users\Ilay\OneDrive - Technion\Desktop\MC_Projects\Extarnal_Device_Dyna\WinWrapPPMSControl\MV_K2600_Helmholtz.bas"
 '#Uses "C:\Users\Ilay\OneDrive - Technion\Desktop\MC_Projects\Extarnal_Device_Dyna\WinWrapPPMSControl\MV_K2450_Hall.bas"
 '#Uses "C:\Users\Ilay\OneDrive - Technion\Desktop\MC_Projects\Extarnal_Device_Dyna\WinWrapPPMSControl\MV_IV_PostAnalysis.bas"
+'#Uses "C:\Users\Ilay\OneDrive - Technion\Desktop\MC_Projects\Extarnal_Device_Dyna\WinWrapPPMSControl\MV_RTPostAnalysis.bas"
 '#Uses "C:\Users\Ilay\OneDrive - Technion\Desktop\MC_Projects\Extarnal_Device_Dyna\WinWrapPPMSControl\MV_RunWrappers.bas"
 '#Uses "C:\Users\Ilay\OneDrive - Technion\Desktop\MC_Projects\Extarnal_Device_Dyna\WinWrapPPMSControl\MV_GpibIO.bas"
 
@@ -44,12 +45,14 @@ Private Sub PrintFunctionCatalog()
     MV_Log "========== WinWrapPPMSControl Public API =========="
     MV_Log "Session"
     MV_Log "  MV_InitSession(runName, helmholtzLogPath)"
+    MV_Log "  MV_InitSessionWithPostAnalysis(runName, helmholtzLogPath, mergedPostAnalysisPath)"
     MV_Log "  MV_CloseSession()"
     MV_Log ""
     MV_Log "Helmholtz (K2600)"
     MV_Log "  K2600_Connect([resource]) / K2600_Disconnect()"
     MV_Log "  Helm_ConfigSource(compliance_V, nplc)"
-    MV_Log "  Helm_SetField(targetField_Oe, rate_G_per_s)"
+    MV_Log "  Helm_SetField(helmholtzField_Oe, rate_G_per_s)"
+    MV_Log "  Helm_ValidateHelmholtzField(helmholtzField_Oe, rate_G_per_s)"
     MV_Log "  Helm_WaitStable(timeout_s, [delay_s])"
     MV_Log "  Helm_MeasureResistances_Ohm(nplc, resistanceA_Ohm, resistanceB_Ohm)"
     MV_Log "  Helm_MeasureAndLog()"
@@ -63,7 +66,7 @@ Private Sub PrintFunctionCatalog()
     MV_Log ""
     MV_Log "DynaCool + Data"
     MV_Log "  DYNA_GetTemperature_K(), DYNA_GetField_Oe()"
-    MV_Log "  DYNA_SetField(target_Oe, rate_Oe_s), DYNA_SetFieldAndWait(target_Oe, rate_Oe_s, timeout_s)"
+    MV_Log "  DYNA_SetField(field_Oe, rate_Oe_s), DYNA_SetFieldAndWait(field_Oe, rate_Oe_s, timeout_s)"
     MV_Log "  DYNA_SetTempAndWait(targetK, rateKmin, mode, timeout_s), DYNA_WaitForTempFieldStable(timeout_s)"
     MV_Log "  Data_AddComment(text)"
     MV_Log ""
@@ -72,6 +75,12 @@ Private Sub PrintFunctionCatalog()
     MV_Log ""
     MV_Log "Run wrappers"
     MV_Log "  Full_MeasureAndLog([tbm_s])"
+    MV_Log ""
+    MV_Log "Post analysis"
+    MV_Log "  Merged_InitPostAnalysisLog(filePath), Merged_ClosePostAnalysisLog()"
+    MV_Log "  PostAnalysis_AppendMergedRow(etoDataPath, stepIndex, hallMeasured, measureCh1, measureCh2, ...)"
+    MV_Log "  PostAnalysis_AppendAfterETO(etoDataPath, hallMeasured, measureCh1, measureCh2, ...)"
+    MV_Log "  PostAnalysis_ReplayOldETOScan(etoDataPath, loopCount, helmStart_Oe, helmStep_Oe, ..., dualBlockOrderCh1First)"
     MV_Log "===================================================="
 End Sub
 
@@ -134,11 +143,77 @@ Public Sub Test_NoHardware_Logger()
     MV_Log "[TEST][LOGGER] PASS file=" & path
 End Sub
 
+Public Sub Test_NoHardware_PostAnalysisReplay(Optional ByVal etoDataPath As String = "")
+    Const CH1_IV_CURR_COL As Long = 9
+    Const CH1_IV_VOLT_COL As Long = 10
+    Const CH1_AVG_COL As Long = 12
+    Const CH1_GAIN_COL As Long = 23
+
+    Const CH2_IV_CURR_COL As Long = 29
+    Const CH2_IV_VOLT_COL As Long = 30
+    Const CH2_AVG_COL As Long = 32
+    Const CH2_GAIN_COL As Long = 43
+
+    Dim helmLogPath As String
+    Dim mergedPath As String
+    Dim ok As Boolean
+    Dim dualBlockOrderCh1First As Boolean
+
+    If etoDataPath = "" Then
+        etoDataPath = "C:\Users\Ilay\OneDrive - Technion\Desktop\MC_Projects\Quantum clock and Rings\RIE Rings\TaS2005LW\AO\Bsweep_2_6_K_-150_3_150_G.dat"
+    End If
+
+    helmLogPath = "C:\QdDynacool\Data\ETO\NoHW_Helmholtz_live_for_postanalysis.dat"
+    mergedPath = "C:\QdDynacool\Data\ETO\NoHW_PostAnalysisMerged_test.dat"
+    dualBlockOrderCh1First = True
+
+    MV_Log "[TEST][POST-REPLAY] Using ETO file: " & etoDataPath
+    MV_Log "[TEST][POST-REPLAY] Replaying 101 Helmholtz points from -150 Oe to 150 Oe in 3 Oe steps"
+    MV_Log "[TEST][POST-REPLAY] Fitting both channels from separate archived 1023-row blocks"
+    If dualBlockOrderCh1First Then
+        MV_Log "[TEST][POST-REPLAY] Block order assumption: Ch1 then Ch2"
+    Else
+        MV_Log "[TEST][POST-REPLAY] Block order assumption: Ch2 then Ch1"
+    End If
+
+    If Not MV_InitSessionWithPostAnalysis("no_hw_post_replay", helmLogPath, mergedPath) Then
+        MV_Log "[TEST][POST-REPLAY] FAIL init: " & MV_LastError
+        Exit Sub
+    End If
+
+    ok = PostAnalysis_ReplayOldETOScan(etoDataPath, _
+                                       101, _
+                                       -150#, _
+                                       3#, _
+                                       False, _
+                                       True, _
+                                       True, _
+                                       False, _
+                                       dualBlockOrderCh1First, _
+                                       CH1_IV_CURR_COL, _
+                                       CH1_IV_VOLT_COL, _
+                                       CH1_AVG_COL, _
+                                       CH1_GAIN_COL, _
+                                       CH2_IV_CURR_COL, _
+                                       CH2_IV_VOLT_COL, _
+                                       CH2_AVG_COL, _
+                                       CH2_GAIN_COL)
+
+    If ok Then
+        MV_Log "[TEST][POST-REPLAY] PASS merged file=" & mergedPath
+    Else
+        MV_Log "[TEST][POST-REPLAY] FAIL: " & MV_LastError
+    End If
+
+    Call MV_CloseSession()
+End Sub
+
 Public Sub Test_NoHardware_All()
     MV_Log "===== No-Hardware Smoke Tests ====="
     Call Test_NoHardware_Limits()
     Call Test_NoHardware_HallMath()
     Call Test_NoHardware_Logger()
+    Call Test_NoHardware_PostAnalysisReplay()
     Call Test_Logger_HeaderCheck()
     Call Test_Sweep_RowPerPoint()
     MV_Log "==================================="
@@ -410,6 +485,22 @@ Public Sub Test_Sweep_RowPerPoint()
         MV_Log "[TEST][SWEEP-ROWS] PASS  (" & CStr(dataRows) & " data rows, expected " & CStr(ROW_COUNT) & ")"
     Else
         MV_Log "[TEST][SWEEP-ROWS] FAIL  (found " & CStr(dataRows) & ", expected " & CStr(ROW_COUNT) & ")"
+    End If
+End Sub
+
+Public Sub RT_PostAnalysis_Run()
+    Dim dataFilePath As String
+    Dim analyzeCh1   As Boolean
+    Dim analyzeCh2   As Boolean
+
+    dataFilePath = "C:\Users\Ilay\OneDrive - Technion\Desktop\MC_Projects\Extarnal_Device_Dyna\WinWrapPPMSControl\RT_Ch1_NJ1_Ch2_TN_00001.dat"
+    analyzeCh1   = True
+    analyzeCh2   = True
+
+    If RT_AnalyzeFile(dataFilePath, analyzeCh1, analyzeCh2) Then
+        MV_Log "[RT-ANALYSIS] Done."
+    Else
+        MV_Log "[RT-ANALYSIS] FAIL: " & MV_LastError
     End If
 End Sub
 

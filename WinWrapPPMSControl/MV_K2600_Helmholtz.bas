@@ -5,7 +5,7 @@
 
 Option Explicit
 
-Public MV_LastTargetField_Oe As Double
+Public MV_LastHelmholtzField_Oe As Double
 Public MV_LastTotalCurrent_A As Double
 Public MV_LastCurrentA_A As Double
 Public MV_LastCurrentB_A As Double
@@ -99,8 +99,8 @@ Public Function K2600_Disconnect() As Boolean
     K2600_Disconnect = True
 End Function
 
-Public Function Helm_FieldToCurrent_A(ByVal targetField_Oe As Double) As Double
-    Helm_FieldToCurrent_A = targetField_Oe / MV_HELM_G_PER_A_TOTAL
+Public Function Helm_FieldToCurrent_A(ByVal helmholtzField_Oe As Double) As Double
+    Helm_FieldToCurrent_A = helmholtzField_Oe / MV_HELM_G_PER_A_TOTAL
 End Function
 
 Public Function Helm_GetField_Oe() As Double
@@ -114,24 +114,24 @@ Public Function Helm_GetField_Oe() As Double
     End If
 End Function
 
-Public Function Helm_ValidateTarget(ByVal targetField_Oe As Double, ByVal rate_G_per_s As Double) As Boolean
+Public Function Helm_ValidateHelmholtzField(ByVal helmholtzField_Oe As Double, ByVal rate_G_per_s As Double) As Boolean
     Dim iTotal As Double
 
     If Abs(rate_G_per_s) > MV_HELM_MAX_RATE_G_PER_S Then
         MV_SetError "Rate exceeds limit: " & CStr(rate_G_per_s) & " G/s"
-        Helm_ValidateTarget = False
+        Helm_ValidateHelmholtzField = False
         Exit Function
     End If
 
-    iTotal = Helm_FieldToCurrent_A(targetField_Oe)
+    iTotal = Helm_FieldToCurrent_A(helmholtzField_Oe)
 
     If Abs(iTotal) > MV_HELM_MAX_TOTAL_CURRENT_A Then
-        MV_SetError "Current exceeds total (3 A) limit at target field: " & CStr(targetField_Oe)
-        Helm_ValidateTarget = False
+        MV_SetError "Current exceeds total (3 A) limit at Helmholtz field: " & CStr(helmholtzField_Oe)
+        Helm_ValidateHelmholtzField = False
         Exit Function
     End If
 
-    Helm_ValidateTarget = True
+    Helm_ValidateHelmholtzField = True
 End Function
 
 Public Function Helm_ConfigSource(ByVal compliance_V As Double, ByVal nplc As Double) As Boolean
@@ -215,16 +215,16 @@ Public Function K2600_OutputOff() As Boolean
     K2600_OutputOff = True
 End Function
 
-Public Function Helm_SetField(ByVal targetField_Oe As Double, ByVal rate_G_per_s As Double) As Boolean
+Public Function Helm_SetField(ByVal helmholtzField_Oe As Double, ByVal rate_G_per_s As Double) As Boolean
     Dim iTotal As Double
     Dim iPerCh As Double
 
-    If Not Helm_ValidateTarget(targetField_Oe, rate_G_per_s) Then
+    If Not Helm_ValidateHelmholtzField(helmholtzField_Oe, rate_G_per_s) Then
         Helm_SetField = False
         Exit Function
     End If
 
-    iTotal = Helm_FieldToCurrent_A(targetField_Oe)
+    iTotal = Helm_FieldToCurrent_A(helmholtzField_Oe)
     iPerCh = iTotal / 2#
 
     If Not K2600_OutputOn() Then
@@ -237,7 +237,7 @@ Public Function Helm_SetField(ByVal targetField_Oe As Double, ByVal rate_G_per_s
         Exit Function
     End If
 
-    MV_LastTargetField_Oe = targetField_Oe
+    MV_LastHelmholtzField_Oe = helmholtzField_Oe
     MV_LastTotalCurrent_A = iTotal
     MV_LastCurrentA_A = iPerCh
     MV_LastCurrentB_A = iPerCh
@@ -356,7 +356,7 @@ Public Function Helm_WriteLogRow(Optional ByVal hallVoltage_V As Double = -9.9E9
     Helm_WriteLogRow = Log_WriteHelmholtzRow(tRel, _
                                              tempK, _
                                              fieldOe, _
-                                             MV_LastTargetField_Oe, _
+                                             MV_LastHelmholtzField_Oe, _
                                              currentA_A, _
                                              currentB_A, _
                                              MV_HelmCompliance_V, _
