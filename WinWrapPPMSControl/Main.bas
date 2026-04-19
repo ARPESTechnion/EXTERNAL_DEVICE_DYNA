@@ -3,6 +3,8 @@
 '#Uses "C:\Users\Ilay\OneDrive - Technion\Desktop\MC_Projects\Extarnal_Device_Dyna\WinWrapPPMSControl\MV_HelmholtzLog.bas"
 '#Uses "C:\Users\Ilay\OneDrive - Technion\Desktop\MC_Projects\Extarnal_Device_Dyna\WinWrapPPMSControl\MV_K2600_Helmholtz.bas"
 '#Uses "C:\Users\Ilay\OneDrive - Technion\Desktop\MC_Projects\Extarnal_Device_Dyna\WinWrapPPMSControl\MV_K2450_Hall.bas"
+'#Uses "C:\Users\Ilay\OneDrive - Technion\Desktop\MC_Projects\Extarnal_Device_Dyna\WinWrapPPMSControl\MV_K2450_General.bas"
+'#Uses "C:\Users\Ilay\OneDrive - Technion\Desktop\MC_Projects\Extarnal_Device_Dyna\WinWrapPPMSControl\MV_K2450_LiveLog.bas"
 '#Uses "C:\Users\Ilay\OneDrive - Technion\Desktop\MC_Projects\Extarnal_Device_Dyna\WinWrapPPMSControl\MV_IV_PostAnalysis.bas"
 '#Uses "C:\Users\Ilay\OneDrive - Technion\Desktop\MC_Projects\Extarnal_Device_Dyna\WinWrapPPMSControl\MV_RTPostAnalysis.bas"
 '#Uses "C:\Users\Ilay\OneDrive - Technion\Desktop\MC_Projects\Extarnal_Device_Dyna\WinWrapPPMSControl\MV_RunWrappers.bas"
@@ -63,6 +65,11 @@ Private Sub PrintFunctionCatalog()
     MV_Log "  Hall_Configure(current_mA, compliance_V, nplc, avgFilter)"
     MV_Log "  Hall_MeasureVoltage_V(), Hall_ComputeField_Oe(voltage_V)"
     MV_Log "  Hall_MeasureAndLog(), Hall_CalibrateOffset_V()"
+    MV_Log "  K2450_ConfigCurrentSource(source_A, compliance_V, nplc, avgCount, [use4Wire], [autoRange])"
+    MV_Log "  K2450_ConfigVoltageSource(source_V, compliance_A, nplc, avgCount, [use4Wire], [autoRange])"
+    MV_Log "  K2450_MeasureVoltage_V([Ch], [settle_s]), K2450_MeasureCurrent_A([Ch], [settle_s]), K2450_MeasureResistance_Ohm([Ch], [settle_s])"
+    MV_Log "  K2450_IV_Run(Ch, sourceMode, startVal, maxVal, minVal, stepVal, directionMode, settle_s, [rampToStart], [rampRatePerS], [comment])"
+    MV_Log "  K2450_LogInit(datPath, runTitle), K2450_LogPoint([Ch], [comment]), K2450_LogClose()"
     MV_Log ""
     MV_Log "DynaCool + Data"
     MV_Log "  DYNA_GetTemperature_K(), DYNA_GetField_Oe()"
@@ -75,6 +82,7 @@ Private Sub PrintFunctionCatalog()
     MV_Log ""
     MV_Log "Run wrappers"
     MV_Log "  Full_MeasureAndLog([tbm_s])"
+    MV_Log "  Run_K2450_IV_Live(datPath, runTitle, Ch, sourceMode, startVal, maxVal, minVal, stepVal, directionMode, settle_s, ...)"
     MV_Log ""
     MV_Log "Post analysis"
     MV_Log "  Merged_InitPostAnalysisLog(filePath), Merged_ClosePostAnalysisLog()"
@@ -141,6 +149,59 @@ Public Sub Test_NoHardware_Logger()
 
     Call MV_CloseSession()
     MV_Log "[TEST][LOGGER] PASS file=" & path
+End Sub
+
+Public Sub Test_NoHardware_K2450_IV_Setpoints()
+    Dim points() As Double
+    Dim ok As Boolean
+
+    ok = K2450_IV_BuildSetpoints(0#, 1#, -1#, 0.5, K2450_IV_DIR_START_MAX_MIN_START, points)
+    If Not ok Then
+        MV_Log "[TEST][K2450-IV-POINTS] FAIL dir0: " & MV_LastError
+        Exit Sub
+    End If
+    MV_Log "[TEST][K2450-IV-POINTS] PASS dir0 count=" & CStr(UBound(points) - LBound(points) + 1)
+
+    ok = K2450_IV_BuildSetpoints(0#, 1#, -1#, 0.5, K2450_IV_DIR_START_MIN_MAX_START, points)
+    If Not ok Then
+        MV_Log "[TEST][K2450-IV-POINTS] FAIL dir1: " & MV_LastError
+        Exit Sub
+    End If
+    MV_Log "[TEST][K2450-IV-POINTS] PASS dir1 count=" & CStr(UBound(points) - LBound(points) + 1)
+
+    ok = K2450_IV_BuildSetpoints(0#, 1#, -1#, 0.5, K2450_IV_DIR_START_MAX_START, points)
+    If Not ok Then
+        MV_Log "[TEST][K2450-IV-POINTS] FAIL dir2: " & MV_LastError
+        Exit Sub
+    End If
+    MV_Log "[TEST][K2450-IV-POINTS] PASS dir2 count=" & CStr(UBound(points) - LBound(points) + 1)
+
+    ok = K2450_IV_BuildSetpoints(0#, 1#, -1#, 0.5, K2450_IV_DIR_START_MIN_START, points)
+    If Not ok Then
+        MV_Log "[TEST][K2450-IV-POINTS] FAIL dir3: " & MV_LastError
+        Exit Sub
+    End If
+    MV_Log "[TEST][K2450-IV-POINTS] PASS dir3 count=" & CStr(UBound(points) - LBound(points) + 1)
+End Sub
+
+Public Sub Test_NoHardware_K2450_Logger()
+    Dim path As String
+
+    path = "C:\QdDynacool\Data\ETO\NoHW_K2450_live_test.dat"
+
+    If Not K2450_LogInit(path, "no_hw_k2450_logger", True) Then
+        MV_Log "[TEST][K2450-LOGGER] FAIL init: " & MV_LastError
+        Exit Sub
+    End If
+
+    If Not K2450_LogPointMeasured("Ch1", "no-hw row", 0.001, 0.0005, 2#, -1, -1, 0, 0#, 0.05, False, "OK") Then
+        MV_Log "[TEST][K2450-LOGGER] FAIL write: " & MV_LastError
+        Call K2450_LogClose()
+        Exit Sub
+    End If
+
+    Call K2450_LogClose()
+    MV_Log "[TEST][K2450-LOGGER] PASS file=" & path
 End Sub
 
 Public Sub Test_NoHardware_PostAnalysisReplay(Optional ByVal etoDataPath As String = "")
@@ -213,6 +274,8 @@ Public Sub Test_NoHardware_All()
     Call Test_NoHardware_Limits()
     Call Test_NoHardware_HallMath()
     Call Test_NoHardware_Logger()
+    Call Test_NoHardware_K2450_IV_Setpoints()
+    Call Test_NoHardware_K2450_Logger()
     Call Test_NoHardware_PostAnalysisReplay()
     Call Test_Logger_HeaderCheck()
     Call Test_Sweep_RowPerPoint()
@@ -485,6 +548,120 @@ Public Sub Test_Sweep_RowPerPoint()
         MV_Log "[TEST][SWEEP-ROWS] PASS  (" & CStr(dataRows) & " data rows, expected " & CStr(ROW_COUNT) & ")"
     Else
         MV_Log "[TEST][SWEEP-ROWS] FAIL  (found " & CStr(dataRows) & ", expected " & CStr(ROW_COUNT) & ")"
+    End If
+End Sub
+
+Private Function Test_CountDataRows(ByVal path As String) As Long
+    Dim fileNum As Integer
+    Dim lineText As String
+    Dim inDataSection As Boolean
+    Dim rows As Long
+    Dim fc As String
+
+    rows = 0
+    inDataSection = False
+    fileNum = FreeFile
+
+    On Error GoTo EH
+    Open path For Input As #fileNum
+    Do While Not EOF(fileNum)
+        Line Input #fileNum, lineText
+        lineText = Trim$(lineText)
+        If UCase$(lineText) = "[DATA]" Then
+            inDataSection = True
+        ElseIf inDataSection And Len(lineText) > 0 Then
+            fc = Left$(lineText, 1)
+            If fc = "-" Or (fc >= "0" And fc <= "9") Then
+                rows = rows + 1
+            End If
+        End If
+    Loop
+    Close #fileNum
+
+    Test_CountDataRows = rows
+    Exit Function
+EH:
+    On Error Resume Next
+    Close #fileNum
+    Test_CountDataRows = 0
+End Function
+
+Private Function Test_FileContainsText(ByVal path As String, ByVal token As String) As Boolean
+    Dim fileNum As Integer
+    Dim lineText As String
+
+    Test_FileContainsText = False
+    fileNum = FreeFile
+
+    On Error GoTo EH
+    Open path For Input As #fileNum
+    Do While Not EOF(fileNum)
+        Line Input #fileNum, lineText
+        If InStr(1, lineText, token, vbTextCompare) > 0 Then
+            Test_FileContainsText = True
+            Exit Do
+        End If
+    Loop
+    Close #fileNum
+    Exit Function
+EH:
+    On Error Resume Next
+    Close #fileNum
+End Function
+
+Public Sub Test_K2450_IV_Live_Hardware()
+    Dim path As String
+    Dim expectedPts() As Double
+    Dim expectedCount As Long
+    Dim rowCount As Long
+    Dim ok As Boolean
+    Dim chTag As String
+
+    chTag = "Ch_HW_1"
+    path = "C:\QdDynacool\Data\ETO\K2450_IV_Live_Hardware_Test.dat"
+
+    ok = K2450_IV_BuildSetpoints(0#, 0.001, -0.001, 0.001, K2450_IV_DIR_START_MAX_MIN_START, expectedPts)
+    If Not ok Then
+        MV_Log "[TEST][K2450-IV-HW] FAIL setpoint build: " & MV_LastError
+        Exit Sub
+    End If
+    expectedCount = UBound(expectedPts) - LBound(expectedPts) + 1
+
+    ok = Run_K2450_IV_Live(path, _
+                           "K2450 IV hardware smoke", _
+                           chTag, _
+                           "CURRENT", _
+                           0#, _
+                           0.001, _
+                           -0.001, _
+                           0.001, _
+                           K2450_IV_DIR_START_MAX_MIN_START, _
+                           0.05, _
+                           True, _
+                           0#, _
+                           2#, _
+                           1#, _
+                           3, _
+                           True, _
+                           True, _
+                           MV_K2450_RESOURCE, _
+                           "hardware smoke")
+    If Not ok Then
+        MV_Log "[TEST][K2450-IV-HW] FAIL run: " & MV_LastError
+        Exit Sub
+    End If
+
+    rowCount = Test_CountDataRows(path)
+    If rowCount = expectedCount Then
+        MV_Log "[TEST][K2450-IV-HW] PASS row count: " & CStr(rowCount)
+    Else
+        MV_Log "[TEST][K2450-IV-HW] FAIL row count: got " & CStr(rowCount) & " expected " & CStr(expectedCount)
+    End If
+
+    If Test_FileContainsText(path, "," & chTag & ",") Then
+        MV_Log "[TEST][K2450-IV-HW] PASS Ch tag found: " & chTag
+    Else
+        MV_Log "[TEST][K2450-IV-HW] FAIL Ch tag missing: " & chTag
     End If
 End Sub
 

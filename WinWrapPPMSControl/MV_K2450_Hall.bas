@@ -14,8 +14,11 @@ Public Function K2450_Connect(Optional ByVal resource As String = "") As Boolean
     If K2450_Connect Then MV_K2450_OutputEnabled = False
 End Function
 
-Public Function K2450_Disconnect() As Boolean
+Public Function K2450_Disconnect(Optional ByVal rampToZero As Boolean = True) As Boolean
     On Error Resume Next
+    If rampToZero Then
+        Call K2450_RampSourceToZero()
+    End If
     Call K2450_OutputOff()
     Call MV_GPIB_Disconnect(MV_K2450_Device)
     MV_K2450_OutputEnabled = False

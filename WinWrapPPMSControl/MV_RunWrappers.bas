@@ -2,6 +2,8 @@
 '#Uses "C:\Users\Ilay\OneDrive - Technion\Desktop\MC_Projects\Extarnal_Device_Dyna\WinWrapPPMSControl\MV_DynaHelpers.bas"
 '#Uses "C:\Users\Ilay\OneDrive - Technion\Desktop\MC_Projects\Extarnal_Device_Dyna\WinWrapPPMSControl\MV_HelmholtzLog.bas"
 '#Uses "C:\Users\Ilay\OneDrive - Technion\Desktop\MC_Projects\Extarnal_Device_Dyna\WinWrapPPMSControl\MV_K2450_Hall.bas"
+'#Uses "C:\Users\Ilay\OneDrive - Technion\Desktop\MC_Projects\Extarnal_Device_Dyna\WinWrapPPMSControl\MV_K2450_General.bas"
+'#Uses "C:\Users\Ilay\OneDrive - Technion\Desktop\MC_Projects\Extarnal_Device_Dyna\WinWrapPPMSControl\MV_K2450_LiveLog.bas"
 '#Uses "C:\Users\Ilay\OneDrive - Technion\Desktop\MC_Projects\Extarnal_Device_Dyna\WinWrapPPMSControl\MV_K2600_Helmholtz.bas"
 '#Uses "C:\Users\Ilay\OneDrive - Technion\Desktop\MC_Projects\Extarnal_Device_Dyna\WinWrapPPMSControl\MV_GpibIO.bas"
 '#Uses "C:\Users\Ilay\OneDrive - Technion\Desktop\MC_Projects\Extarnal_Device_Dyna\WinWrapPPMSControl\MV_IV_PostAnalysis.bas"
@@ -235,4 +237,70 @@ Public Function SelfTest_SafeAbort() As Boolean
     Call K2600_OutputOff()
     Call K2450_OutputOff()
     SelfTest_SafeAbort = True
+End Function
+
+Public Function Run_K2450_IV_Live(ByVal datPath As String, _
+                                  ByVal runTitle As String, _
+                                  ByVal ch As String, _
+                                  ByVal sourceMode As String, _
+                                  ByVal startVal As Double, _
+                                  ByVal maxVal As Double, _
+                                  ByVal minVal As Double, _
+                                  ByVal stepVal As Double, _
+                                  ByVal directionMode As Integer, _
+                                  ByVal settle_s As Double, _
+                                  Optional ByVal rampToStart As Boolean = True, _
+                                  Optional ByVal rampRatePerS As Double = 0#, _
+                                  Optional ByVal compliance As Double = 2#, _
+                                  Optional ByVal nplc As Double = 1#, _
+                                  Optional ByVal avgCount As Integer = 5, _
+                                  Optional ByVal use4Wire As Boolean = True, _
+                                  Optional ByVal autoRange As Boolean = True, _
+                                  Optional ByVal resource As String = "", _
+                                  Optional ByVal comment As String = "") As Boolean
+    Dim modeKey As String
+    Dim autoConnected As Boolean
+    Dim ok As Boolean
+
+    modeKey = UCase$(Trim$(sourceMode))
+    autoConnected = False
+
+    If MV_K2450_Device = "" Then
+        If resource = "" Then
+            ok = K2450_Connect()
+        Else
+            ok = K2450_Connect(resource)
+        End If
+        If Not ok Then
+            Run_K2450_IV_Live = False
+            Exit Function
+        End If
+        autoConnected = True
+    End If
+
+    If modeKey = "CURR" Or modeKey = "CURRENT" Then
+        ok = K2450_ConfigCurrentSource(startVal, compliance, nplc, avgCount, use4Wire, autoRange)
+    ElseIf modeKey = "VOLT" Or modeKey = "VOLTAGE" Then
+        ok = K2450_ConfigVoltageSource(startVal, compliance, nplc, avgCount, use4Wire, autoRange)
+    Else
+        MV_SetError "Run_K2450_IV_Live invalid sourceMode: " & sourceMode
+        ok = False
+    End If
+    If Not ok Then GoTo Fail
+
+    If Not K2450_LogInit(datPath, runTitle, True) Then GoTo Fail
+
+    ok = K2450_IV_Run(ch, sourceMode, startVal, maxVal, minVal, stepVal, directionMode, settle_s, rampToStart, rampRatePerS, comment)
+
+    Call K2450_LogClose()
+    If autoConnected Then Call K2450_Disconnect(True)
+
+    Run_K2450_IV_Live = ok
+    Exit Function
+
+Fail:
+    Call K2450_LogClose()
+    Call K2450_OutputOff()
+    If autoConnected Then Call K2450_Disconnect(True)
+    Run_K2450_IV_Live = False
 End Function

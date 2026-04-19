@@ -394,6 +394,14 @@ End Function
 Public Function Helm_MeasureResistances_Ohm(ByVal nplc As Double, ByRef resistanceA_Ohm As Double, ByRef resistanceB_Ohm As Double) As Boolean
     Dim q As String
 
+    ' No current flowing — resistance measurement is meaningless; report zero
+    If MV_LastCurrentA_A = 0# And MV_LastCurrentB_A = 0# Then
+        resistanceA_Ohm = 0#
+        resistanceB_Ohm = 0#
+        Helm_MeasureResistances_Ohm = True
+        Exit Function
+    End If
+
     If Not MV_GPIB_Write(MV_K2600_Device, "smua.measure.nplc = " & CStr(nplc)) Then
         Helm_MeasureResistances_Ohm = False
         Exit Function
