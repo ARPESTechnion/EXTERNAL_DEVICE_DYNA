@@ -41,7 +41,7 @@ from Utility.DynaClass import DynaClass
 # INSTRUMENT CONFIGURATION - Update these addresses for your hardware setup
 # ============================================================================
 # Keithley 2600 (Helmholtz coil control) - USB address
-KEITHLEY2600_ADDRESS = 'USB0::0x05E6::0x2614::4083836::INSTR'
+KEITHLEY2600_ADDRESS = 'GPIB0::26::INSTR'
 
 # Keithley 2450 (Hall bar measurements) - GPIB address
 # Common formats: 'GPIB0::18::INSTR', 'USB0::0x05E6::0x2450::XXXXXXX::INSTR'

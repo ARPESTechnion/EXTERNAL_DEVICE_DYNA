@@ -279,7 +279,7 @@ class MockKeithley2600:
 
 class Keithley2600():
     def __init__(self):
-        self.address = 'USB0::0x05E6::0x2614::4083836::INSTR'
+        self.address = 'GPIB0::26::INSTR'
         self.keithley = None
         self.connected = False
         

@@ -11,7 +11,7 @@ from __future__ import annotations
 # ============================================================================
 # Instrument VISA / network addresses
 # ============================================================================
-KEITHLEY2600_ADDRESS = "USB0::0x05E6::0x2614::4083836::INSTR"
+KEITHLEY2600_ADDRESS = "GPIB0::26::INSTR"
 KEITHLEY2450_ADDRESS = "GPIB0::18::INSTR"
 LOCKIN_ADDRESS = "GPIB0::8::INSTR"
 SWITCH_BACKEND = "my_switch"  # "my_switch" | "keithley7001"
