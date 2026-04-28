@@ -239,6 +239,31 @@ Public Function SelfTest_SafeAbort() As Boolean
     SelfTest_SafeAbort = True
 End Function
 
+Private Function K2450RW_NormalizeSourceSpec(ByVal sourceSpec As String, ByRef outMode As String, ByRef outScale As Double) As Boolean
+    Dim key As String
+
+    key = UCase$(Trim$(sourceSpec))
+    outMode = ""
+    outScale = 1#
+
+    If key = "V" Or key = "VOLT" Or key = "VOLTAGE" Then
+        outMode = "VOLTAGE"
+        outScale = 1#
+    ElseIf key = "MA" Or key = "MILLIAMP" Or key = "MILLIAMPS" Or key = "CURRENT_MA" Or key = "CURR_MA" Or key = "I_MA" Then
+        outMode = "CURRENT"
+        outScale = 0.001
+    ElseIf key = "A" Or key = "AMP" Or key = "AMPS" Or key = "CURR" Or key = "CURRENT" Then
+        outMode = "CURRENT"
+        outScale = 1#
+    Else
+        MV_SetError "Unknown source spec (use V, VOLTAGE, mA, or A): " & sourceSpec
+        K2450RW_NormalizeSourceSpec = False
+        Exit Function
+    End If
+
+    K2450RW_NormalizeSourceSpec = True
+End Function
+
 Public Function Run_K2450_IV_Live(ByVal datPath As String, _
                                   ByVal runTitle As String, _
                                   ByVal ch As String, _
@@ -303,4 +328,214 @@ Fail:
     Call K2450_OutputOff()
     If autoConnected Then Call K2450_Disconnect(True)
     Run_K2450_IV_Live = False
+End Function
+
+Public Function Run_K2450_IV_Sweep(ByVal datPath As String, _
+                                   ByVal directionMode As Integer, _
+                                   ByVal startVal As Double, _
+                                   ByVal maxVal As Double, _
+                                   ByVal minVal As Double, _
+                                   ByVal stepVal As Double, _
+                                   ByVal sourceSpec As String, _
+                                   ByVal runFastIV As Boolean, _
+                                   ByVal settle_s As Double, _
+                                   ByVal nplcRead As Double, _
+                                   ByVal nplcSource As Double, _
+                                   ByVal avgCount As Integer, _
+                                   ByVal rampRatePerS As Double, _
+                                   Optional ByVal runTitle As String = "K2450 IV sweep", _
+                                   Optional ByVal compliance As Double = -1#, _
+                                   Optional ByVal ch As String = "Ch1", _
+                                   Optional ByVal use4Wire As Boolean = True, _
+                                   Optional ByVal autoRange As Boolean = True, _
+                                   Optional ByVal resource As String = "", _
+                                   Optional ByVal comment As String = "") As Boolean
+    Dim sourceMode As String
+    Dim sourceScale As Double
+    Dim startScaled As Double
+    Dim maxScaled As Double
+    Dim minScaled As Double
+    Dim stepScaled As Double
+    Dim autoConnected As Boolean
+    Dim ok As Boolean
+
+    If Not K2450RW_NormalizeSourceSpec(sourceSpec, sourceMode, sourceScale) Then
+        Run_K2450_IV_Sweep = False
+        Exit Function
+    End If
+
+    If nplcRead <= 0# Or nplcSource <= 0# Then
+        MV_SetError "NPLC values must be > 0"
+        Run_K2450_IV_Sweep = False
+        Exit Function
+    End If
+
+    startScaled = startVal * sourceScale
+    maxScaled = maxVal * sourceScale
+    minScaled = minVal * sourceScale
+    stepScaled = stepVal * sourceScale
+
+    If stepScaled = 0# Then
+        MV_SetError "step must be non-zero"
+        Run_K2450_IV_Sweep = False
+        Exit Function
+    End If
+
+    If compliance < 0# Then
+        If sourceMode = "CURRENT" Then
+            compliance = 2#
+        Else
+            compliance = 0.01
+        End If
+    End If
+
+    autoConnected = False
+    If MV_K2450_Device = "" Then
+        If resource = "" Then
+            ok = K2450_Connect()
+        Else
+            ok = K2450_Connect(resource)
+        End If
+        If Not ok Then
+            Run_K2450_IV_Sweep = False
+            Exit Function
+        End If
+        autoConnected = True
+    End If
+
+    If sourceMode = "CURRENT" Then
+        ok = K2450_ConfigCurrentSource(startScaled, compliance, nplcRead, avgCount, use4Wire, autoRange)
+        If ok Then ok = MV_GPIB_Write(MV_K2450_Device, "SENS:CURR:NPLC " & CStr(nplcSource))
+    Else
+        ok = K2450_ConfigVoltageSource(startScaled, compliance, nplcRead, avgCount, use4Wire, autoRange)
+        If ok Then ok = MV_GPIB_Write(MV_K2450_Device, "SENS:VOLT:NPLC " & CStr(nplcSource))
+    End If
+    If Not ok Then GoTo Fail
+
+    If Not K2450_LogInit(datPath, runTitle, True) Then GoTo Fail
+
+    If runFastIV Then
+        ok = K2450_IV_RunFast(ch, sourceMode, startScaled, maxScaled, minScaled, stepScaled, directionMode, settle_s, True, rampRatePerS, comment)
+    Else
+        ok = K2450_IV_Run(ch, sourceMode, startScaled, maxScaled, minScaled, stepScaled, directionMode, settle_s, True, rampRatePerS, comment)
+    End If
+
+    Call K2450_LogClose()
+    If autoConnected Then Call K2450_Disconnect(True)
+
+    Run_K2450_IV_Sweep = ok
+    Exit Function
+
+Fail:
+    Call K2450_LogClose()
+    Call K2450_OutputOff()
+    If autoConnected Then Call K2450_Disconnect(True)
+    Run_K2450_IV_Sweep = False
+End Function
+
+Public Function Run_K2450_IV_HardwareSweep(ByVal datPath As String, _
+                                           ByVal directionMode As Integer, _
+                                           ByVal startVal As Double, _
+                                           ByVal maxVal As Double, _
+                                           ByVal minVal As Double, _
+                                           ByVal stepVal As Double, _
+                                           ByVal sourceSpec As String, _
+                                           ByVal settle_s As Double, _
+                                           ByVal nplcRead As Double, _
+                                           ByVal nplcSource As Double, _
+                                           ByVal avgCount As Integer, _
+                                           ByVal rampRatePerS As Double, _
+                                           Optional ByVal runFastHW As Boolean = False, _
+                                           Optional ByVal sourceValueMode As Integer = K2450_HW_SRC_MODE_MEASURED, _
+                                           Optional ByVal runTitle As String = "K2450 IV hardware sweep", _
+                                           Optional ByVal compliance As Double = -1#, _
+                                           Optional ByVal ch As String = "Ch1", _
+                                           Optional ByVal rampToStart As Boolean = True, _
+                                           Optional ByVal use4Wire As Boolean = True, _
+                                           Optional ByVal autoRange As Boolean = True, _
+                                           Optional ByVal resource As String = "", _
+                                           Optional ByVal comment As String = "") As Boolean
+    Dim sourceMode As String
+    Dim sourceScale As Double
+    Dim startScaled As Double
+    Dim maxScaled As Double
+    Dim minScaled As Double
+    Dim stepScaled As Double
+    Dim autoConnected As Boolean
+    Dim ok As Boolean
+
+    If Not K2450RW_NormalizeSourceSpec(sourceSpec, sourceMode, sourceScale) Then
+        Run_K2450_IV_HardwareSweep = False
+        Exit Function
+    End If
+
+    If nplcRead <= 0# Or nplcSource <= 0# Then
+        MV_SetError "NPLC values must be > 0"
+        Run_K2450_IV_HardwareSweep = False
+        Exit Function
+    End If
+
+    If runFastHW Then
+        sourceValueMode = K2450_HW_SRC_MODE_CMD_ONLY
+    ElseIf sourceValueMode < K2450_HW_SRC_MODE_CMD_ONLY Or sourceValueMode > K2450_HW_SRC_MODE_MEASURED Then
+        sourceValueMode = K2450_HW_SRC_MODE_MEASURED
+    End If
+
+    startScaled = startVal * sourceScale
+    maxScaled = maxVal * sourceScale
+    minScaled = minVal * sourceScale
+    stepScaled = stepVal * sourceScale
+
+    If stepScaled = 0# Then
+        MV_SetError "step must be non-zero"
+        Run_K2450_IV_HardwareSweep = False
+        Exit Function
+    End If
+
+    If compliance < 0# Then
+        If sourceMode = "CURRENT" Then
+            compliance = 2#
+        Else
+            compliance = 0.01
+        End If
+    End If
+
+    autoConnected = False
+    If MV_K2450_Device = "" Then
+        If resource = "" Then
+            ok = K2450_Connect()
+        Else
+            ok = K2450_Connect(resource)
+        End If
+        If Not ok Then
+            Run_K2450_IV_HardwareSweep = False
+            Exit Function
+        End If
+        autoConnected = True
+    End If
+
+    If sourceMode = "CURRENT" Then
+        ok = K2450_ConfigCurrentSource(startScaled, compliance, nplcRead, avgCount, use4Wire, autoRange)
+        If ok Then ok = MV_GPIB_Write(MV_K2450_Device, "SENS:CURR:NPLC " & CStr(nplcSource))
+    Else
+        ok = K2450_ConfigVoltageSource(startScaled, compliance, nplcRead, avgCount, use4Wire, autoRange)
+        If ok Then ok = MV_GPIB_Write(MV_K2450_Device, "SENS:VOLT:NPLC " & CStr(nplcSource))
+    End If
+    If Not ok Then GoTo Fail
+
+    If Not K2450_LogInit(datPath, runTitle, True) Then GoTo Fail
+
+    ok = K2450_IV_RunHardwareSweep(ch, sourceMode, startScaled, maxScaled, minScaled, stepScaled, directionMode, settle_s, sourceValueMode, rampToStart, rampRatePerS, comment)
+
+    Call K2450_LogClose()
+    If autoConnected Then Call K2450_Disconnect(True)
+
+    Run_K2450_IV_HardwareSweep = ok
+    Exit Function
+
+Fail:
+    Call K2450_LogClose()
+    Call K2450_OutputOff()
+    If autoConnected Then Call K2450_Disconnect(True)
+    Run_K2450_IV_HardwareSweep = False
 End Function

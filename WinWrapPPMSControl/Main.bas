@@ -69,6 +69,8 @@ Private Sub PrintFunctionCatalog()
     MV_Log "  K2450_ConfigVoltageSource(source_V, compliance_A, nplc, avgCount, [use4Wire], [autoRange])"
     MV_Log "  K2450_MeasureVoltage_V([Ch], [settle_s]), K2450_MeasureCurrent_A([Ch], [settle_s]), K2450_MeasureResistance_Ohm([Ch], [settle_s])"
     MV_Log "  K2450_IV_Run(Ch, sourceMode, startVal, maxVal, minVal, stepVal, directionMode, settle_s, [rampToStart], [rampRatePerS], [comment])"
+    MV_Log "  Run_K2450_IV_Sweep(datPath, directionMode, startVal, maxVal, minVal, stepVal, sourceSpec, runFastIV, settle_s, nplcRead, nplcSource, avgCount, rampRatePerS, ...)"
+    MV_Log "  Run_K2450_IV_HardwareSweep(datPath, directionMode, startVal, maxVal, minVal, stepVal, sourceSpec, settle_s, nplcRead, nplcSource, avgCount, rampRatePerS, [runFastHW], ...)"
     MV_Log "  K2450_LogInit(datPath, runTitle), K2450_LogPoint([Ch], [comment]), K2450_LogClose()"
     MV_Log ""
     MV_Log "DynaCool + Data"
