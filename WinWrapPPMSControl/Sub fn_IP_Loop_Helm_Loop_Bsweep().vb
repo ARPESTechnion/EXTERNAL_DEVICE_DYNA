@@ -1,72 +1,45 @@
-Sub fn_IP_Loop_Helm_Loop_Bsweep()
-    ' =========================================================
-    ' Measurement Configuration - edit these values
-    ' =========================================================
-    Dim Helm_Field_Start As Double ' Helmholtz sweep start (Oe)
-    Dim Helm_Field_End As Double ' Helmholtz sweep end (Oe)
-    Dim Helm_Field_Step As Double ' Helmholtz sweep step size (Oe)
-    Dim IV_Current_mA As Double ' ETO IV peak current (mA)
-    Dim IV_Frequency_Hz As Double ' ETO IV excitation frequency (Hz)
-    ' Options: 0.3051758 | 1.017253 | 1.525879 | 3.051758
-    ' 6.103516 | 12.20704 | 24.41407 | 48.82813 | 97.65625
-    Dim IV_Averaging As Long ' ETO IV averaging points
-    Dim IV_Gain_Code As String ' ETO IV gain (3 numbers, space-separated):
-    ' "3 2 1"=44uV "3 2 0"=130uV "3 1 1"=440uV "3 1 0"=1.3mV
-    ' "3 0 1"=4.4mV "3 0 0"=13mV "1 2 0"=40mV "1 1 1"=130mV
-    ' "1 1 0"=0.4V "1 0 1"=1.3V "1 0 0"=4V
-    Dim IV_Sweep_Code As String ' ETO IV sweep waveform (3 numbers, space-separated):
-    ' "0 0 0" = 0->Max->Min->0 (full bipolar, default)
-    ' "1 0 0" = 0->Min->Max->0
-    ' "2 0 0" = 0->Max->0 (positive only)
-    ' "3 0 0" = 0->Min->0 (negative only)
-    Dim Wait_For_Stable_s As Long ' Helmholtz field stabilization timeout (s)
-    Dim Helm_Field_Rate As Double ' Helmholtz field ramp rate in the sweep loop (Oe/s)
-    Dim Measure_Ch1 As Boolean ' Enable ETO channel 1
-    Dim Measure_Ch2 As Boolean ' Enable ETO channel 2
-    Dim Temp_Start As Double ' Temperature sweep start (K)
-    Dim Temp_End As Double ' Temperature sweep end (K)
-    Dim Temp_Step As Double ' Temperature sweep step (K)
-    Dim IP_Field_Start As Double ' In-plane field sweep start (Oe)
-    Dim IP_Field_End As Double ' In-plane field sweep end (Oe)
-    Dim IP_Field_Step As Double ' In-plane field sweep step (Oe)
+'#Uses "C:\Users\Ilay\OneDrive - Technion\Desktop\MC_Projects\Extarnal_Device_Dyna\WinWrapPPMSControl\MV_Constants.bas"
+'#Uses "C:\Users\Ilay\OneDrive - Technion\Desktop\MC_Projects\Extarnal_Device_Dyna\WinWrapPPMSControl\MV_HelmholtzLog.bas"
+'#Uses "C:\Users\Ilay\OneDrive - Technion\Desktop\MC_Projects\Extarnal_Device_Dyna\WinWrapPPMSControl\MV_K2600_Helmholtz.bas"
+'#Uses "C:\Users\Ilay\OneDrive - Technion\Desktop\MC_Projects\Extarnal_Device_Dyna\WinWrapPPMSControl\MV_K2450_Hall.bas"
+'#Uses "C:\Users\Ilay\OneDrive - Technion\Desktop\MC_Projects\Extarnal_Device_Dyna\WinWrapPPMSControl\MV_K2450_General.bas"
+'#Uses "C:\Users\Ilay\OneDrive - Technion\Desktop\MC_Projects\Extarnal_Device_Dyna\WinWrapPPMSControl\MV_IV_PostAnalysis.bas"
+'#Uses "C:\Users\Ilay\OneDrive - Technion\Desktop\MC_Projects\Extarnal_Device_Dyna\WinWrapPPMSControl\MV_RunWrappers.bas"
+'#Uses "C:\Users\Ilay\OneDrive - Technion\Desktop\MC_Projects\Extarnal_Device_Dyna\WinWrapPPMSControl\MV_GpibIO.bas"
 
-    Helm_Field_Start = -200 ' Oe
-    Helm_Field_End = 200 ' Oe
-    Helm_Field_Step = 2 ' Oe
-    IV_Current_mA = 0.0005 ' mA
-    IV_Frequency_Hz = 12.20704 ' Hz
-    IV_Averaging = 60
-    IV_Gain_Code = "3 2 1" ' 44 uV range
-    IV_Sweep_Code = "0 0 0" ' 0->Max->Min->0
-    Wait_For_Stable_s = 300 ' s
-    Helm_Field_Rate = 1 ' Oe/s
-    Measure_Ch1 = False
-    Measure_Ch2 = True
-    Temp_Start = 2.65 ' K
-    Temp_End = 2.65 ' K
-    Temp_Step = 1 ' K
-    IP_Field_Start = 0 ' Oe
-    IP_Field_End = 2000 ' Oe
-    IP_Field_Step = 500 ' Oe
+Option Explicit
+
+Public Sub fn_IP_Loop_Helm_Loop_Bsweep( _
+    ByVal Helm_Field_Start As Double, _
+    ByVal Helm_Field_End As Double, _
+    ByVal Helm_Field_Step As Double, _
+    ByVal IV_Current_mA As Double, _
+    ByVal IV_Frequency_Hz As Double, _
+    ByVal IV_Averaging As Long, _
+    ByVal IV_Gain_Code As String, _
+    ByVal IV_Sweep_Code As String, _
+    ByVal Wait_For_Stable_s As Long, _
+    ByVal Helm_Field_Rate As Double, _
+    ByVal Measure_Ch1 As Boolean, _
+    ByVal Measure_Ch2 As Boolean, _
+    ByVal Temp_Start As Double, _
+    ByVal Temp_End As Double, _
+    ByVal Temp_Step As Double, _
+    ByVal IP_Field_Start As Double, _
+    ByVal IP_Field_End As Double, _
+    ByVal IP_Field_Step As Double, _
+    ByVal K2600_resourceName As String, _
+    ByVal K2450_resourceName As String, _
+    ByVal Hallbar As String, _
+    ByVal BaseFolder As String)
 
     ' =========================================================
-    ' Instrument & File Configuration
+    ' Derived file path variables (set per condition inside the loop)
     ' =========================================================
-    Dim K2600_resourceName As String
-    Dim K2450_resourceName As String
-    Dim Hallbar As String
     Dim ETO_DataFile As String
     Dim Helmholtz_LogFile As String
     Dim Merged_LogFile As String
-
-    Dim BaseFolder As String
     Dim BaseName As String
-
-    K2600_resourceName = "GPIB0::26::INSTR"
-    K2450_resourceName = "GPIB0::18::INSTR"
-    Hallbar = "wire2"
-
-    BaseFolder = "C:\Users\user\Documents\Shared Data\Ilay Mangel\Clocks and Rings\4Hb\RIE Rings\TaS2005LW\TN\"
 
     ' =========================================================
     ' Derived variables
@@ -86,8 +59,15 @@ Sub fn_IP_Loop_Helm_Loop_Bsweep()
     Dim SweepSuffix As String
     Dim RunSuffix As String
     Dim ETOIV_Params As String
-    Dim BlocksPerStep As Long
-    Dim RequiredDataRows As Long
+    Dim tStepStart As Double
+    Dim tAfterETO As Double
+    Dim tAfterWait As Double
+    Dim waitMs As Double
+    Dim appendMs As Double
+    Dim totalMs As Double
+    Dim appendOk As Boolean
+    Dim consecutiveAppendFail As Long
+    Dim totalAppendFail As Long
 
     If Temp_Start = Temp_End Then
         Temp_Step_Actual = 0#
@@ -116,28 +96,19 @@ Sub fn_IP_Loop_Helm_Loop_Bsweep()
         N_Steps = CLng(Fix((Abs(Helm_Field_End - Helm_Field_Start) / Abs(Helm_Field_Step)) + 0.5)) + 1
     End If
 
-    SweepSuffix = Format(Helm_Field_Start, "0.###") & "_" & _
-                  Format(Abs(Helm_Field_Step), "0.###") & "_" & _
-                  Format(Helm_Field_End, "0.###") & "G"
+    SweepSuffix = NumericTokenNoRound(Helm_Field_Start) & "_" & _
+                  NumericTokenNoRound(Abs(Helm_Field_Step)) & "_" & _
+                  NumericTokenNoRound(Helm_Field_End) & "G"
     BaseName = "BSweep_" & SweepSuffix
-    ETOIV_Params = Format(IV_Current_mA, "0.#######") & " " & _
-                   Format(IV_Frequency_Hz, "0.#######") & " 0 " & _
+    ETOIV_Params = DoubleToCommandText(IV_Current_mA) & " " & _
+                   DoubleToCommandText(IV_Frequency_Hz) & " 0 " & _
                    CStr(IV_Averaging) & " 0 " & _
                    IV_Gain_Code & " " & IV_Sweep_Code
 
-    BlocksPerStep = 0
-    If Measure_Ch1 Then BlocksPerStep = BlocksPerStep + 1
-    If Measure_Ch2 Then BlocksPerStep = BlocksPerStep + 1
-
     ' =========================================================
-    ' Instruments Init (once)
+    ' Instruments Init
     ' =========================================================
-    K2600_Connect(K2600_resourceName) 'mvseq:Helmholtz_Bsweep.seq(1)>0001 Connect To K2600
-    Helm_ConfigSource(3, 1)           'mvseq:Helmholtz_Bsweep.seq(1)>0002 Config K2600
-    K2450_Connect(K2450_resourceName) 'mvseq:Helmholtz_Bsweep.seq(1)>0003 Connect To K2450
-    Hall_Configure(2, 2, 1, 5)        'mvseq:Helmholtz_Bsweep.seq(1)>0004 Config K2450
-    Hall_ApplyPreset(Hallbar)         'mvseq:Helmholtz_Bsweep.seq(1)>0005 Set Hall Bar
-    Hall_SetCalibration(MV_HallVPerG, 0) 'mvseq:Helmholtz_Bsweep.seq(1)>0006 Set Hall Bar Calibration
+    ' K2600 is connected per run because MV_CloseSession() disconnects instruments.
 
     ' =========================================================
     ' Outer loops: temperature x in-plane field
@@ -147,8 +118,8 @@ Sub fn_IP_Loop_Helm_Loop_Bsweep()
 
         Measurement_Temperature = Temp_Start + CDbl(IT - 1) * Temp_Step_Actual
         In_Plane_Field = IP_Field_Start + CDbl(IIP - 1) * IP_Field_Step_Actual
-        RunSuffix = "_" & Format(Measurement_Temperature, "0.##") & "K" & _
-                    "_IP_" & CStr(CLng(In_Plane_Field)) & "G"
+        RunSuffix = "_T_" & NumericTokenNoRound(Measurement_Temperature) & "K" & _
+                "_IP_" & NumericTokenNoRound(In_Plane_Field) & "G"
 
         ETO_DataFile      = BaseFolder & BaseName & RunSuffix & ".dat"
         Helmholtz_LogFile = BaseFolder & BaseName & RunSuffix & "_HelmholtzLog.dat"
@@ -158,6 +129,16 @@ Sub fn_IP_Loop_Helm_Loop_Bsweep()
         ' Session Init for this condition
         ' ---------------------------------------------------------
         MV_InitSessionWithPostAnalysis("Helmholtz_Bsweep" & RunSuffix, Helmholtz_LogFile, Merged_LogFile) 'mvseq:Helmholtz_Bsweep.seq(1)>0007 Init Session
+
+        ' ---------------------------------------------------------
+        ' Reconnect K2600 at the beginning of each run
+        ' ---------------------------------------------------------
+        K2600_Connect(K2600_resourceName) 'mvseq:Helmholtz_Bsweep.seq(1)>0001 Connect To K2600
+        Helm_ConfigSource(3, 1)           'mvseq:Helmholtz_Bsweep.seq(1)>0002 Config K2600
+        'K2450_Connect(K2450_resourceName) 'mvseq:Helmholtz_Bsweep.seq(1)>0003 Connect To K2450
+        'Hall_Configure(2, 2, 1, 5)        'mvseq:Helmholtz_Bsweep.seq(1)>0004 Config K2450
+        'Hall_ApplyPreset(Hallbar)         'mvseq:Helmholtz_Bsweep.seq(1)>0005 Set Hall Bar
+        'Hall_SetCalibration(MV_HallVPerG, 0) 'mvseq:Helmholtz_Bsweep.seq(1)>0006 Set Hall Bar Calibration
 
         ' ---------------------------------------------------------
         ' Set Initial Conditions
@@ -176,7 +157,11 @@ Sub fn_IP_Loop_Helm_Loop_Bsweep()
         ' ---------------------------------------------------------
         ' Helmholtz B-Field Sweep Loop
         ' ---------------------------------------------------------
+        consecutiveAppendFail = 0
+        totalAppendFail = 0
+
         For IB1 = 1 To N_Steps 'mvseq:Helmholtz_Bsweep.seq(1)>0014 Scan Helmholtz Field
+            tStepStart = Timer
             B1 = Helm_Field_Start + CDbl(IB1 - 1) * Helm_Field_Step_Actual 'mvseq:Helmholtz_Bsweep.seq(1)>0014 Scan Helmholtz Field
             Helm_SetField(B1, Helm_Field_Rate) 'mvseq:Helmholtz_Bsweep.seq(1)>0014 Scan Helmholtz Field
             Helm_WaitStable(Wait_For_Stable_s, 0) 'mvseq:Helmholtz_Bsweep.seq(1)>0014 Scan Helmholtz Field
@@ -188,16 +173,32 @@ Sub fn_IP_Loop_Helm_Loop_Bsweep()
             If Measure_Ch2 Then
                 DynaCool.SequenceMeasure("ETOIV 'C:\QdDynacool\default_ETO.qmap' 0 1 " & ETOIV_Params) 'mvseq:Helmholtz_Bsweep.seq(1)>0017 ETOIV Ch2
             End If
+            tAfterETO = Timer
 
             DynaCool.WaitFor(0, 1, 0) 'mvseq:Helmholtz_Bsweep.seq(1)>0018 Wait For %t
-            RequiredDataRows = CLng(IB1) * BlocksPerStep * 1023
-            If RequiredDataRows > 0 Then
-                If Not WaitForEtoDataReady(ETO_DataFile, RequiredDataRows, 30#) Then
-                    MV_Log "[SEQ][WARN] ETO data not ready for append at step " & CStr(IB1) & ": " & ETO_DataFile
+            tAfterWait = Timer
+
+            appendOk = PostAnalysis_AppendAfterETO(ETO_DataFile, False, Measure_Ch1, Measure_Ch2, False, True, 9, 10, 12, 23, 29, 30, 32, 43) 'mvseq:Helmholtz_Bsweep.seq(1)>0019 Append Analysis
+            If appendOk Then
+                consecutiveAppendFail = 0
+            Else
+                consecutiveAppendFail = consecutiveAppendFail + 1
+                totalAppendFail = totalAppendFail + 1
+                MV_Log "[SEQ][WARN] Post-analysis append not ready at step " & CStr(IB1) & " (consecutive fails=" & CStr(consecutiveAppendFail) & ")"
+                If consecutiveAppendFail >= 5 Then
+                    MV_Log "[SEQ][WARN] Persistent ETO lag detected (" & CStr(consecutiveAppendFail) & " consecutive append fails)"
                 End If
             End If
-            PostAnalysis_AppendAfterETO(ETO_DataFile, False, Measure_Ch1, Measure_Ch2, False, True, 9, 10, 12, 23, 29, 30, 32, 43) 'mvseq:Helmholtz_Bsweep.seq(1)>0019 Append Analysis
+
+            waitMs = TimerElapsedMs(tAfterETO, tAfterWait)
+            appendMs = TimerElapsedMs(tAfterWait, Timer)
+            totalMs = TimerElapsedMs(tStepStart, Timer)
+            MV_Log "[SEQ][TIMING] step=" & CStr(IB1) & " wait_ms=" & Format(waitMs, "0") & " append_ms=" & Format(appendMs, "0") & " total_ms=" & Format(totalMs, "0") & " append_ok=" & CStr(IIf(appendOk, 1, 0))
         Next IB1
+
+        If totalAppendFail > 0 Then
+            MV_Log "[SEQ][WARN] Run completed with append retries: " & CStr(totalAppendFail)
+        End If
 
         ' ---------------------------------------------------------
         ' Ramp down between runs
@@ -213,6 +214,18 @@ Sub fn_IP_Loop_Helm_Loop_Bsweep()
     Next IT
 
 End Sub
+
+Private Function TimerElapsedSeconds(ByVal tStart As Double, ByVal tEnd As Double) As Double
+    If tEnd >= tStart Then
+        TimerElapsedSeconds = tEnd - tStart
+    Else
+        TimerElapsedSeconds = (86400# - tStart) + tEnd
+    End If
+End Function
+
+Private Function TimerElapsedMs(ByVal tStart As Double, ByVal tEnd As Double) As Double
+    TimerElapsedMs = 1000# * TimerElapsedSeconds(tStart, tEnd)
+End Function
 
 Private Function CountEtoDataRows(ByVal filePath As String) As Long
     Dim fso As Object
@@ -272,4 +285,24 @@ Private Function WaitForEtoDataReady(ByVal filePath As String, ByVal minDataRows
     Loop While (Timer - t0) < timeout_s
 
     WaitForEtoDataReady = False
+End Function
+
+Private Function DoubleToCommandText(ByVal value As Double) As String
+    Dim s As String
+
+    s = Trim$(CStr(value))
+    s = Replace$(s, ",", ".")
+    DoubleToCommandText = s
+End Function
+
+Private Function NumericTokenNoRound(ByVal value As Double) As String
+    Dim s As String
+
+    s = DoubleToCommandText(value)
+    s = Replace$(s, ".", "_")
+    s = Replace$(s, "+", "")
+    s = Replace$(s, "-", "m")
+    If Len(s) = 0 Then s = "0"
+
+    NumericTokenNoRound = s
 End Function

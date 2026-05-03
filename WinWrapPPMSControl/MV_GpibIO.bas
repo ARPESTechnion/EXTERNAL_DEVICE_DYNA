@@ -17,7 +17,134 @@ Declare Function viClose Lib "visa32.dll" (ByVal vi As Long) As Long
 ' =========================================================================
 Const VI_ATTR_TERMCHAR_EN As Long = &H3FFF0038
 Const VI_ATTR_TERMCHAR As Long = &H3FFF0018
+Const VI_ATTR_TMO_VALUE As Long = &H3FFF001A
 Const VI_SUCCESS As Long = 0
+Const VI_ERROR_TMO As Long = -1073807339
+
+Private Const MV_GPIB_READ_CHUNK_SIZE As Long = 256
+Private Const MV_GPIB_MAX_QUERY_CHUNKS As Long = 512
+Private Const MV_GPIB_DRAIN_TIMEOUT_MS As Long = 5
+Private Const MV_GPIB_DRAIN_MAX_READS As Long = 32
+Private Const MV_GPIB_ENABLE_PREQUERY_DRAIN As Boolean = False
+
+Private Function VISA_StatusIsSuccess(ByVal status As Long) As Boolean
+    ' VISA returns 0 for success and positive values for success-with-info/warnings.
+    VISA_StatusIsSuccess = (status >= 0)
+End Function
+
+Private Function MV_GPIB_ReadLineFromHandle(ByVal viHandle As Long, ByRef outText As String, ByRef outErr As String) As Boolean
+    Dim status As Long
+    Dim retCount As Long
+    Dim readBuf As String * 256
+    Dim chunkText As String
+    Dim i As Long
+
+    outText = ""
+    outErr = ""
+
+    For i = 1 To MV_GPIB_MAX_QUERY_CHUNKS
+        readBuf = String(MV_GPIB_READ_CHUNK_SIZE, vbNullChar)
+
+        On Error Resume Next
+        status = viRead(viHandle, readBuf, MV_GPIB_READ_CHUNK_SIZE, retCount)
+        On Error GoTo 0
+
+        If Not VISA_StatusIsSuccess(status) Then
+            outErr = "viRead returned " & CStr(status)
+            MV_GPIB_ReadLineFromHandle = False
+            Exit Function
+        End If
+
+        If retCount <= 0 Then
+            If Trim$(outText) <> "" Then
+                outText = Trim$(outText)
+                MV_GPIB_ReadLineFromHandle = True
+            Else
+                outErr = "viRead returned empty response"
+                MV_GPIB_ReadLineFromHandle = False
+            End If
+            Exit Function
+        End If
+
+        chunkText = Left$(readBuf, retCount)
+        outText = outText & chunkText
+
+        If InStr(1, chunkText, vbLf) > 0 Or InStr(1, chunkText, vbCr) > 0 Then
+            outText = Trim$(outText)
+            If outText <> "" Then
+                MV_GPIB_ReadLineFromHandle = True
+            Else
+                outErr = "viRead returned empty response"
+                MV_GPIB_ReadLineFromHandle = False
+            End If
+            Exit Function
+        End If
+
+        If retCount < MV_GPIB_READ_CHUNK_SIZE Then
+            outText = Trim$(outText)
+            If outText <> "" Then
+                MV_GPIB_ReadLineFromHandle = True
+            Else
+                outErr = "viRead returned empty response"
+                MV_GPIB_ReadLineFromHandle = False
+            End If
+            Exit Function
+        End If
+    Next
+
+    outErr = "response exceeds " & CStr(MV_GPIB_READ_CHUNK_SIZE * MV_GPIB_MAX_QUERY_CHUNKS) & " bytes"
+    MV_GPIB_ReadLineFromHandle = False
+End Function
+
+Private Sub MV_GPIB_SetTimeoutMs(ByVal viHandle As Long, ByVal timeoutMs As Long)
+    On Error Resume Next
+    Call viSetAttribute(viHandle, VI_ATTR_TMO_VALUE, timeoutMs)
+    On Error GoTo 0
+End Sub
+
+Private Function MV_GPIB_DrainPendingRead(ByVal viHandle As Long) As Boolean
+    Dim status As Long
+    Dim retCount As Long
+    Dim readBuf As String * 256
+    Dim i As Long
+    Dim drainedBytes As Long
+
+    MV_GPIB_DrainPendingRead = False
+    drainedBytes = 0
+
+    Call MV_GPIB_SetTimeoutMs(viHandle, MV_GPIB_DRAIN_TIMEOUT_MS)
+
+    For i = 1 To MV_GPIB_DRAIN_MAX_READS
+        readBuf = String(MV_GPIB_READ_CHUNK_SIZE, vbNullChar)
+
+        On Error Resume Next
+        status = viRead(viHandle, readBuf, MV_GPIB_READ_CHUNK_SIZE, retCount)
+        On Error GoTo 0
+
+        If status = VI_ERROR_TMO Then
+            MV_GPIB_DrainPendingRead = True
+            Exit For
+        End If
+
+        If Not VISA_StatusIsSuccess(status) Then
+            MV_GPIB_DrainPendingRead = False
+            Exit For
+        End If
+
+        If retCount <= 0 Then
+            MV_GPIB_DrainPendingRead = True
+            Exit For
+        End If
+
+        drainedBytes = drainedBytes + retCount
+    Next
+
+    If MV_GPIBDebug And drainedBytes > 0 Then
+        MV_Log "[GPIB][Q] drained stale bytes=" & CStr(drainedBytes)
+    End If
+
+    Call MV_GPIB_SetTimeoutMs(viHandle, CLng(MV_GPIB_TIMEOUT_S * 1000#))
+End Function
 
 ' =========================================================================
 ' PRIVATE SESSION MANAGEMENT
@@ -244,7 +371,7 @@ Public Function MV_GPIB_Write(ByVal deviceKey As String, ByVal cmd As String) As
         status = viWrite(viHandle, fullCmd, Len(fullCmd), retCount)
         On Error GoTo 0
         
-        If status = VI_SUCCESS Then
+        If VISA_StatusIsSuccess(status) Then
             MV_GPIB_Write = True
             Exit Function
         End If
@@ -267,7 +394,7 @@ Public Function MV_GPIB_Query(ByVal deviceKey As String, ByVal cmd As String, By
     Dim status As Long
     Dim retCount As Long
     Dim fullCmd As String
-    Dim readBuf As String * 256
+    Dim readErr As String
     
     outText = ""
     If Trim$(deviceKey) = "" Then
@@ -292,6 +419,16 @@ Public Function MV_GPIB_Query(ByVal deviceKey As String, ByVal cmd As String, By
     If MV_GPIBDebug Then MV_Log "[GPIB][Q] " & cmd
 
     fullCmd = cmd & vbLf
+
+    ' Disabled by default: unconditional pre-query reads can trigger Keithley -420
+    ' (query unterminated) on some instruments/backends.
+    If MV_GPIB_ENABLE_PREQUERY_DRAIN Then
+        If Not MV_GPIB_DrainPendingRead(viHandle) Then
+            MV_SetError "GPIB query failed: unable to drain pending read buffer"
+            MV_GPIB_Query = False
+            Exit Function
+        End If
+    End If
     
     For attempt = 1 To MV_GPIB_RETRY_COUNT
         ' Send command
@@ -299,52 +436,22 @@ Public Function MV_GPIB_Query(ByVal deviceKey As String, ByVal cmd As String, By
         status = viWrite(viHandle, fullCmd, Len(fullCmd), retCount)
         On Error GoTo 0
         
-        If status <> VI_SUCCESS Then
+        If Not VISA_StatusIsSuccess(status) Then
             lastErr = "viWrite returned " & CStr(status)
             If MV_GPIBDebug Then MV_Log "[GPIB][Q][retry " & CStr(attempt) & "] " & lastErr
             MV_WaitSeconds 0.01
             DoEvents
             GoTo QueryRetry
         End If
-        
-        ' Wait for response
+
         MV_WaitSeconds 0.01
-        
-        ' Read response
-        readBuf = String(256, vbNullChar)
-        On Error Resume Next
-        status = viRead(viHandle, readBuf, 256, retCount)
-        On Error GoTo 0
-        
-        If status = VI_SUCCESS And retCount > 0 Then
-            outText = Trim$(Left(readBuf, retCount))
-            If outText <> "" Then
-                If MV_GPIBDebug Then MV_Log "[GPIB][R] " & outText
-                MV_GPIB_Query = True
-                Exit Function
-            End If
-        End If
-        
-        ' If first read was empty, try again (sometimes response is delayed)
-        MV_WaitSeconds 0.01
-        readBuf = String(256, vbNullChar)
-        On Error Resume Next
-        status = viRead(viHandle, readBuf, 256, retCount)
-        On Error GoTo 0
-        
-        If status = VI_SUCCESS And retCount > 0 Then
-            outText = Trim$(Left(readBuf, retCount))
-            If outText <> "" Then
-                If MV_GPIBDebug Then MV_Log "[GPIB][R] " & outText
-                MV_GPIB_Query = True
-                Exit Function
-            End If
-        End If
-        
-        If status = VI_SUCCESS Then
-            lastErr = "viRead returned empty response"
+
+        If MV_GPIB_ReadLineFromHandle(viHandle, outText, readErr) Then
+            If MV_GPIBDebug Then MV_Log "[GPIB][R] " & outText
+            MV_GPIB_Query = True
+            Exit Function
         Else
-            lastErr = "viRead returned " & CStr(status)
+            lastErr = readErr
         End If
         
 QueryRetry:
@@ -360,9 +467,7 @@ End Function
 Public Function MV_GPIB_Read(ByVal deviceKey As String, ByRef outText As String) As Boolean
     Dim address As Integer
     Dim viHandle As Long
-    Dim status As Long
-    Dim retCount As Long
-    Dim readBuf As String * 256
+    Dim readErr As String
 
     outText = ""
     If Trim$(deviceKey) = "" Then
@@ -384,17 +489,11 @@ Public Function MV_GPIB_Read(ByVal deviceKey As String, ByRef outText As String)
         Exit Function
     End If
 
-    readBuf = String(256, vbNullChar)
-    On Error Resume Next
-    status = viRead(viHandle, readBuf, 256, retCount)
-    On Error GoTo 0
-
-    If status = VI_SUCCESS And retCount > 0 Then
-        outText = Trim$(Left(readBuf, retCount))
+    If MV_GPIB_ReadLineFromHandle(viHandle, outText, readErr) Then
         MV_GPIB_Read = True
     Else
         outText = ""
-        MV_SetError "GPIB read failed: viRead returned " & CStr(status)
+        MV_SetError "GPIB read failed: " & readErr
         MV_GPIB_Read = False
     End If
 End Function

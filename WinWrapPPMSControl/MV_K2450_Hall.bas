@@ -8,6 +8,71 @@ Option Explicit
 
 Private MV_K2450_OutputEnabled As Boolean
 
+Private Function K2450_ParseOnOffText(ByVal txt As String, ByRef isOn As Boolean) As Boolean
+    Dim t As String
+    Dim v As Double
+
+    t = UCase$(Trim$(txt))
+    isOn = False
+
+    If t = "" Then
+        K2450_ParseOnOffText = False
+        Exit Function
+    End If
+
+    If t = "ON" Then
+        isOn = True
+        K2450_ParseOnOffText = True
+        Exit Function
+    End If
+    If t = "OFF" Then
+        isOn = False
+        K2450_ParseOnOffText = True
+        Exit Function
+    End If
+
+    If IsNumeric(t) Then
+        v = CDbl(t)
+        isOn = (Abs(v) >= 0.5)
+        K2450_ParseOnOffText = True
+        Exit Function
+    End If
+
+    If InStr(1, t, "ON") > 0 Then
+        isOn = True
+        K2450_ParseOnOffText = True
+        Exit Function
+    End If
+    If InStr(1, t, "OFF") > 0 Then
+        isOn = False
+        K2450_ParseOnOffText = True
+        Exit Function
+    End If
+
+    K2450_ParseOnOffText = False
+End Function
+
+Private Function K2450_QueryOutputState(ByRef isOn As Boolean) As Boolean
+    Dim q As String
+
+    isOn = False
+    If MV_K2450_Device = "" Then
+        K2450_QueryOutputState = False
+        Exit Function
+    End If
+
+    If Not MV_GPIB_Query(MV_K2450_Device, "OUTP?", q) Then
+        K2450_QueryOutputState = False
+        Exit Function
+    End If
+
+    If K2450_ParseOnOffText(q, isOn) Then
+        K2450_QueryOutputState = True
+    Else
+        K2450_QueryOutputState = False
+    End If
+End Function
+
 Public Function K2450_Connect(Optional ByVal resource As String = "") As Boolean
     If resource = "" Then resource = MV_K2450_RESOURCE
     K2450_Connect = MV_GPIB_Connect(resource, MV_K2450_Device)
@@ -26,6 +91,9 @@ Public Function K2450_Disconnect(Optional ByVal rampToZero As Boolean = True) As
 End Function
 
 Public Function K2450_OutputOn() As Boolean
+    Dim attempt As Integer
+    Dim isOn As Boolean
+
     If MV_K2450_Device = "" Then
         MV_SetError "K2450 not connected"
         K2450_OutputOn = False
@@ -37,8 +105,29 @@ Public Function K2450_OutputOn() As Boolean
         Exit Function
     End If
 
+    ' Treat successful write as authoritative; verification is best-effort only.
     MV_K2450_OutputEnabled = True
+
+    For attempt = 1 To 3
+        If K2450_QueryOutputState(isOn) Then
+            If isOn Then
+                MV_K2450_OutputEnabled = True
+                K2450_OutputOn = True
+                Exit Function
+            Else
+                If attempt < 3 Then
+                    Call MV_GPIB_Write(MV_K2450_Device, "OUTP ON")
+                End If
+            End If
+        End If
+        MV_WaitSeconds 0.05
+        DoEvents
+    Next
+
+    If MV_GPIBDebug Then MV_Log "[K2450][WARN] OUTP ON verification ambiguous; continuing with cached ON state"
     K2450_OutputOn = True
+    Exit Function
+
 End Function
 
 Public Function K2450_OutputOff() As Boolean
@@ -51,7 +140,19 @@ Public Function K2450_OutputOff() As Boolean
 End Function
 
 Public Function K2450_IsOutputOn() As Boolean
-    K2450_IsOutputOn = MV_K2450_OutputEnabled
+    Dim isOn As Boolean
+
+    If MV_K2450_OutputEnabled Then
+        K2450_IsOutputOn = True
+        Exit Function
+    End If
+
+    If K2450_QueryOutputState(isOn) Then
+        MV_K2450_OutputEnabled = isOn
+        K2450_IsOutputOn = isOn
+    Else
+        K2450_IsOutputOn = False
+    End If
 End Function
 
 Public Function Hall_SetCalibration(ByVal vPerG As Double, ByVal vOffset_V As Double) As Boolean

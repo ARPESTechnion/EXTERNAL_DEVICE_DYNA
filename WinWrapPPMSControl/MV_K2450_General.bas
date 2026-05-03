@@ -8,9 +8,6 @@ Public Const K2450_IV_DIR_START_MAX_MIN_START As Integer = 0
 Public Const K2450_IV_DIR_START_MIN_MAX_START As Integer = 1
 Public Const K2450_IV_DIR_START_MAX_START As Integer = 2
 Public Const K2450_IV_DIR_START_MIN_START As Integer = 3
-Public Const K2450_HW_SRC_MODE_CMD_ONLY As Integer = 0
-Public Const K2450_HW_SRC_MODE_MEASURED As Integer = 1
-
 Private Const MV_K2450_MIN_NPLC As Double = 0.01
 Private Const MV_K2450_MAX_NPLC As Double = 20#
 Private Const MV_K2450_MIN_AVG_COUNT As Integer = 1
@@ -19,7 +16,11 @@ Private Const MV_K2450_MAX_SOURCE_V As Double = 210#
 Private Const MV_K2450_MAX_SOURCE_A As Double = 1.05
 Private Const MV_K2450_MAX_COMP_V As Double = 210#
 Private Const MV_K2450_MAX_COMP_A As Double = 1.05
-Private Const MV_K2450_EPS As Double = 0.000000000001
+Public Const MV_K2450_EPS As Double = 0.000000000001
+Private Const MV_K2450_FAST_CHUNK_POINTS As Long = 250
+Private Const MV_K2450_FAST_MAX_LIST_CHARS As Long = 220
+Private Const MV_K2450_FAST_WAIT_TIMEOUT_S As Double = 30#
+Private Const MV_K2450_FAST_TRACE_RETRIES As Integer = 4
 
 Private MV_K2450G_SourceMode As String
 Private MV_K2450G_SourceSetpoint As Double
@@ -187,6 +188,7 @@ Public Function K2450_ConfigCurrentSource(ByVal source_A As Double, ByVal compli
     If Not MV_GPIB_Write(MV_K2450_Device, "SOUR:FUNC CURR") Then GoTo Fail
     If Not MV_GPIB_Write(MV_K2450_Device, "SOUR:CURR " & CStr(source_A)) Then GoTo Fail
     If Not MV_GPIB_Write(MV_K2450_Device, "SOUR:CURR:VLIM " & CStr(compliance_V)) Then GoTo Fail
+    If Not MV_GPIB_Write(MV_K2450_Device, "SOUR:CURR:READ:BACK ON") Then GoTo Fail
     If Not MV_GPIB_Write(MV_K2450_Device, "SENS:FUNC 'VOLT'") Then GoTo Fail
     If Not MV_GPIB_Write(MV_K2450_Device, "SENS:VOLT:RSEN " & rsenState) Then GoTo Fail
     If Not MV_GPIB_Write(MV_K2450_Device, "SENS:VOLT:NPLC " & CStr(nplc)) Then GoTo Fail
@@ -250,6 +252,7 @@ Public Function K2450_ConfigVoltageSource(ByVal source_V As Double, ByVal compli
     If Not MV_GPIB_Write(MV_K2450_Device, "SOUR:FUNC VOLT") Then GoTo Fail
     If Not MV_GPIB_Write(MV_K2450_Device, "SOUR:VOLT " & CStr(source_V)) Then GoTo Fail
     If Not MV_GPIB_Write(MV_K2450_Device, "SOUR:VOLT:ILIM " & CStr(compliance_A)) Then GoTo Fail
+    If Not MV_GPIB_Write(MV_K2450_Device, "SOUR:VOLT:READ:BACK ON") Then GoTo Fail
     If Not MV_GPIB_Write(MV_K2450_Device, "SENS:FUNC 'CURR'") Then GoTo Fail
     If Not MV_GPIB_Write(MV_K2450_Device, "SENS:CURR:RSEN " & rsenState) Then GoTo Fail
     If Not MV_GPIB_Write(MV_K2450_Device, "SENS:CURR:NPLC " & CStr(nplc)) Then GoTo Fail
@@ -314,9 +317,11 @@ Public Function K2450_SetCurrent(ByVal source_A As Double) As Boolean
         Exit Function
     End If
 
-    If Not MV_GPIB_Write(MV_K2450_Device, "SOUR:FUNC CURR") Then
-        K2450_SetCurrent = False
-        Exit Function
+    If UCase$(Trim$(MV_K2450G_SourceMode)) <> "CURRENT" Then
+        If Not MV_GPIB_Write(MV_K2450_Device, "SOUR:FUNC CURR") Then
+            K2450_SetCurrent = False
+            Exit Function
+        End If
     End If
     If Not MV_GPIB_Write(MV_K2450_Device, "SOUR:CURR " & CStr(source_A)) Then
         K2450_SetCurrent = False
@@ -340,9 +345,11 @@ Public Function K2450_SetVoltage(ByVal source_V As Double) As Boolean
         Exit Function
     End If
 
-    If Not MV_GPIB_Write(MV_K2450_Device, "SOUR:FUNC VOLT") Then
-        K2450_SetVoltage = False
-        Exit Function
+    If UCase$(Trim$(MV_K2450G_SourceMode)) <> "VOLTAGE" Then
+        If Not MV_GPIB_Write(MV_K2450_Device, "SOUR:FUNC VOLT") Then
+            K2450_SetVoltage = False
+            Exit Function
+        End If
     End If
     If Not MV_GPIB_Write(MV_K2450_Device, "SOUR:VOLT " & CStr(source_V)) Then
         K2450_SetVoltage = False
@@ -419,9 +426,74 @@ Public Function K2450_MeasureResistance_Ohm(Optional ByVal ch As String = "", Op
     K2450_MeasureResistance_Ohm = K2450_MeasureQueryAverage("MEAS:RES?", ch, settle_s)
 End Function
 
+' Query the SOUR element of the last entry in defbuffer1 — returns True and fills outVal
+' if SOUR:READ:BACK is ON and the readback is finite; otherwise False (caller uses setpoint).
+Private Function K2450_QueryLastSourceReadback(ByRef outVal As Double) As Boolean
+    ' defbuffer1 grows by avgCount entries per measurement call.
+    ' TRAC:ACT? returns the current fill count; read the last entry for the
+    ' most recent source readback value.
+    Dim actTxt As String
+    Dim actVal As Double
+    Dim lastIdx As Long
+    Dim q As String
+    Dim parsed As Double
+
+    If Not MV_GPIB_Query(MV_K2450_Device, "TRAC:ACT?", actTxt) Then
+        K2450_QueryLastSourceReadback = False
+        Exit Function
+    End If
+    If Not K2450_ParseDouble(actTxt, actVal) Then
+        K2450_QueryLastSourceReadback = False
+        Exit Function
+    End If
+    lastIdx = CLng(actVal)
+    If lastIdx < 1 Then
+        K2450_QueryLastSourceReadback = False
+        Exit Function
+    End If
+
+    If Not MV_GPIB_Query(MV_K2450_Device, "TRAC:DATA? " & CStr(lastIdx) & ", " & CStr(lastIdx) & ", ""defbuffer1"", SOUR", q) Then
+        K2450_QueryLastSourceReadback = False
+        Exit Function
+    End If
+    If Not K2450_ParseDouble(q, parsed) Then
+        K2450_QueryLastSourceReadback = False
+        Exit Function
+    End If
+    If Not MV_IsFinite(parsed) Then
+        K2450_QueryLastSourceReadback = False
+        Exit Function
+    End If
+    outVal = parsed
+    K2450_QueryLastSourceReadback = True
+End Function
+
 Public Function K2450_MeasureAll(ByRef outV As Double, ByRef outI As Double, ByRef outR As Double, Optional ByVal ch As String = "", Optional ByVal settle_s As Double = 0.05) As Boolean
-    outV = K2450_MeasureVoltage_V(ch, settle_s)
-    outI = K2450_MeasureCurrent_A(ch, 0#)
+    Dim modeKey As String
+    Dim srcReadback As Double
+
+    modeKey = UCase$(Trim$(MV_K2450G_SourceMode))
+
+    If modeKey = "CURRENT" Then
+        ' Measure voltage; SOUR:CURR:READ:BACK ON means defbuffer1 also holds actual sourced current.
+        outV = K2450_MeasureVoltage_V(ch, settle_s)
+        If K2450_QueryLastSourceReadback(srcReadback) Then
+            outI = srcReadback
+        Else
+            outI = MV_K2450G_SourceSetpoint  ' fallback to commanded value
+        End If
+    ElseIf modeKey = "VOLTAGE" Then
+        ' Measure current; SOUR:VOLT:READ:BACK ON means defbuffer1 also holds actual sourced voltage.
+        outI = K2450_MeasureCurrent_A(ch, settle_s)
+        If K2450_QueryLastSourceReadback(srcReadback) Then
+            outV = srcReadback
+        Else
+            outV = MV_K2450G_SourceSetpoint  ' fallback to commanded value
+        End If
+    Else
+        outV = K2450_MeasureVoltage_V(ch, settle_s)
+        outI = K2450_MeasureCurrent_A(ch, 0#)
+    End If
 
     If MV_IsFinite(outV) And MV_IsFinite(outI) And Abs(outI) > MV_K2450_EPS Then
         outR = outV / outI
@@ -670,11 +742,9 @@ Public Function K2450_IV_Run(ByVal ch As String, ByVal sourceMode As String, ByV
     End If
 
     outputWasOn = K2450_IsOutputOn()
-    If Not outputWasOn Then
-        If Not K2450_OutputOn() Then
-            K2450_IV_Run = False
-            Exit Function
-        End If
+    If Not K2450_OutputOn() Then
+        K2450_IV_Run = False
+        Exit Function
     End If
 
     If rampToStart Then
@@ -713,104 +783,52 @@ Fail:
     K2450_IV_Run = False
 End Function
 
-Public Function K2450_IV_RunFast(ByVal ch As String, ByVal sourceMode As String, ByVal startVal As Double, ByVal maxVal As Double, ByVal minVal As Double, ByVal stepVal As Double, ByVal directionMode As Integer, ByVal settle_s As Double, Optional ByVal rampToStart As Boolean = True, Optional ByVal rampRatePerS As Double = 0#, Optional ByVal comment As String = "") As Boolean
-    Dim points() As Double
-    Dim segments() As Integer
-    Dim i As Long
-    Dim v As Double
-    Dim c As Double
-    Dim r As Double
-    Dim statusTxt As String
-    Dim outputWasOn As Boolean
-    Dim modeKey As String
-    Dim chNorm As String
-
-    modeKey = K2450_NormalizeSourceMode(sourceMode)
-    If modeKey = "" Then
-        MV_SetError "Invalid IV source mode: " & sourceMode
-        K2450_IV_RunFast = False
-        Exit Function
-    End If
-
-    chNorm = K2450_NormalizeCh(ch)
-
-    If Not K2450_IV_BuildSetpointsCore(startVal, maxVal, minVal, stepVal, directionMode, points, segments) Then
-        K2450_IV_RunFast = False
-        Exit Function
-    End If
-
-    outputWasOn = K2450_IsOutputOn()
-    If Not outputWasOn Then
-        If Not K2450_OutputOn() Then
-            K2450_IV_RunFast = False
-            Exit Function
-        End If
-    End If
-
-    If rampToStart Then
-        If Not K2450_RampSourceTo(modeKey, startVal, rampRatePerS) Then GoTo Fail
-    End If
-
-    For i = LBound(points) To UBound(points)
-        If modeKey = "CURRENT" Then
-            If Not K2450_SetCurrent(points(i)) Then GoTo Fail
-        Else
-            If Not K2450_SetVoltage(points(i)) Then GoTo Fail
-        End If
-
-        If settle_s > 0# Then MV_WaitSeconds settle_s
-
-        If modeKey = "CURRENT" Then
-            v = K2450_MeasureVoltage_V(chNorm, 0#)
-            c = points(i)
-        Else
-            c = K2450_MeasureCurrent_A(chNorm, 0#)
-            v = points(i)
-        End If
-
-        If MV_IsFinite(v) And MV_IsFinite(c) And Abs(c) > MV_K2450_EPS Then
-            r = v / c
-        Else
-            r = -9.9E99
-        End If
-
-        statusTxt = "OK_FAST"
-        If (Not MV_IsFinite(v)) Or (Not MV_IsFinite(c)) Then statusTxt = "READ_FAIL"
-
-        If Not K2450_LogPointMeasured(chNorm, comment, v, c, r, directionMode, segments(i), i - LBound(points), points(i), settle_s, rampToStart, statusTxt) Then
-            GoTo Fail
-        End If
-    Next
-
-    If Not outputWasOn Then
-        Call K2450_OutputOff
-    End If
-
-    K2450_IV_RunFast = True
-    Exit Function
-
-Fail:
-    If Not outputWasOn Then
-        Call K2450_OutputOff
-    End If
-    K2450_IV_RunFast = False
+Public Function K2450_SetRunId(ByVal runId As String) As Boolean
+    MV_K2450G_RunId = Trim$(runId)
+    If MV_K2450G_RunId = "" Then MV_K2450G_RunId = "K2450_Run"
+    K2450_SetRunId = True
 End Function
 
-Private Function K2450_BuildSourceListCsv(ByRef points() As Double, ByRef outCsv As String) As Boolean
+Private Function K2450_CsvFromDoubleRange(ByRef values() As Double, ByVal startIdx As Long, ByVal endIdx As Long) As String
     Dim i As Long
+    Dim txt As String
 
-    outCsv = ""
-    If Not K2450_IsArrayAllocatedD(points) Then
-        K2450_BuildSourceListCsv = False
+    txt = ""
+    For i = startIdx To endIdx
+        If txt <> "" Then txt = txt & ","
+        txt = txt & CStr(values(i))
+    Next
+
+    K2450_CsvFromDoubleRange = txt
+End Function
+
+Private Function K2450_ParseCsvDoubles(ByVal txt As String, ByRef outValues() As Double) As Boolean
+    Dim parts() As String
+    Dim i As Long
+    Dim v As Double
+
+    txt = Trim$(txt)
+    If txt = "" Then
+        K2450_ParseCsvDoubles = False
         Exit Function
     End If
 
-    For i = LBound(points) To UBound(points)
-        If outCsv <> "" Then outCsv = outCsv & ","
-        outCsv = outCsv & CStr(points(i))
+    parts = Split(txt, ",")
+    If UBound(parts) < LBound(parts) Then
+        K2450_ParseCsvDoubles = False
+        Exit Function
+    End If
+
+    ReDim outValues(0 To UBound(parts) - LBound(parts))
+    For i = LBound(parts) To UBound(parts)
+        If Not K2450_ParseDouble(parts(i), v) Then
+            K2450_ParseCsvDoubles = False
+            Exit Function
+        End If
+        outValues(i - LBound(parts)) = v
     Next
 
-    K2450_BuildSourceListCsv = (outCsv <> "")
+    K2450_ParseCsvDoubles = True
 End Function
 
 Private Function K2450_ParseFirstCsvValue(ByVal txt As String, ByRef outValue As Double) As Boolean
@@ -824,116 +842,297 @@ Private Function K2450_ParseFirstCsvValue(ByVal txt As String, ByRef outValue As
     K2450_ParseFirstCsvValue = K2450_ParseDouble(token, outValue)
 End Function
 
-Private Function K2450_QueryDefBufferElement(ByVal idx1 As Long, ByVal elementName As String, ByRef outValue As Double) As Boolean
+Private Function K2450_ParseLongScalar(ByVal txt As String, ByRef outVal As Long) As Boolean
+    Dim t As String
+    Dim d As Double
+
+    t = Trim$(txt)
+    If t = "" Then
+        K2450_ParseLongScalar = False
+        Exit Function
+    End If
+    If InStr(1, t, ",") > 0 Then
+        K2450_ParseLongScalar = False
+        Exit Function
+    End If
+    If Not K2450_ParseDouble(t, d) Then
+        K2450_ParseLongScalar = False
+        Exit Function
+    End If
+
+    outVal = CLng(d)
+    If Abs(d - CDbl(outVal)) > 0.0000001 Then
+        K2450_ParseLongScalar = False
+    Else
+        K2450_ParseLongScalar = True
+    End If
+End Function
+
+Private Function K2450_QueryTraceRangeCsv(ByVal startIdx As Long, ByVal endIdx As Long, ByVal elementName As String, ByRef outValues() As Double) As Boolean
+    Dim attempt As Integer
+    Dim q As String
+    Dim expectedCount As Long
+    Dim gotCount As Long
+    Dim cmd As String
+
+    expectedCount = endIdx - startIdx + 1
+    If expectedCount <= 0 Then
+        K2450_QueryTraceRangeCsv = False
+        Exit Function
+    End If
+
+    cmd = "TRAC:DATA? " & CStr(startIdx) & ", " & CStr(endIdx) & ", ""defbuffer1"", " & elementName
+
+    For attempt = 1 To MV_K2450_FAST_TRACE_RETRIES
+        If MV_GPIB_Query(MV_K2450_Device, cmd, q) Then
+            If K2450_ParseCsvDoubles(q, outValues) Then
+                gotCount = UBound(outValues) - LBound(outValues) + 1
+                If gotCount = expectedCount Then
+                    K2450_QueryTraceRangeCsv = True
+                    Exit Function
+                End If
+                If MV_GPIBDebug Then MV_Log "[K2450][FAST][TRACE][retry " & CStr(attempt) & "] " & elementName & " count mismatch got=" & CStr(gotCount) & " expected=" & CStr(expectedCount)
+            Else
+                If MV_GPIBDebug Then MV_Log "[K2450][FAST][TRACE][retry " & CStr(attempt) & "] " & elementName & " non-CSV reply='" & q & "'"
+            End If
+        End If
+
+        MV_WaitSeconds 0.01
+        DoEvents
+    Next
+
+    K2450_QueryTraceRangeCsv = False
+End Function
+
+Private Sub K2450_CopySetpointsToSource(ByRef points() As Double, ByVal fromIdx As Long, ByVal toIdx As Long, ByRef outSource() As Double)
+    Dim i As Long
+    Dim n As Long
+
+    n = toIdx - fromIdx + 1
+    If n <= 0 Then Exit Sub
+
+    ReDim outSource(0 To n - 1)
+    For i = 0 To n - 1
+        outSource(i) = points(fromIdx + i)
+    Next
+End Sub
+
+Private Function K2450_QueryTraceScalar(ByVal idx1 As Long, ByVal elementName As String, ByRef outVal As Double) As Boolean
     Dim q As String
 
     If Not MV_GPIB_Query(MV_K2450_Device, "TRAC:DATA? " & CStr(idx1) & ", " & CStr(idx1) & ", ""defbuffer1"", " & elementName, q) Then
-        K2450_QueryDefBufferElement = False
+        K2450_QueryTraceScalar = False
         Exit Function
     End If
 
-    If Not K2450_ParseFirstCsvValue(q, outValue) Then
-        K2450_QueryDefBufferElement = False
+    If Not K2450_ParseFirstCsvValue(q, outVal) Then
+        K2450_QueryTraceScalar = False
         Exit Function
     End If
 
-    K2450_QueryDefBufferElement = MV_IsFinite(outValue)
+    K2450_QueryTraceScalar = MV_IsFinite(outVal)
 End Function
 
-Private Function K2450_QueryDefBufferRange(ByVal startIdx1 As Long, ByVal endIdx1 As Long, ByVal elementName As String, ByRef outValues() As Double) As Boolean
-    Dim q As String
-    Dim parts() As String
+Private Function K2450_ReadChunkByPoint(ByVal chunkCount As Long, ByRef outRead() As Double, ByRef outSource() As Double) As Boolean
     Dim i As Long
-    Dim valueCount As Long
+    Dim vRead As Double
+    Dim vSrc As Double
 
-    If endIdx1 < startIdx1 Then
-        K2450_QueryDefBufferRange = False
+    If chunkCount <= 0 Then
+        K2450_ReadChunkByPoint = False
         Exit Function
     End If
 
-    If Not MV_GPIB_Query(MV_K2450_Device, "TRAC:DATA? " & CStr(startIdx1) & ", " & CStr(endIdx1) & ", ""defbuffer1"", " & elementName, q) Then
-        K2450_QueryDefBufferRange = False
-        Exit Function
-    End If
+    ReDim outRead(0 To chunkCount - 1)
+    ReDim outSource(0 To chunkCount - 1)
 
-    parts = Split(Trim$(q), ",")
-    valueCount = UBound(parts) - LBound(parts) + 1
-    If valueCount <> (endIdx1 - startIdx1 + 1) Then
-        K2450_QueryDefBufferRange = False
-        Exit Function
-    End If
+    For i = 1 To chunkCount
+        If Not K2450_QueryTraceScalar(i, "READ", vRead) Then
+            If Not K2450_QueryTraceScalar(i, "READING", vRead) Then
+                K2450_ReadChunkByPoint = False
+                Exit Function
+            End If
+        End If
 
-    ReDim outValues(0 To valueCount - 1)
-    For i = 0 To valueCount - 1
-        If Not K2450_ParseDouble(parts(LBound(parts) + i), outValues(i)) Then
-            K2450_QueryDefBufferRange = False
+        If Not K2450_QueryTraceScalar(i, "SOUR", vSrc) Then
+            K2450_ReadChunkByPoint = False
             Exit Function
         End If
-        If Not MV_IsFinite(outValues(i)) Then
-            K2450_QueryDefBufferRange = False
-            Exit Function
-        End If
+
+        outRead(i - 1) = vRead
+        outSource(i - 1) = vSrc
     Next
 
-    K2450_QueryDefBufferRange = True
+    K2450_ReadChunkByPoint = True
 End Function
 
-Public Function K2450_IV_RunHardwareSweep(ByVal ch As String, ByVal sourceMode As String, ByVal startVal As Double, ByVal maxVal As Double, ByVal minVal As Double, ByVal stepVal As Double, ByVal directionMode As Integer, ByVal settle_s As Double, Optional ByVal sourceValueMode As Integer = K2450_HW_SRC_MODE_MEASURED, Optional ByVal rampToStart As Boolean = True, Optional ByVal rampRatePerS As Double = 0#, Optional ByVal comment As String = "") As Boolean
+Private Function K2450_FastRunChunk(ByVal modeKey As String, ByRef points() As Double, ByVal fromIdx As Long, ByVal toIdx As Long, ByVal settle_s As Double, ByRef outRead() As Double, ByRef outSource() As Double) As Boolean
+    Dim listCsv As String
+    Dim chunkCount As Long
+    Dim q As String
+    Dim readVals() As Double
+    Dim srcVals() As Double
+    Dim okReadBulk As Boolean
+    Dim okSrcBulk As Boolean
+    Dim actTxt As String
+    Dim actCount As Long
+    Dim readCmd As String
+    Dim waitStartDate As Date
+    Dim waitStartTimer As Double
+    Dim elapsed_s As Double
+
+    chunkCount = toIdx - fromIdx + 1
+    If chunkCount <= 0 Then
+        MV_SetError "K2450 fast chunk count is zero"
+        K2450_FastRunChunk = False
+        Exit Function
+    End If
+
+    listCsv = K2450_CsvFromDoubleRange(points, fromIdx, toIdx)
+    If listCsv = "" Then
+        MV_SetError "K2450 fast list generation failed"
+        K2450_FastRunChunk = False
+        Exit Function
+    End If
+
+    ' Prevent long SOUR:LIST payloads that can overrun the 2450 SCPI input parser.
+    If Len(listCsv) > MV_K2450_FAST_MAX_LIST_CHARS Then
+        MV_SetError "K2450 -363 list too long (" & CStr(Len(listCsv)) & " chars)"
+        K2450_FastRunChunk = False
+        Exit Function
+    End If
+
+    Call MV_ClearError
+
+    If modeKey = "CURRENT" Then
+        If Not MV_GPIB_Write(MV_K2450_Device, "SOUR:FUNC CURR") Then GoTo Fail
+        If Not MV_GPIB_Write(MV_K2450_Device, "SOUR:LIST:CURR " & listCsv) Then GoTo Fail
+    Else
+        If Not MV_GPIB_Write(MV_K2450_Device, "SOUR:FUNC VOLT") Then GoTo Fail
+        If Not MV_GPIB_Write(MV_K2450_Device, "SOUR:LIST:VOLT " & listCsv) Then GoTo Fail
+    End If
+
+    If settle_s < 0# Then settle_s = 0#
+
+    If Not MV_GPIB_Write(MV_K2450_Device, "TRAC:CLE ""defbuffer1""") Then GoTo Fail
+    If modeKey = "CURRENT" Then
+        If Not MV_GPIB_Write(MV_K2450_Device, "SOUR:SWE:CURR:LIST 1, " & CStr(settle_s)) Then GoTo Fail
+        If Not MV_GPIB_Write(MV_K2450_Device, "SENS:FUNC 'VOLT'") Then GoTo Fail
+    Else
+        If Not MV_GPIB_Write(MV_K2450_Device, "SOUR:SWE:VOLT:LIST 1, " & CStr(settle_s)) Then GoTo Fail
+        If Not MV_GPIB_Write(MV_K2450_Device, "SENS:FUNC 'CURR'") Then GoTo Fail
+    End If
+
+    If Not MV_GPIB_Write(MV_K2450_Device, "INIT") Then GoTo Fail
+    If Not MV_GPIB_Write(MV_K2450_Device, "*WAI") Then GoTo Fail
+
+    waitStartDate = Date
+    waitStartTimer = Timer
+    Do
+        If Not MV_GPIB_Query(MV_K2450_Device, "TRAC:ACT?", actTxt) Then GoTo Fail
+        If Not K2450_ParseLongScalar(actTxt, actCount) Then
+            If MV_GPIBDebug Then MV_Log "[K2450][FAST][TRACE] TRAC:ACT? non-scalar reply='" & actTxt & "'"
+            MV_WaitSeconds 0.02
+            DoEvents
+            GoTo ContinueWait
+        End If
+        If actCount >= chunkCount Then Exit Do
+
+        elapsed_s = (CDbl(Date - waitStartDate) * 86400#) + (Timer - waitStartTimer)
+        If elapsed_s >= MV_K2450_FAST_WAIT_TIMEOUT_S Then
+            MV_SetError "K2450 fast sweep timeout: expected " & CStr(chunkCount) & " points, got " & CStr(actCount)
+            K2450_FastRunChunk = False
+            Exit Function
+        End If
+
+        MV_WaitSeconds 0.02
+        DoEvents
+ContinueWait:
+    Loop
+
+    okReadBulk = K2450_QueryTraceRangeCsv(1, chunkCount, "READ", readVals)
+
+    If Not okReadBulk Then
+        okReadBulk = K2450_QueryTraceRangeCsv(1, chunkCount, "READING", readVals)
+    End If
+
+    okSrcBulk = K2450_QueryTraceRangeCsv(1, chunkCount, "SOUR", srcVals)
+
+    If Not okReadBulk Then
+        If Not K2450_ReadChunkByPoint(chunkCount, readVals, srcVals) Then
+            MV_SetError "K2450 fast read count mismatch"
+            K2450_FastRunChunk = False
+            Exit Function
+        End If
+    ElseIf Not okSrcBulk Then
+        If MV_GPIBDebug Then MV_Log "[K2450][FAST][TRACE] SOUR unavailable; using commanded setpoints for chunk"
+        Call K2450_CopySetpointsToSource(points, fromIdx, toIdx, srcVals)
+    End If
+
+    outRead = readVals
+    outSource = srcVals
+    K2450_FastRunChunk = True
+    Exit Function
+
+Fail:
+    K2450_FastRunChunk = False
+End Function
+
+Public Function K2450_IV_RunFast(ByVal ch As String, ByVal sourceMode As String, ByVal startVal As Double, ByVal maxVal As Double, ByVal minVal As Double, ByVal stepVal As Double, ByVal directionMode As Integer, ByVal settle_s As Double, Optional ByVal rampToStart As Boolean = True, Optional ByVal rampRatePerS As Double = 0#, Optional ByVal comment As String = "") As Boolean
     Dim points() As Double
     Dim segments() As Integer
+    Dim vAll() As Double
+    Dim iAll() As Double
+    Dim rAll() As Double
+    Dim chunkRead() As Double
+    Dim chunkSource() As Double
     Dim i As Long
-    Dim nPoints As Long
-    Dim v As Double
-    Dim c As Double
-    Dim r As Double
-    Dim measNonSourced As Double
-    Dim sourceVal As Double
-    Dim statusTxt As String
+    Dim fromIdx As Long
+    Dim toIdx As Long
+    Dim pointCount As Long
+    Dim chunkCount As Long
+    Dim chunkSize As Long
+    Dim writeIdx As Long
+    Dim j As Long
     Dim modeKey As String
+    Dim outputWasOn As Boolean
     Dim chNorm As String
-    Dim srcCsv As String
-    Dim opcTxt As String
-    Dim readValues() As Double
-    Dim sourceValues() As Double
-    Dim haveBulkReadValues As Boolean
-    Dim haveBulkSourceValues As Boolean
-    Dim pointIndex As Long
-    Dim readbackState As String
+    Dim statusTxt As String
+    Dim lastPointIdx As Long
+    Dim acqStartDate As Date
+    Dim acqStartTimer As Double
+    Dim logStartDate As Date
+    Dim logStartTimer As Double
+    Dim acqElapsed_s As Double
+    Dim logElapsed_s As Double
 
     modeKey = K2450_NormalizeSourceMode(sourceMode)
     If modeKey = "" Then
         MV_SetError "Invalid IV source mode: " & sourceMode
-        K2450_IV_RunHardwareSweep = False
+        K2450_IV_RunFast = False
         Exit Function
-    End If
-
-    If MV_K2450_Device = "" Then
-        MV_SetError "K2450 not connected"
-        K2450_IV_RunHardwareSweep = False
-        Exit Function
-    End If
-
-    If sourceValueMode < K2450_HW_SRC_MODE_CMD_ONLY Or sourceValueMode > K2450_HW_SRC_MODE_MEASURED Then
-        sourceValueMode = K2450_HW_SRC_MODE_MEASURED
     End If
 
     chNorm = K2450_NormalizeCh(ch)
 
     If Not K2450_IV_BuildSetpointsCore(startVal, maxVal, minVal, stepVal, directionMode, points, segments) Then
-        K2450_IV_RunHardwareSweep = False
+        K2450_IV_RunFast = False
         Exit Function
     End If
 
-    nPoints = CLng(UBound(points) - LBound(points) + 1)
-    If nPoints < 1 Then
-        MV_SetError "No IV points generated"
-        K2450_IV_RunHardwareSweep = False
+    pointCount = UBound(points) - LBound(points) + 1
+    If pointCount <= 0 Then
+        MV_SetError "K2450 fast sweep has no points"
+        K2450_IV_RunFast = False
         Exit Function
     End If
 
-    If Not K2450_BuildSourceListCsv(points, srcCsv) Then
-        MV_SetError "Failed to build source list"
-        K2450_IV_RunHardwareSweep = False
+    ReDim vAll(0 To pointCount - 1)
+    ReDim iAll(0 To pointCount - 1)
+
+    outputWasOn = K2450_IsOutputOn()
+    If Not K2450_OutputOn() Then
+        K2450_IV_RunFast = False
         Exit Function
     End If
 
@@ -941,89 +1140,109 @@ Public Function K2450_IV_RunHardwareSweep(ByVal ch As String, ByVal sourceMode A
         If Not K2450_RampSourceTo(modeKey, startVal, rampRatePerS) Then GoTo Fail
     End If
 
-    If settle_s < 0# Then settle_s = 0#
+    acqStartDate = Date
+    acqStartTimer = Timer
 
-    If sourceValueMode = K2450_HW_SRC_MODE_CMD_ONLY Then
-        readbackState = "OFF"
-    Else
-        readbackState = "ON"
-    End If
+    writeIdx = 0
+    chunkSize = MV_K2450_FAST_CHUNK_POINTS
+    fromIdx = LBound(points)
+    Do While fromIdx <= UBound(points)
+        toIdx = fromIdx + chunkSize - 1
+        If toIdx > UBound(points) Then toIdx = UBound(points)
 
-    If modeKey = "CURRENT" Then
-        If Not MV_GPIB_Write(MV_K2450_Device, "SOUR:FUNC CURR") Then GoTo Fail
-        If Not MV_GPIB_Write(MV_K2450_Device, "SOUR:CURR:READ:BACK " & readbackState) Then GoTo Fail
-        If Not MV_GPIB_Write(MV_K2450_Device, "SOUR:LIST:CURR " & srcCsv) Then GoTo Fail
-        If Not MV_GPIB_Write(MV_K2450_Device, "SOUR:SWE:CURR:LIST 1, " & CStr(settle_s)) Then GoTo Fail
-        If Not MV_GPIB_Write(MV_K2450_Device, "SENS:FUNC 'VOLT'") Then GoTo Fail
-    Else
-        If Not MV_GPIB_Write(MV_K2450_Device, "SOUR:FUNC VOLT") Then GoTo Fail
-        If Not MV_GPIB_Write(MV_K2450_Device, "SOUR:VOLT:READ:BACK " & readbackState) Then GoTo Fail
-        If Not MV_GPIB_Write(MV_K2450_Device, "SOUR:LIST:VOLT " & srcCsv) Then GoTo Fail
-        If Not MV_GPIB_Write(MV_K2450_Device, "SOUR:SWE:VOLT:LIST 1, " & CStr(settle_s)) Then GoTo Fail
-        If Not MV_GPIB_Write(MV_K2450_Device, "SENS:FUNC 'CURR'") Then GoTo Fail
-    End If
-
-    If Not MV_GPIB_Write(MV_K2450_Device, "TRAC:CLE ""defbuffer1""") Then GoTo Fail
-    If Not MV_GPIB_Write(MV_K2450_Device, "INIT") Then GoTo Fail
-
-    If Not MV_GPIB_Query(MV_K2450_Device, "*OPC?", opcTxt) Then GoTo Fail
-    If Trim$(opcTxt) <> "1" Then GoTo Fail
-
-    haveBulkReadValues = K2450_QueryDefBufferRange(1, nPoints, "READ", readValues)
-    haveBulkSourceValues = False
-    If sourceValueMode = K2450_HW_SRC_MODE_MEASURED Then
-        haveBulkSourceValues = K2450_QueryDefBufferRange(1, nPoints, "SOUR", sourceValues)
-    End If
-
-    For i = LBound(points) To UBound(points)
-        pointIndex = i - LBound(points)
-        statusTxt = "HW_SWEEP"
-        sourceVal = points(i)
-
-        If haveBulkReadValues Then
-            measNonSourced = readValues(pointIndex)
-        ElseIf Not K2450_QueryDefBufferElement(pointIndex + 1, "READ", measNonSourced) Then
-            measNonSourced = -9.9E99
-            statusTxt = "READ_FAIL"
+RetryChunk:
+    Call MV_ClearError
+        If Not K2450_FastRunChunk(modeKey, points, fromIdx, toIdx, settle_s, chunkRead, chunkSource) Then
+            ' Keithley -363 (input buffer overrun): reduce list chunk and retry.
+            If (InStr(1, UCase$(MV_LastError), "-363") > 0 Or InStr(1, UCase$(MV_LastError), "INPUT BUFFER OVERRUN") > 0) And chunkSize > 1 Then
+                chunkSize = chunkSize \ 2
+                If chunkSize < 1 Then chunkSize = 1
+                toIdx = fromIdx + chunkSize - 1
+                If toIdx > UBound(points) Then toIdx = UBound(points)
+                GoTo RetryChunk
+            End If
+            GoTo Fail
         End If
 
-        If sourceValueMode = K2450_HW_SRC_MODE_MEASURED Then
-            If haveBulkSourceValues Then
-                sourceVal = sourceValues(pointIndex)
-            ElseIf Not K2450_QueryDefBufferElement(pointIndex + 1, "SOUR", sourceVal) Then
-                sourceVal = points(i)
-                If statusTxt = "HW_SWEEP" Then statusTxt = "SRC_FALLBACK"
-            End If
+        chunkCount = UBound(chunkRead) - LBound(chunkRead) + 1
+        If chunkCount <= 0 Then GoTo Fail
+
+        If (writeIdx + chunkCount) > pointCount Then
+            MV_SetError "K2450 fast sweep chunk overflow"
+            GoTo Fail
         End If
 
         If modeKey = "CURRENT" Then
-            c = sourceVal
-            v = measNonSourced
+            For j = 0 To chunkCount - 1
+                vAll(writeIdx + j) = chunkRead(j)
+                iAll(writeIdx + j) = chunkSource(j)
+            Next
         Else
-            v = sourceVal
-            c = measNonSourced
+            For j = 0 To chunkCount - 1
+                iAll(writeIdx + j) = chunkRead(j)
+                vAll(writeIdx + j) = chunkSource(j)
+            Next
         End If
 
-        If MV_IsFinite(v) And MV_IsFinite(c) And Abs(c) > MV_K2450_EPS Then
-            r = v / c
+        writeIdx = writeIdx + chunkCount
+
+        fromIdx = toIdx + 1
+    Loop
+
+    If writeIdx <> pointCount Then
+        MV_SetError "K2450 fast sweep point count mismatch"
+        GoTo Fail
+    End If
+
+    acqElapsed_s = (CDbl(Date - acqStartDate) * 86400#) + (Timer - acqStartTimer)
+    If acqElapsed_s < 0# Then acqElapsed_s = 0#
+
+    ReDim rAll(0 To pointCount - 1)
+    For i = 0 To pointCount - 1
+        If MV_IsFinite(vAll(i)) And MV_IsFinite(iAll(i)) And Abs(iAll(i)) > MV_K2450_EPS Then
+            rAll(i) = vAll(i) / iAll(i)
         Else
-            r = -9.9E99
+            rAll(i) = -9.9E99
+        End If
+    Next
+
+    logStartDate = Date
+    logStartTimer = Timer
+
+    statusTxt = "OK"
+    For i = LBound(points) To UBound(points)
+        j = i - LBound(points)
+        If Not MV_IsFinite(vAll(j)) Or Not MV_IsFinite(iAll(j)) Then
+            statusTxt = "READ_FAIL"
+        Else
+            statusTxt = "OK"
         End If
 
-        If Not K2450_LogPointMeasured(chNorm, comment, v, c, r, directionMode, segments(i), i - LBound(points), points(i), settle_s, rampToStart, statusTxt) Then
+        If Not K2450_LogPointMeasured(chNorm, comment, vAll(j), iAll(j), rAll(j), directionMode, segments(i), j, points(i), settle_s, rampToStart, statusTxt) Then
             GoTo Fail
         End If
     Next
 
-    K2450_IV_RunHardwareSweep = True
+    logElapsed_s = (CDbl(Date - logStartDate) * 86400#) + (Timer - logStartTimer)
+    If logElapsed_s < 0# Then logElapsed_s = 0#
+    If MV_GPIBDebug Then
+        MV_Log "[K2450][FAST] points=" & CStr(pointCount) & ", acq_s=" & Format$(acqElapsed_s, "0.000") & ", post_log_s=" & Format$(logElapsed_s, "0.000")
+    End If
+
+    lastPointIdx = UBound(points)
+    MV_K2450G_SourceSetpoint = points(lastPointIdx)
+    MV_K2450G_SourceMode = modeKey
+
+    If Not outputWasOn Then
+        Call K2450_OutputOff
+    End If
+
+    K2450_IV_RunFast = True
     Exit Function
 
 Fail:
-    K2450_IV_RunHardwareSweep = False
-End Function
-
-Public Function K2450_SetRunId(ByVal runId As String) As Boolean
-    MV_K2450G_RunId = Trim$(runId)
-    If MV_K2450G_RunId = "" Then MV_K2450G_RunId = "K2450_Run"
-    K2450_SetRunId = True
+    If Not outputWasOn Then
+        Call K2450_OutputOff
+    End If
+    K2450_IV_RunFast = False
 End Function

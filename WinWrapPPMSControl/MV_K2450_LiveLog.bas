@@ -10,6 +10,20 @@ Private MV_K2450DataFile As Object
 Private MV_K2450LogPath As String
 Private MV_K2450LogSeq As Long
 Private MV_K2450LogDetailed As Boolean
+Private MV_K2450LogStartDate As Date
+Private MV_K2450LogStartTimer As Double
+Private MV_K2450BatchWrite As Boolean
+Private MV_K2450LogSchema As Integer
+
+Private Const K2450_LOG_SCHEMA_FULL As Integer = 0
+Private Const K2450_LOG_SCHEMA_FAST_MIN As Integer = 1
+
+Private Function K2450Log_ElapsedSeconds() As Double
+    Dim elapsed As Double
+    elapsed = (CDbl(Date - MV_K2450LogStartDate) * 86400#) + (Timer - MV_K2450LogStartTimer)
+    If elapsed < 0# Then elapsed = 0#
+    K2450Log_ElapsedSeconds = elapsed
+End Function
 
 Private Const COL_CH As String = "Ch"
 Private Const COL_SEQ As String = "Sequence Index"
@@ -66,8 +80,26 @@ Private Function K2450Log_BoolText(ByVal x As Boolean) As String
     End If
 End Function
 
-Public Function K2450_LogInit(ByVal datPath As String, ByVal runTitle As String, Optional ByVal detailed As Boolean = True) As Boolean
+Private Function K2450Log_ParseSchema(ByVal schemaMode As String) As Integer
+    Dim m As String
+
+    m = UCase$(Trim$(schemaMode))
+    If m = "" Or m = "FULL" Then
+        K2450Log_ParseSchema = K2450_LOG_SCHEMA_FULL
+    ElseIf m = "FAST_MIN" Then
+        K2450Log_ParseSchema = K2450_LOG_SCHEMA_FAST_MIN
+    Else
+        K2450Log_ParseSchema = K2450_LOG_SCHEMA_FULL
+    End If
+End Function
+
+Public Function K2450_LogUsesFastSchema() As Boolean
+    K2450_LogUsesFastSchema = (MV_K2450LogSchema = K2450_LOG_SCHEMA_FAST_MIN)
+End Function
+
+Public Function K2450_LogInit(ByVal datPath As String, ByVal runTitle As String, Optional ByVal detailed As Boolean = True, Optional ByVal bufferedWrite As Boolean = False, Optional ByVal schemaMode As String = "FULL", Optional ByVal headerNote As String = "") As Boolean
     On Error GoTo EH
+    Dim headerText As String
 
     MV_K2450LogPath = datPath
     If Not K2450Log_EndsWithIgnoreCase(MV_K2450LogPath, ".dat") Then
@@ -76,49 +108,81 @@ Public Function K2450_LogInit(ByVal datPath As String, ByVal runTitle As String,
 
     MV_K2450LogSeq = 0
     MV_K2450LogDetailed = detailed
+    MV_K2450BatchWrite = bufferedWrite
+    MV_K2450LogSchema = K2450Log_ParseSchema(schemaMode)
+    MV_K2450LogStartDate = Date
+    MV_K2450LogStartTimer = Timer
 
     If Trim$(runTitle) = "" Then runTitle = "K2450 live log"
     Call K2450_SetRunId(runTitle)
 
     Set MV_K2450DataFile = New MultiVuDataFile
 
-    MV_K2450DataFile.AddColumn COL_CH
-    MV_K2450DataFile.AddColumn COL_SEQ
-    MV_K2450DataFile.AddColumn COL_RUN_ID
-    MV_K2450DataFile.AddColumn COL_TEMP_K
-    MV_K2450DataFile.AddColumn COL_FIELD_OE
-    MV_K2450DataFile.AddColumn COL_SOURCE_MODE
-    MV_K2450DataFile.AddColumn COL_SOURCE_SETPOINT
-    MV_K2450DataFile.AddColumn COL_COMPLIANCE
-    MV_K2450DataFile.AddColumn COL_NPLC
-    MV_K2450DataFile.AddColumn COL_AVG
-    MV_K2450DataFile.AddColumn COL_WIRE
-    MV_K2450DataFile.AddColumn COL_AR
-    MV_K2450DataFile.AddColumn COL_OUTPUT
-    MV_K2450DataFile.AddColumn COL_TARGET_SETPOINT
-    MV_K2450DataFile.AddColumn COL_V, mvStartupAxisY1
-    MV_K2450DataFile.AddColumn COL_I, mvStartupAxisY2
-    MV_K2450DataFile.AddColumn COL_R, mvStartupAxisY3
-    MV_K2450DataFile.AddColumn COL_IV_DIR
-    MV_K2450DataFile.AddColumn COL_IV_SEG
-    MV_K2450DataFile.AddColumn COL_IV_POINT
-    MV_K2450DataFile.AddColumn COL_IV_SETTLE
-    MV_K2450DataFile.AddColumn COL_IV_RAMP
-    MV_K2450DataFile.AddColumn COL_STATUS
-    MV_K2450DataFile.AddColumn COL_VALID
-    MV_K2450DataFile.AddColumn COL_LAST_ERROR
+    If MV_K2450LogSchema = K2450_LOG_SCHEMA_FAST_MIN Then
+        MV_K2450DataFile.AddColumn COL_TEMP_K
+        MV_K2450DataFile.AddColumn COL_FIELD_OE
+        MV_K2450DataFile.AddColumn COL_V, mvStartupAxisY1
+        MV_K2450DataFile.AddColumn COL_I, mvStartupAxisY2
+        MV_K2450DataFile.AddColumn COL_R, mvStartupAxisY3
+        MV_K2450DataFile.AddColumn COL_IV_POINT
+        MV_K2450DataFile.AddColumn COL_STATUS
+        headerText = "; Keithley2450 fast log (Time,Temp,Field,V,I,R,IV Point,Status)"
+    Else
+        MV_K2450DataFile.AddColumn COL_CH
+        MV_K2450DataFile.AddColumn COL_SEQ
+        MV_K2450DataFile.AddColumn COL_RUN_ID
+        MV_K2450DataFile.AddColumn COL_TEMP_K
+        MV_K2450DataFile.AddColumn COL_FIELD_OE
+        MV_K2450DataFile.AddColumn COL_SOURCE_MODE
+        MV_K2450DataFile.AddColumn COL_SOURCE_SETPOINT
+        MV_K2450DataFile.AddColumn COL_COMPLIANCE
+        MV_K2450DataFile.AddColumn COL_NPLC
+        MV_K2450DataFile.AddColumn COL_AVG
+        MV_K2450DataFile.AddColumn COL_WIRE
+        MV_K2450DataFile.AddColumn COL_AR
+        MV_K2450DataFile.AddColumn COL_OUTPUT
+        MV_K2450DataFile.AddColumn COL_TARGET_SETPOINT
+        MV_K2450DataFile.AddColumn COL_V, mvStartupAxisY1
+        MV_K2450DataFile.AddColumn COL_I, mvStartupAxisY2
+        MV_K2450DataFile.AddColumn COL_R, mvStartupAxisY3
+        MV_K2450DataFile.AddColumn COL_IV_DIR
+        MV_K2450DataFile.AddColumn COL_IV_SEG
+        MV_K2450DataFile.AddColumn COL_IV_POINT
+        MV_K2450DataFile.AddColumn COL_IV_SETTLE
+        MV_K2450DataFile.AddColumn COL_IV_RAMP
+        MV_K2450DataFile.AddColumn COL_STATUS
+        MV_K2450DataFile.AddColumn COL_VALID
+        MV_K2450DataFile.AddColumn COL_LAST_ERROR
+        headerText = "; Keithley2450 live log"
+    End If
 
-    MV_K2450DataFile.CreateFileAndWriteHeader MV_K2450LogPath, runTitle, "; WinWrapPPMSControl Keithley2450 live log"
+    If Trim$(headerNote) <> "" Then
+        headerText = headerText & " | " & headerNote
+    End If
+
+    MV_K2450DataFile.CreateFileAndWriteHeader MV_K2450LogPath, runTitle, headerText
+    If MV_K2450BatchWrite Then
+        Call MV_K2450DataFile.BeginBatchWrite
+    End If
 
     K2450_LogInit = True
     Exit Function
 EH:
     MV_SetError "Init K2450 log failed: " & Err.Description
+    MV_K2450BatchWrite = False
+    MV_K2450LogSchema = K2450_LOG_SCHEMA_FULL
     K2450_LogInit = False
 End Function
 
 Public Function K2450_LogClose() As Boolean
     On Error Resume Next
+    If Not MV_K2450DataFile Is Nothing Then
+        If MV_K2450BatchWrite Then
+            Call MV_K2450DataFile.EndBatchWrite
+        End If
+    End If
+    MV_K2450BatchWrite = False
+    MV_K2450LogSchema = K2450_LOG_SCHEMA_FULL
     Set MV_K2450DataFile = Nothing
     MV_K2450LogPath = ""
     K2450_LogClose = True
@@ -141,10 +205,11 @@ End Function
 
 Public Function K2450_LogPointMeasured(ByVal ch As String, ByVal comment As String, ByVal measV As Double, ByVal measI As Double, ByVal measR As Double, Optional ByVal ivDirectionMode As Integer = -1, Optional ByVal ivSegmentIndex As Long = -1, Optional ByVal ivPointIndex As Long = -1, Optional ByVal targetSetpoint As Double = -9.9E99, Optional ByVal settle_s As Double = 0#, Optional ByVal rampToStart As Boolean = False, Optional ByVal statusTxt As String = "OK") As Boolean
     On Error GoTo EH
-    Dim rowData(1 To 52) As Variant
+    Dim rowData(1 To 54) As Variant
     Dim idx As Integer
     Dim tempK As Double
     Dim fieldOe As Double
+    Dim elapsed_s As Double
     Dim validFlag As String
     Dim chNorm As String
 
@@ -154,9 +219,15 @@ Public Function K2450_LogPointMeasured(ByVal ch As String, ByVal comment As Stri
         Exit Function
     End If
 
+    If MV_K2450LogSchema = K2450_LOG_SCHEMA_FAST_MIN Then
+        K2450_LogPointMeasured = K2450_LogPointFastMeasured(comment, measV, measI, measR, ivPointIndex, statusTxt)
+        Exit Function
+    End If
+
     chNorm = K2450_NormalizeCh(ch)
     tempK = DYNA_GetTemperature_K()
     fieldOe = DYNA_GetField_Oe()
+    elapsed_s = K2450Log_ElapsedSeconds()
 
     If MV_IsFinite(measV) And MV_IsFinite(measI) Then
         validFlag = "1"
@@ -169,6 +240,9 @@ Public Function K2450_LogPointMeasured(ByVal ch As String, ByVal comment As Stri
     idx = 1
     rowData(idx) = MV_K2450DataFile.GetCommentCol(): idx = idx + 1
     rowData(idx) = comment: idx = idx + 1
+
+    rowData(idx) = MV_K2450DataFile.GetTimeCol(): idx = idx + 1
+    rowData(idx) = elapsed_s: idx = idx + 1
 
     rowData(idx) = COL_CH: idx = idx + 1
     rowData(idx) = chNorm: idx = idx + 1
@@ -236,4 +310,50 @@ Public Function K2450_LogPointMeasured(ByVal ch As String, ByVal comment As Stri
 EH:
     MV_SetError "Write K2450 log row failed: " & Err.Description
     K2450_LogPointMeasured = False
+End Function
+
+Private Function K2450_LogPointFastMeasured(ByVal comment As String, ByVal measV As Double, ByVal measI As Double, ByVal measR As Double, ByVal ivPointIndex As Long, ByVal statusTxt As String) As Boolean
+    On Error GoTo EH
+    Dim rowData(1 To 18) As Variant
+    Dim idx As Integer
+    Dim tempK As Double
+    Dim fieldOe As Double
+    Dim elapsed_s As Double
+
+    If MV_K2450DataFile Is Nothing Then
+        MV_SetError "K2450 log writer not initialized"
+        K2450_LogPointFastMeasured = False
+        Exit Function
+    End If
+
+    tempK = DYNA_GetTemperature_K()
+    fieldOe = DYNA_GetField_Oe()
+    elapsed_s = K2450Log_ElapsedSeconds()
+
+    idx = 1
+    rowData(idx) = MV_K2450DataFile.GetCommentCol(): idx = idx + 1
+    rowData(idx) = comment: idx = idx + 1
+
+    rowData(idx) = MV_K2450DataFile.GetTimeCol(): idx = idx + 1
+    rowData(idx) = elapsed_s: idx = idx + 1
+
+    Call K2450Log_SetNumericOrBlank(rowData, idx, idx + 1, COL_TEMP_K, tempK): idx = idx + 2
+    Call K2450Log_SetNumericOrBlank(rowData, idx, idx + 1, COL_FIELD_OE, fieldOe): idx = idx + 2
+    Call K2450Log_SetNumericOrBlank(rowData, idx, idx + 1, COL_V, measV): idx = idx + 2
+    Call K2450Log_SetNumericOrBlank(rowData, idx, idx + 1, COL_I, measI): idx = idx + 2
+    Call K2450Log_SetNumericOrBlank(rowData, idx, idx + 1, COL_R, measR): idx = idx + 2
+
+    rowData(idx) = COL_IV_POINT: idx = idx + 1
+    rowData(idx) = ivPointIndex: idx = idx + 1
+
+    rowData(idx) = COL_STATUS: idx = idx + 1
+    rowData(idx) = statusTxt: idx = idx + 1
+
+    Call MV_K2450DataFile.WriteDataUsingArray(rowData, False)
+
+    K2450_LogPointFastMeasured = True
+    Exit Function
+EH:
+    MV_SetError "Write K2450 fast log row failed: " & Err.Description
+    K2450_LogPointFastMeasured = False
 End Function

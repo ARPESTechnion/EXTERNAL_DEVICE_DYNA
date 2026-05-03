@@ -39,6 +39,7 @@ Dim ColumnList() As Variant
 Dim FN As Integer  'file handle
 Dim FNS As String 'file name
 Dim HaveWrittenHeader As Boolean
+Dim KeepFileOpen As Boolean
 
 Const CommentCol As String = "Comment"
 Const TimeCol As String = "Time Stamp (sec)"
@@ -46,6 +47,7 @@ Const TimeCol As String = "Time Stamp (sec)"
 Private Sub Class_Initialize()
 	'Make it so that we can add columns
 	HaveWrittenHeader = False
+	KeepFileOpen = False
 
 	'Add default columns
 	AddColumn(CommentCol)
@@ -63,6 +65,16 @@ End Property
 Public Function GetCommentCol() As String
 	GetCommentCol = CommentCol
 End Function
+
+Public Sub BeginBatchWrite()
+	If FN = 0 Then OpenFile
+	KeepFileOpen = True
+End Sub
+
+Public Sub EndBatchWrite()
+	KeepFileOpen = False
+	CloseFile
+End Sub
 
 Public Function GetTimeCol() As String
 	GetTimeCol = TimeCol
@@ -317,9 +329,14 @@ Public Function WriteData(Optional GetTimeNow As Boolean = True)
 		ColumnList(i).IsFresh = False
 	Next
 
-	OpenFile
-	QuickWrite(TempString)
-	CloseFile
+	If KeepFileOpen Then
+		If FN = 0 Then OpenFile
+		QuickWrite(TempString)
+	Else
+		OpenFile
+		QuickWrite(TempString)
+		CloseFile
+	End If
 End Function
 
 'Function to set values form array and then write them to data file

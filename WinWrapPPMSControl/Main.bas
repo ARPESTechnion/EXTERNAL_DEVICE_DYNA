@@ -9,6 +9,7 @@
 '#Uses "C:\Users\Ilay\OneDrive - Technion\Desktop\MC_Projects\Extarnal_Device_Dyna\WinWrapPPMSControl\MV_RTPostAnalysis.bas"
 '#Uses "C:\Users\Ilay\OneDrive - Technion\Desktop\MC_Projects\Extarnal_Device_Dyna\WinWrapPPMSControl\MV_RunWrappers.bas"
 '#Uses "C:\Users\Ilay\OneDrive - Technion\Desktop\MC_Projects\Extarnal_Device_Dyna\WinWrapPPMSControl\MV_GpibIO.bas"
+'#Uses "C:\Users\Ilay\OneDrive - Technion\Desktop\MC_Projects\Extarnal_Device_Dyna\WinWrapPPMSControl\Sub fn_IP_Loop_Helm_Loop_Bsweep().vb"
 
 Option Explicit
 
@@ -69,8 +70,7 @@ Private Sub PrintFunctionCatalog()
     MV_Log "  K2450_ConfigVoltageSource(source_V, compliance_A, nplc, avgCount, [use4Wire], [autoRange])"
     MV_Log "  K2450_MeasureVoltage_V([Ch], [settle_s]), K2450_MeasureCurrent_A([Ch], [settle_s]), K2450_MeasureResistance_Ohm([Ch], [settle_s])"
     MV_Log "  K2450_IV_Run(Ch, sourceMode, startVal, maxVal, minVal, stepVal, directionMode, settle_s, [rampToStart], [rampRatePerS], [comment])"
-    MV_Log "  Run_K2450_IV_Sweep(datPath, directionMode, startVal, maxVal, minVal, stepVal, sourceSpec, runFastIV, settle_s, nplcRead, nplcSource, avgCount, rampRatePerS, ...)"
-    MV_Log "  Run_K2450_IV_HardwareSweep(datPath, directionMode, startVal, maxVal, minVal, stepVal, sourceSpec, settle_s, nplcRead, nplcSource, avgCount, rampRatePerS, [runFastHW], ...)"
+    MV_Log "  Run_K2450_IV_Sweep(datPath, directionMode, startVal, maxVal, minVal, stepVal, sourceSpec, settle_s, nplc, avgCount, rampRatePerS, ...)"
     MV_Log "  K2450_LogInit(datPath, runTitle), K2450_LogPoint([Ch], [comment]), K2450_LogClose()"
     MV_Log ""
     MV_Log "DynaCool + Data"
@@ -85,6 +85,9 @@ Private Sub PrintFunctionCatalog()
     MV_Log "Run wrappers"
     MV_Log "  Full_MeasureAndLog([tbm_s])"
     MV_Log "  Run_K2450_IV_Live(datPath, runTitle, Ch, sourceMode, startVal, maxVal, minVal, stepVal, directionMode, settle_s, ...)"
+    MV_Log "  Run_IVSweepFastTest()"
+    MV_Log "  Run_K2600_ZeroOutputCheck()"
+    MV_Log "  Run_K2450_IV_SweepFast(datPath, directionMode, startVal, maxVal, minVal, stepVal, sourceSpec, settle_s, nplc, avgCount, rampRatePerS, ...)"
     MV_Log ""
     MV_Log "Post analysis"
     MV_Log "  Merged_InitPostAnalysisLog(filePath), Merged_ClosePostAnalysisLog()"
@@ -591,15 +594,19 @@ End Function
 Private Function Test_FileContainsText(ByVal path As String, ByVal token As String) As Boolean
     Dim fileNum As Integer
     Dim lineText As String
+    Dim upLine As String
+    Dim upToken As String
 
     Test_FileContainsText = False
     fileNum = FreeFile
+    upToken = UCase$(token)
 
     On Error GoTo EH
     Open path For Input As #fileNum
     Do While Not EOF(fileNum)
         Line Input #fileNum, lineText
-        If InStr(1, lineText, token, vbTextCompare) > 0 Then
+        upLine = UCase$(lineText)
+        If InStr(upLine, upToken) > 0 Then
             Test_FileContainsText = True
             Exit Do
         End If
@@ -683,21 +690,308 @@ Public Sub RT_PostAnalysis_Run()
     End If
 End Sub
 
-Sub Main()
-	Debug.Clear
-    ' Example entry point for MultiVu Macro Editor
-    ' Update paths to match your MultiVu PC.
+' ---------------------------------------------------------------------------
+' Run_IVSweepTest: standalone K2450 software IV sweep (test / debug entry point)
+' ---------------------------------------------------------------------------
+Public Sub Run_IVSweepTest()
+    Debug.Clear
 
 
+    Dim ok As Boolean          ' Overall success flag for each IV run.
+    Dim ivSoftPath As String   ' Output .dat path for the IV sweep.
 
-    If Not MV_InitSession("demo_run", "C:\QdDynacool\Data\ETO\Helmholtz_live_log.dat") Then
-        MV_Log "Init failed: " & MV_LastError
+    Const kIvDirection As Integer = K2450_IV_DIR_START_MAX_MIN_START ' Sweep order: start -> max -> min -> start.
+    Const kStart_A As Double = 0#            ' Start current in amperes.
+    Const kMax_A As Double = 0.001         ' Maximum current in amperes (1 mA).
+    Const kMin_A As Double = -0.001        ' Minimum current in amperes (-1 mA).
+    Const kStep_A As Double = 0.0001       ' Current step in amperes (100 uA).
+    Const kSettle_s As Double = 0.05         ' Settling time before each measurement point (seconds).
+    Const kNplc As Double = 1#               ' NPLC for measurement integration.
+    Const kAvgCount As Integer = 5           ' Number of averaged readings per point.
+    Const kRampRatePerS As Double = 0#       ' Ramp rate to start setpoint (0 = immediate/default behavior).
+    Const kCompliance_V As Double = 20#       ' Compliance voltage limit in volts.
+    Const kSampleChannelTag As String = "Ch2" ' PPMS/sample channel label written to logs (text tag).
+    Const kUse4Wire As Boolean = True        ' Enable 4-wire (remote sense) mode.
+    Const kAutoRange As Boolean = True       ' Enable automatic measurement range.
+
+
+'    If Not MV_InitSession("demo_run", "C:\QdDynacool\Data\ETO\Helmholtz_live_log.dat") Then
+'        MV_Log "Init failed: " & MV_LastError
+'        Exit Sub
+'    End If
+
+'    Call PrintStartupDefaults()
+'    Call PrintFunctionCatalog()
+
+'    ' Hardware sanity check for K2600 over MultiVu built-in GPIB (non-destructive).
+'    Call Test_K2600_Connection()
+
+    ' K2450 CH2 IV sweep: 0 -> +1 mA -> -1 mA -> 0, step 100 uA.
+    ivSoftPath = "C:\QdDynacool\Data\ETO\Test_IV5.dat"
+    ok = Run_K2450_IV_Sweep(ivSoftPath, _
+                            kIvDirection, _
+                            kStart_A, _
+                            kMax_A, _
+                            kMin_A, _
+                            kStep_A, _
+                            "A", _
+                            kSettle_s, _
+                            kNplc, _
+                            kAvgCount, _
+                            kRampRatePerS, _
+                            "K2450 IV sweep slow CH2", _
+                            kCompliance_V, _
+                            kSampleChannelTag, _
+                            kUse4Wire, _
+                            kAutoRange, _
+                            MV_K2450_RESOURCE, _
+                            "slow sweep")
+    If Not ok Then
+        MV_Log "Run_K2450_IV_Sweep failed: " & MV_LastError
+        Exit Sub
+    End If
+End Sub
+
+' ---------------------------------------------------------------------------
+' Run_IVSweepFastTest: standalone K2450 fast IV sweep (easy run entry point)
+' ---------------------------------------------------------------------------
+Public Sub Run_IVSweepFastTest()
+    Debug.Clear
+
+    Dim ok As Boolean
+    Dim ivFastPath As String
+    Dim totalStartDate As Date
+    Dim totalStartTimer As Double
+    Dim totalElapsed_s As Double
+    Const kDebugGPIB As Boolean = True
+
+    Const kIvDirection As Integer = K2450_IV_DIR_START_MAX_MIN_START
+    Const kStart_A As Double = 0#
+    Const kMax_A As Double = 0.001
+    Const kMin_A As Double = -0.001
+    Const kStep_A As Double = 0.0001
+    Const kSettle_s As Double = 0#
+    Const kNplc As Double = 0.01
+    Const kAvgCount As Integer = 1
+    Const kRampRatePerS As Double = 0#
+    Const kCompliance_V As Double = 20#
+    Const kSampleChannelTag As String = "Ch2"
+    Const kUse4Wire As Boolean = True
+    Const kAutoRange As Boolean = True
+
+    totalStartDate = Date
+    totalStartTimer = Timer
+
+    Call MV_SetDebugMode(kDebugGPIB)
+
+    ivFastPath = "C:\QdDynacool\Data\ETO\Test_IV_fast.dat"
+    ok = Run_K2450_IV_SweepFast(ivFastPath, _
+                                kIvDirection, _
+                                kStart_A, _
+                                kMax_A, _
+                                kMin_A, _
+                                kStep_A, _
+                                "A", _
+                                kSettle_s, _
+                                kNplc, _
+                                kAvgCount, _
+                                kRampRatePerS, _
+                                "K2450 IV sweep fast CH2", _
+                                kCompliance_V, _
+                                kSampleChannelTag, _
+                                kUse4Wire, _
+                                kAutoRange, _
+                                MV_K2450_RESOURCE, _
+                                "fast sweep")
+    If Not ok Then
+        totalElapsed_s = (CDbl(Date - totalStartDate) * 86400#) + (Timer - totalStartTimer)
+        If totalElapsed_s < 0# Then totalElapsed_s = 0#
+        MV_Log "[K2450][FAST] total_runtime_s=" & Format$(totalElapsed_s, "0.000")
+        MV_Log "Run_K2450_IV_SweepFast failed: " & MV_LastError
+        Call MV_SetDebugMode(False)
         Exit Sub
     End If
 
-    Call PrintStartupDefaults()
-    Call PrintFunctionCatalog()
+    totalElapsed_s = (CDbl(Date - totalStartDate) * 86400#) + (Timer - totalStartTimer)
+    If totalElapsed_s < 0# Then totalElapsed_s = 0#
+    MV_Log "[K2450][FAST] total_runtime_s=" & Format$(totalElapsed_s, "0.000")
+    MV_Log "Run_K2450_IV_SweepFast finished OK: " & ivFastPath
+    Call MV_SetDebugMode(False)
+End Sub
 
-    ' Hardware sanity check for K2600 over MultiVu built-in GPIB (non-destructive).
-    Call Test_K2600_Connection()
+Public Sub Run_K2600_ZeroOutputCheck()
+    Const kCurrentTolerance_A As Double = 0.000001
+
+    Dim resourceName As String
+    Dim outputA As String
+    Dim outputB As String
+    Dim currentA As String
+    Dim currentB As String
+    Dim currentA_A As Double
+    Dim currentB_A As Double
+    Dim ok As Boolean
+    Dim connectedHere As Boolean
+
+    Debug.Clear
+    resourceName = MV_K2600_RESOURCE
+    connectedHere = False
+
+    MV_Log "[K2600][ZERO] Starting zero-output check"
+
+    If MV_K2600_Device = "" Then
+        MV_Log "[K2600][ZERO] Connecting to " & resourceName
+        If Not K2600_Connect(resourceName) Then
+            MV_Log "[K2600][ZERO] FAIL connect: " & MV_LastError
+            Exit Sub
+        End If
+        connectedHere = True
+        MV_Log "[K2600][ZERO] Connected"
+    Else
+        MV_Log "[K2600][ZERO] Using existing connection: " & MV_K2600_Device
+    End If
+
+    Call K2600_OutputOff()
+    MV_Log "[K2600][ZERO] Sent OUTPUT_OFF and zero-current commands to SMUA/SMUB"
+
+    If Not MV_GPIB_Query(MV_K2600_Device, "print(smua.source.output)", outputA) Then
+        MV_Log "[K2600][ZERO] FAIL read SMUA output state: " & MV_LastError
+        GoTo Cleanup
+    End If
+    If Not MV_GPIB_Query(MV_K2600_Device, "print(smub.source.output)", outputB) Then
+        MV_Log "[K2600][ZERO] FAIL read SMUB output state: " & MV_LastError
+        GoTo Cleanup
+    End If
+    If Not MV_GPIB_Query(MV_K2600_Device, "print(smua.source.leveli)", currentA) Then
+        MV_Log "[K2600][ZERO] FAIL read SMUA current level: " & MV_LastError
+        GoTo Cleanup
+    End If
+    If Not MV_GPIB_Query(MV_K2600_Device, "print(smub.source.leveli)", currentB) Then
+        MV_Log "[K2600][ZERO] FAIL read SMUB current level: " & MV_LastError
+        GoTo Cleanup
+    End If
+
+    currentA_A = CDbl(Val(currentA))
+    currentB_A = CDbl(Val(currentB))
+
+    MV_Log "[K2600][ZERO] SMUA output=" & Trim$(outputA) & ", leveli=" & CStr(currentA_A) & " A"
+    MV_Log "[K2600][ZERO] SMUB output=" & Trim$(outputB) & ", leveli=" & CStr(currentB_A) & " A"
+
+    ok = (Val(outputA) = 0) And _
+         (Val(outputB) = 0) And _
+         (Abs(currentA_A) <= kCurrentTolerance_A) And _
+         (Abs(currentB_A) <= kCurrentTolerance_A)
+
+    If ok Then
+        MV_Log "[K2600][ZERO] PASS both outputs are off and both current setpoints are zero"
+    Else
+        MV_Log "[K2600][ZERO] FAIL readback indicates a non-zero or enabled output state"
+    End If
+
+Cleanup:
+    If MV_K2600_Device <> "" Then
+        Call K2600_Disconnect()
+        If connectedHere Then
+            MV_Log "[K2600][ZERO] Disconnected"
+        Else
+            MV_Log "[K2600][ZERO] Disconnected existing session after safety shutdown"
+        End If
+    End If
+End Sub
+
+' ---------------------------------------------------------------------------
+' Main: Helmholtz B-sweep entry point — edit the configuration block below.
+' ---------------------------------------------------------------------------
+Sub Main()
+    Debug.Clear
+
+    ' =========================================================
+    ' Helmholtz B-field sweep
+    ' =========================================================
+    Dim kHelmStart As Double
+    Dim kHelmEnd As Double
+    Dim kHelmStep As Double
+    kHelmStart = -200    ' Oe  (sweep start)
+    kHelmEnd   =  200    ' Oe  (sweep end)
+    kHelmStep  =    2    ' Oe  (step size)
+
+    ' =========================================================
+    ' ETO IV excitation
+    ' =========================================================
+    Dim kIVCurrent As Double
+    Dim kIVFreq As Double
+    Dim kIVAveraging As Long
+    Dim kIVGain As String
+    Dim kIVSweep As String
+    kIVCurrent   = 0.0005     ' mA  (peak current)
+    kIVFreq      = 12.20704   ' Hz  (excitation frequency)
+    ' Frequency options: 0.3051758 | 1.017253 | 1.525879 | 3.051758
+    '                    6.103516  | 12.20704 | 24.41407 | 48.82813 | 97.65625
+    kIVAveraging = 60
+    kIVGain      = "3 2 1"    ' 44 uV range
+    ' Gain options: "3 2 1"=44uV  "3 2 0"=130uV  "3 1 1"=440uV  "3 1 0"=1.3mV
+    '              "3 0 1"=4.4mV "3 0 0"=13mV   "1 2 0"=40mV   "1 1 1"=130mV
+    '              "1 1 0"=0.4V  "1 0 1"=1.3V   "1 0 0"=4V
+    kIVSweep     = "0 0 0"    ' 0 -> Max -> Min -> 0  (full bipolar)
+    ' Sweep options: "0 0 0"=full bipolar  "1 0 0"=0->Min->Max->0
+    '               "2 0 0"=positive only  "3 0 0"=negative only
+
+    ' =========================================================
+    ' Timing
+    ' =========================================================
+    Dim kWaitStable As Long
+    Dim kHelmRate As Double
+    kWaitStable = 300    ' s     (per-step field stabilisation timeout)
+    kHelmRate   =   1    ' Oe/s  (Helmholtz ramp rate inside sweep)
+
+    ' =========================================================
+    ' ETO channels
+    ' =========================================================
+    Dim kCh1 As Boolean
+    Dim kCh2 As Boolean
+    kCh1 = False    ' measure ETO channel 1
+    kCh2 = True     ' measure ETO channel 2
+
+    ' =========================================================
+    ' Temperature sweep (set Start = End to fix temperature)
+    ' =========================================================
+    Dim kTempStart As Double
+    Dim kTempEnd As Double
+    Dim kTempStep As Double
+    kTempStart = 2.65    ' K
+    kTempEnd   = 2.65    ' K
+    kTempStep  = 1       ' K  (ignored when Start = End)
+
+    ' =========================================================
+    ' In-plane (DynaCool) field sweep (set Start = End to fix field)
+    ' =========================================================
+    Dim kIPStart As Double
+    Dim kIPEnd As Double
+    Dim kIPStep As Double
+    kIPStart =    0    ' Oe
+    kIPEnd   = 2000    ' Oe
+    kIPStep  =  500    ' Oe
+
+    ' =========================================================
+    ' Instrument & file configuration
+    ' =========================================================
+    Dim kK2600 As String
+    Dim kK2450 As String
+    Dim kHallbar As String
+    Dim kBaseFolder As String
+    kK2600      = "GPIB0::26::INSTR"
+    kK2450      = "GPIB0::18::INSTR"
+    kHallbar    = "wire2"
+    kBaseFolder = "C:\Users\user\Documents\Shared Data\Ilay Mangel\Clocks and Rings\4Hb\RIE Rings\TaS2005LW\TN\"
+
+    ' =========================================================
+    ' Run
+    ' =========================================================
+    Call fn_IP_Loop_Helm_Loop_Bsweep( _
+        kHelmStart, kHelmEnd, kHelmStep, _
+        kIVCurrent, kIVFreq, kIVAveraging, kIVGain, kIVSweep, _
+        kWaitStable, kHelmRate, _
+        kCh1, kCh2, _
+        kTempStart, kTempEnd, kTempStep, _
+        kIPStart, kIPEnd, kIPStep, _
+        kK2600, kK2450, kHallbar, kBaseFolder)
 End Sub
