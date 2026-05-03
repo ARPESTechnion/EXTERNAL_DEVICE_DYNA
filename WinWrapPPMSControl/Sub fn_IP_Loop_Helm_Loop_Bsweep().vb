@@ -68,6 +68,8 @@ Public Sub fn_IP_Loop_Helm_Loop_Bsweep( _
     Dim appendOk As Boolean
     Dim consecutiveAppendFail As Long
     Dim totalAppendFail As Long
+    Dim catchOk As Boolean
+    Dim catchCount As Long
 
     If Temp_Start = Temp_End Then
         Temp_Step_Actual = 0#
@@ -196,8 +198,24 @@ Public Sub fn_IP_Loop_Helm_Loop_Bsweep( _
             MV_Log "[SEQ][TIMING] step=" & CStr(IB1) & " wait_ms=" & Format(waitMs, "0") & " append_ms=" & Format(appendMs, "0") & " total_ms=" & Format(totalMs, "0") & " append_ok=" & CStr(IIf(appendOk, 1, 0))
         Next IB1
 
+        ' ---------------------------------------------------------
+        ' Catch-up: recover steps that were not ready at sweep start
+        ' ---------------------------------------------------------
         If totalAppendFail > 0 Then
-            MV_Log "[SEQ][WARN] Run completed with append retries: " & CStr(totalAppendFail)
+            MV_Log "[SEQ] Catch-up pass: " & CStr(totalAppendFail) & " step(s) may be pending"
+            DynaCool.WaitFor(0, 1, 0) ' allow last ETO blocks to flush
+            catchCount = 0
+            Do
+                catchOk = PostAnalysis_AppendAfterETO(ETO_DataFile, False, Measure_Ch1, Measure_Ch2, False, True, 9, 10, 12, 23, 29, 30, 32, 43)
+                If Not catchOk Then Exit Do
+                catchCount = catchCount + 1
+            Loop While catchCount < totalAppendFail
+            If catchCount > 0 Then
+                MV_Log "[SEQ] Catch-up recovered " & CStr(catchCount) & " step(s)"
+            End If
+            If catchCount < totalAppendFail Then
+                MV_Log "[SEQ][WARN] " & CStr(totalAppendFail - catchCount) & " step(s) could not be recovered"
+            End If
         End If
 
         ' ---------------------------------------------------------
