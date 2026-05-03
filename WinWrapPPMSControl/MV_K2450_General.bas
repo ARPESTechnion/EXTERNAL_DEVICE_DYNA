@@ -196,6 +196,11 @@ Public Function K2450_ConfigCurrentSource(ByVal source_A As Double, ByVal compli
     If Not MV_GPIB_Write(MV_K2450_Device, "SENS:VOLT:RSEN " & rsenState) Then GoTo Fail
     If Not MV_GPIB_Write(MV_K2450_Device, "SENS:VOLT:NPLC " & CStr(nplc)) Then GoTo Fail
     If Not MV_GPIB_Write(MV_K2450_Device, "SENS:VOLT:RANG:AUTO " & arState) Then GoTo Fail
+    If avgCount > 1 Then
+        If Not MV_GPIB_Write(MV_K2450_Device, "SENS:VOLT:AVER:TCON REP") Then GoTo Fail
+        If Not MV_GPIB_Write(MV_K2450_Device, "SENS:VOLT:AVER:COUN " & CStr(avgCount)) Then GoTo Fail
+        If Not MV_GPIB_Write(MV_K2450_Device, "SENS:VOLT:AVER:STAT ON") Then GoTo Fail
+    End If
     Call K2450_OutputOff
 
     MV_K2450G_SourceMode = "CURRENT"
@@ -260,6 +265,11 @@ Public Function K2450_ConfigVoltageSource(ByVal source_V As Double, ByVal compli
     If Not MV_GPIB_Write(MV_K2450_Device, "SENS:CURR:RSEN " & rsenState) Then GoTo Fail
     If Not MV_GPIB_Write(MV_K2450_Device, "SENS:CURR:NPLC " & CStr(nplc)) Then GoTo Fail
     If Not MV_GPIB_Write(MV_K2450_Device, "SENS:CURR:RANG:AUTO " & arState) Then GoTo Fail
+    If avgCount > 1 Then
+        If Not MV_GPIB_Write(MV_K2450_Device, "SENS:CURR:AVER:TCON REP") Then GoTo Fail
+        If Not MV_GPIB_Write(MV_K2450_Device, "SENS:CURR:AVER:COUN " & CStr(avgCount)) Then GoTo Fail
+        If Not MV_GPIB_Write(MV_K2450_Device, "SENS:CURR:AVER:STAT ON") Then GoTo Fail
+    End If
     Call K2450_OutputOff
 
     MV_K2450G_SourceMode = "VOLTAGE"
