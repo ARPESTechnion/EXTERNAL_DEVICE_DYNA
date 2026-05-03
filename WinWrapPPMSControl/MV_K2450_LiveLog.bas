@@ -14,9 +14,12 @@ Private MV_K2450LogStartDate As Date
 Private MV_K2450LogStartTimer As Double
 Private MV_K2450BatchWrite As Boolean
 Private MV_K2450LogSchema As Integer
+Private MV_K2450FastRowBuffer As String
+Private MV_K2450FastRowCount As Long
 
 Private Const K2450_LOG_SCHEMA_FULL As Integer = 0
 Private Const K2450_LOG_SCHEMA_FAST_MIN As Integer = 1
+Private Const K2450_FAST_LOG_FLUSH_ROWS As Long = 200
 
 Private Function K2450Log_ElapsedSeconds() As Double
     Dim elapsed As Double
@@ -80,6 +83,52 @@ Private Function K2450Log_BoolText(ByVal x As Boolean) As String
     End If
 End Function
 
+Private Function K2450Log_NumOrBlankText(ByVal value As Double) As String
+    If MV_IsFinite(value) Then
+        K2450Log_NumOrBlankText = CStr(value)
+    Else
+        K2450Log_NumOrBlankText = ""
+    End If
+End Function
+
+Private Function K2450Log_AppendFastRows(ByVal rowsText As String) As Boolean
+    Dim fn As Integer
+
+    If rowsText = "" Then
+        K2450Log_AppendFastRows = True
+        Exit Function
+    End If
+
+    On Error GoTo EH
+    fn = FreeFile
+    Open MV_K2450LogPath For Append As #fn
+    Print #fn, rowsText;
+    Close #fn
+    K2450Log_AppendFastRows = True
+    Exit Function
+EH:
+    On Error Resume Next
+    If fn <> 0 Then Close #fn
+    MV_SetError "Write K2450 fast log batch failed: " & Err.Description
+    K2450Log_AppendFastRows = False
+End Function
+
+Private Function K2450Log_FlushFastRows() As Boolean
+    If MV_K2450FastRowCount <= 0 Or MV_K2450FastRowBuffer = "" Then
+        K2450Log_FlushFastRows = True
+        Exit Function
+    End If
+
+    If Not K2450Log_AppendFastRows(MV_K2450FastRowBuffer) Then
+        K2450Log_FlushFastRows = False
+        Exit Function
+    End If
+
+    MV_K2450FastRowBuffer = ""
+    MV_K2450FastRowCount = 0
+    K2450Log_FlushFastRows = True
+End Function
+
 Private Function K2450Log_ParseSchema(ByVal schemaMode As String) As Integer
     Dim m As String
 
@@ -110,6 +159,8 @@ Public Function K2450_LogInit(ByVal datPath As String, ByVal runTitle As String,
     MV_K2450LogDetailed = detailed
     MV_K2450BatchWrite = bufferedWrite
     MV_K2450LogSchema = K2450Log_ParseSchema(schemaMode)
+    MV_K2450FastRowBuffer = ""
+    MV_K2450FastRowCount = 0
     MV_K2450LogStartDate = Date
     MV_K2450LogStartTimer = Timer
 
@@ -176,11 +227,16 @@ End Function
 
 Public Function K2450_LogClose() As Boolean
     On Error Resume Next
+    If MV_K2450LogSchema = K2450_LOG_SCHEMA_FAST_MIN Then
+        Call K2450Log_FlushFastRows
+    End If
     If Not MV_K2450DataFile Is Nothing Then
         If MV_K2450BatchWrite Then
             Call MV_K2450DataFile.EndBatchWrite
         End If
     End If
+    MV_K2450FastRowBuffer = ""
+    MV_K2450FastRowCount = 0
     MV_K2450BatchWrite = False
     MV_K2450LogSchema = K2450_LOG_SCHEMA_FULL
     Set MV_K2450DataFile = Nothing
@@ -312,23 +368,46 @@ EH:
     K2450_LogPointMeasured = False
 End Function
 
-Private Function K2450_LogPointFastMeasured(ByVal comment As String, ByVal measV As Double, ByVal measI As Double, ByVal measR As Double, ByVal ivPointIndex As Long, ByVal statusTxt As String) As Boolean
+Public Function K2450_LogPointFastMeasuredTB(ByVal comment As String, ByVal measV As Double, ByVal measI As Double, ByVal measR As Double, ByVal ivPointIndex As Long, ByVal statusTxt As String, ByVal tempK As Double, ByVal fieldOe As Double) As Boolean
     On Error GoTo EH
     Dim rowData(1 To 18) As Variant
     Dim idx As Integer
-    Dim tempK As Double
-    Dim fieldOe As Double
     Dim elapsed_s As Double
+    Dim rowLine As String
 
     If MV_K2450DataFile Is Nothing Then
         MV_SetError "K2450 log writer not initialized"
-        K2450_LogPointFastMeasured = False
+        K2450_LogPointFastMeasuredTB = False
         Exit Function
     End If
 
-    tempK = DYNA_GetTemperature_K()
-    fieldOe = DYNA_GetField_Oe()
     elapsed_s = K2450Log_ElapsedSeconds()
+
+    ' FAST_MIN + buffered mode: avoid per-row COM/object overhead by buffering rows
+    ' and appending plain CSV in larger chunks.
+    If MV_K2450LogSchema = K2450_LOG_SCHEMA_FAST_MIN And MV_K2450BatchWrite Then
+        rowLine = comment & "," & CStr(elapsed_s) & "," & _
+                  K2450Log_NumOrBlankText(tempK) & "," & K2450Log_NumOrBlankText(fieldOe) & "," & _
+                  K2450Log_NumOrBlankText(measV) & "," & K2450Log_NumOrBlankText(measI) & "," & _
+                  K2450Log_NumOrBlankText(measR) & "," & CStr(ivPointIndex) & "," & statusTxt
+
+        If MV_K2450FastRowBuffer = "" Then
+            MV_K2450FastRowBuffer = rowLine
+        Else
+            MV_K2450FastRowBuffer = MV_K2450FastRowBuffer & vbCrLf & rowLine
+        End If
+        MV_K2450FastRowCount = MV_K2450FastRowCount + 1
+
+        If MV_K2450FastRowCount >= K2450_FAST_LOG_FLUSH_ROWS Then
+            If Not K2450Log_FlushFastRows() Then
+                K2450_LogPointFastMeasuredTB = False
+                Exit Function
+            End If
+        End If
+
+        K2450_LogPointFastMeasuredTB = True
+        Exit Function
+    End If
 
     idx = 1
     rowData(idx) = MV_K2450DataFile.GetCommentCol(): idx = idx + 1
@@ -351,9 +430,19 @@ Private Function K2450_LogPointFastMeasured(ByVal comment As String, ByVal measV
 
     Call MV_K2450DataFile.WriteDataUsingArray(rowData, False)
 
-    K2450_LogPointFastMeasured = True
+    K2450_LogPointFastMeasuredTB = True
     Exit Function
 EH:
     MV_SetError "Write K2450 fast log row failed: " & Err.Description
-    K2450_LogPointFastMeasured = False
+    K2450_LogPointFastMeasuredTB = False
+End Function
+
+Private Function K2450_LogPointFastMeasured(ByVal comment As String, ByVal measV As Double, ByVal measI As Double, ByVal measR As Double, ByVal ivPointIndex As Long, ByVal statusTxt As String) As Boolean
+    Dim tempK As Double
+    Dim fieldOe As Double
+
+    tempK = DYNA_GetTemperature_K()
+    fieldOe = DYNA_GetField_Oe()
+
+    K2450_LogPointFastMeasured = K2450_LogPointFastMeasuredTB(comment, measV, measI, measR, ivPointIndex, statusTxt, tempK, fieldOe)
 End Function

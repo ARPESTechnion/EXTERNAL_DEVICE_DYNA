@@ -109,19 +109,25 @@ Public Function K2450_OutputOn() As Boolean
     MV_K2450_OutputEnabled = True
 
     For attempt = 1 To 3
+        MV_WaitSeconds 0.05
+        DoEvents
         If K2450_QueryOutputState(isOn) Then
             If isOn Then
                 MV_K2450_OutputEnabled = True
                 K2450_OutputOn = True
                 Exit Function
             Else
+                ' Instrument reports OFF — retry the OUTP ON write and loop.
                 If attempt < 3 Then
                     Call MV_GPIB_Write(MV_K2450_Device, "OUTP ON")
                 End If
             End If
+        Else
+            ' Query timed out — stop retrying to avoid queueing more stale responses
+            ' in the instrument output buffer.  The write already succeeded; trust it.
+            If MV_GPIBDebug Then MV_Log "[K2450][WARN] OUTP? timed out on attempt " & CStr(attempt) & "; trusting write"
+            Exit For
         End If
-        MV_WaitSeconds 0.05
-        DoEvents
     Next
 
     If MV_GPIBDebug Then MV_Log "[K2450][WARN] OUTP ON verification ambiguous; continuing with cached ON state"

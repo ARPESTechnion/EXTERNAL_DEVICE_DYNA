@@ -444,7 +444,8 @@ Public Function Run_K2450_IV_SweepFast(ByVal datPath As String, _
                                        Optional ByVal use4Wire As Boolean = True, _
                                        Optional ByVal autoRange As Boolean = True, _
                                        Optional ByVal resource As String = "", _
-                                       Optional ByVal comment As String = "") As Boolean
+                                       Optional ByVal comment As String = "", _
+                                       Optional ByVal tbRefresh_s As Double = 1#) As Boolean
     Dim sourceMode As String
     Dim sourceScale As Double
     Dim startScaled As Double
@@ -506,10 +507,10 @@ Public Function Run_K2450_IV_SweepFast(ByVal datPath As String, _
     End If
     If Not ok Then GoTo Fail
 
-    headerNote = "mode=" & sourceMode & "; compliance=" & CStr(compliance) & "; nplc=" & CStr(nplc) & "; avg=" & CStr(avgCount) & "; settle_s=" & CStr(settle_s) & "; use4wire=" & IIf(use4Wire, "1", "0") & "; autorange=" & IIf(autoRange, "1", "0")
+    headerNote = "mode=" & sourceMode & "; compliance=" & CStr(compliance) & "; nplc=" & CStr(nplc) & "; avg=" & CStr(avgCount) & "; settle_s=" & CStr(settle_s) & "; tb_refresh_s=" & CStr(tbRefresh_s) & "; use4wire=" & IIf(use4Wire, "1", "0") & "; autorange=" & IIf(autoRange, "1", "0")
     If Not K2450_LogInit(datPath, runTitle, False, True, "FAST_MIN", headerNote) Then GoTo Fail
 
-    ok = K2450_IV_RunFast(ch, sourceMode, startScaled, maxScaled, minScaled, stepScaled, directionMode, settle_s, True, rampRatePerS, comment)
+    ok = K2450_IV_RunFast(ch, sourceMode, startScaled, maxScaled, minScaled, stepScaled, directionMode, settle_s, True, rampRatePerS, comment, tbRefresh_s)
 
     Call K2450_LogClose()
     If autoConnected Then Call K2450_Disconnect(True)

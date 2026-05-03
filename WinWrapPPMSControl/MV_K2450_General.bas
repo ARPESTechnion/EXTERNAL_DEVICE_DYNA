@@ -1,4 +1,5 @@
 '#Uses "C:\Users\Ilay\OneDrive - Technion\Desktop\MC_Projects\Extarnal_Device_Dyna\WinWrapPPMSControl\MV_Constants.bas"
+'#Uses "C:\Users\Ilay\OneDrive - Technion\Desktop\MC_Projects\Extarnal_Device_Dyna\WinWrapPPMSControl\MV_DynaHelpers.bas"
 '#Uses "C:\Users\Ilay\OneDrive - Technion\Desktop\MC_Projects\Extarnal_Device_Dyna\WinWrapPPMSControl\MV_GpibIO.bas"
 '#Uses "C:\Users\Ilay\OneDrive - Technion\Desktop\MC_Projects\Extarnal_Device_Dyna\WinWrapPPMSControl\MV_K2450_Hall.bas"
 
@@ -17,10 +18,12 @@ Private Const MV_K2450_MAX_SOURCE_A As Double = 1.05
 Private Const MV_K2450_MAX_COMP_V As Double = 210#
 Private Const MV_K2450_MAX_COMP_A As Double = 1.05
 Public Const MV_K2450_EPS As Double = 0.000000000001
-Private Const MV_K2450_FAST_CHUNK_POINTS As Long = 250
-Private Const MV_K2450_FAST_MAX_LIST_CHARS As Long = 220
+Private Const MV_K2450_FAST_CHUNK_POINTS As Long = 2500  ' instrument max list size via SOUR:LIST + APPend
+Private Const MV_K2450_FAST_BATCH_MAX_CHARS As Long = 200 ' max CSV payload chars per SOUR:LIST or :APPend write
 Private Const MV_K2450_FAST_WAIT_TIMEOUT_S As Double = 30#
 Private Const MV_K2450_FAST_TRACE_RETRIES As Integer = 4
+Private Const MV_K2450_FAST_TRACE_QUERY_WINDOW As Long = 5000
+Private Const MV_K2450_FAST_TRACE_QUERY_TIMEOUT_S As Double = 20#
 
 Private MV_K2450G_SourceMode As String
 Private MV_K2450G_SourceSetpoint As Double
@@ -868,7 +871,7 @@ Private Function K2450_ParseLongScalar(ByVal txt As String, ByRef outVal As Long
     End If
 End Function
 
-Private Function K2450_QueryTraceRangeCsv(ByVal startIdx As Long, ByVal endIdx As Long, ByVal elementName As String, ByRef outValues() As Double) As Boolean
+Private Function K2450_QueryTraceRangeCsvSingle(ByVal startIdx As Long, ByVal endIdx As Long, ByVal elementName As String, ByRef outValues() As Double) As Boolean
     Dim attempt As Integer
     Dim q As String
     Dim expectedCount As Long
@@ -877,23 +880,25 @@ Private Function K2450_QueryTraceRangeCsv(ByVal startIdx As Long, ByVal endIdx A
 
     expectedCount = endIdx - startIdx + 1
     If expectedCount <= 0 Then
-        K2450_QueryTraceRangeCsv = False
+        K2450_QueryTraceRangeCsvSingle = False
         Exit Function
     End If
 
     cmd = "TRAC:DATA? " & CStr(startIdx) & ", " & CStr(endIdx) & ", ""defbuffer1"", " & elementName
 
     For attempt = 1 To MV_K2450_FAST_TRACE_RETRIES
-        If MV_GPIB_Query(MV_K2450_Device, cmd, q) Then
+        If MV_GPIB_QueryWithTimeout(MV_K2450_Device, cmd, q, MV_K2450_FAST_TRACE_QUERY_TIMEOUT_S, True) Then
             If K2450_ParseCsvDoubles(q, outValues) Then
                 gotCount = UBound(outValues) - LBound(outValues) + 1
                 If gotCount = expectedCount Then
-                    K2450_QueryTraceRangeCsv = True
+                    K2450_QueryTraceRangeCsvSingle = True
                     Exit Function
                 End If
                 If MV_GPIBDebug Then MV_Log "[K2450][FAST][TRACE][retry " & CStr(attempt) & "] " & elementName & " count mismatch got=" & CStr(gotCount) & " expected=" & CStr(expectedCount)
+                Call MV_GPIB_DrainDeviceReadBuffer(MV_K2450_Device)
             Else
                 If MV_GPIBDebug Then MV_Log "[K2450][FAST][TRACE][retry " & CStr(attempt) & "] " & elementName & " non-CSV reply='" & q & "'"
+                Call MV_GPIB_DrainDeviceReadBuffer(MV_K2450_Device)
             End If
         End If
 
@@ -901,7 +906,51 @@ Private Function K2450_QueryTraceRangeCsv(ByVal startIdx As Long, ByVal endIdx A
         DoEvents
     Next
 
-    K2450_QueryTraceRangeCsv = False
+    K2450_QueryTraceRangeCsvSingle = False
+End Function
+
+Private Function K2450_QueryTraceRangeCsv(ByVal startIdx As Long, ByVal endIdx As Long, ByVal elementName As String, ByRef outValues() As Double) As Boolean
+    Dim expectedCount As Long
+    Dim windowStart As Long
+    Dim windowEnd As Long
+    Dim windowVals() As Double
+    Dim writeIdx As Long
+    Dim windowCount As Long
+    Dim i As Long
+
+    expectedCount = endIdx - startIdx + 1
+    If expectedCount <= 0 Then
+        K2450_QueryTraceRangeCsv = False
+        Exit Function
+    End If
+
+    If expectedCount <= MV_K2450_FAST_TRACE_QUERY_WINDOW Then
+        K2450_QueryTraceRangeCsv = K2450_QueryTraceRangeCsvSingle(startIdx, endIdx, elementName, outValues)
+        Exit Function
+    End If
+
+    ReDim outValues(0 To expectedCount - 1)
+    writeIdx = 0
+    windowStart = startIdx
+
+    Do While windowStart <= endIdx
+        windowEnd = windowStart + MV_K2450_FAST_TRACE_QUERY_WINDOW - 1
+        If windowEnd > endIdx Then windowEnd = endIdx
+
+        If Not K2450_QueryTraceRangeCsvSingle(windowStart, windowEnd, elementName, windowVals) Then
+            K2450_QueryTraceRangeCsv = False
+            Exit Function
+        End If
+
+        windowCount = UBound(windowVals) - LBound(windowVals) + 1
+        For i = 0 To windowCount - 1
+            outValues(writeIdx + i) = windowVals(i)
+        Next
+        writeIdx = writeIdx + windowCount
+        windowStart = windowEnd + 1
+    Loop
+
+    K2450_QueryTraceRangeCsv = (writeIdx = expectedCount)
 End Function
 
 Private Sub K2450_CopySetpointsToSource(ByRef points() As Double, ByVal fromIdx As Long, ByVal toIdx As Long, ByRef outSource() As Double)
@@ -933,10 +982,9 @@ Private Function K2450_QueryTraceScalar(ByVal idx1 As Long, ByVal elementName As
     K2450_QueryTraceScalar = MV_IsFinite(outVal)
 End Function
 
-Private Function K2450_ReadChunkByPoint(ByVal chunkCount As Long, ByRef outRead() As Double, ByRef outSource() As Double) As Boolean
+    Private Function K2450_ReadChunkByPoint(ByVal chunkCount As Long, ByRef outRead() As Double) As Boolean
     Dim i As Long
     Dim vRead As Double
-    Dim vSrc As Double
 
     If chunkCount <= 0 Then
         K2450_ReadChunkByPoint = False
@@ -944,7 +992,6 @@ Private Function K2450_ReadChunkByPoint(ByVal chunkCount As Long, ByRef outRead(
     End If
 
     ReDim outRead(0 To chunkCount - 1)
-    ReDim outSource(0 To chunkCount - 1)
 
     For i = 1 To chunkCount
         If Not K2450_QueryTraceScalar(i, "READ", vRead) Then
@@ -954,32 +1001,29 @@ Private Function K2450_ReadChunkByPoint(ByVal chunkCount As Long, ByRef outRead(
             End If
         End If
 
-        If Not K2450_QueryTraceScalar(i, "SOUR", vSrc) Then
-            K2450_ReadChunkByPoint = False
-            Exit Function
-        End If
-
         outRead(i - 1) = vRead
-        outSource(i - 1) = vSrc
     Next
 
     K2450_ReadChunkByPoint = True
 End Function
 
-Private Function K2450_FastRunChunk(ByVal modeKey As String, ByRef points() As Double, ByVal fromIdx As Long, ByVal toIdx As Long, ByVal settle_s As Double, ByRef outRead() As Double, ByRef outSource() As Double) As Boolean
-    Dim listCsv As String
+' sweepModelReady: set to True by caller after the first successful chunk so that
+' SOUR:SWE:CURR:LIST (which rebuilds the trigger model and blinks the output LED)
+' is only issued once per sweep run, not on every chunk.
+'
+' List upload strategy (per manual):
+'   - SOUR:LIST:CURR accepts up to 100 values per write (first write)
+'   - SOUR:LIST:CURR:APPend accepts up to 100 more per write, total max 2500
+'   We send the full point range as batches of MV_K2450_FAST_LIST_BATCH (100),
+'   then INIT+WAI once for the entire chunk — one INIT per call instead of one per ~24 points.
+Private Function K2450_FastRunChunk(ByVal modeKey As String, ByRef points() As Double, ByVal fromIdx As Long, ByVal toIdx As Long, ByVal settle_s As Double, ByRef outRead() As Double, ByRef outSource() As Double, ByRef sweepModelReady As Boolean) As Boolean
     Dim chunkCount As Long
-    Dim q As String
     Dim readVals() As Double
-    Dim srcVals() As Double
     Dim okReadBulk As Boolean
-    Dim okSrcBulk As Boolean
-    Dim actTxt As String
-    Dim actCount As Long
-    Dim readCmd As String
-    Dim waitStartDate As Date
-    Dim waitStartTimer As Double
-    Dim elapsed_s As Double
+    Dim batchCsv As String
+    Dim valStr As String
+    Dim firstBatch As Boolean
+    Dim i As Long
 
     chunkCount = toIdx - fromIdx + 1
     If chunkCount <= 0 Then
@@ -988,67 +1032,82 @@ Private Function K2450_FastRunChunk(ByVal modeKey As String, ByRef points() As D
         Exit Function
     End If
 
-    listCsv = K2450_CsvFromDoubleRange(points, fromIdx, toIdx)
-    If listCsv = "" Then
-        MV_SetError "K2450 fast list generation failed"
-        K2450_FastRunChunk = False
-        Exit Function
-    End If
-
-    ' Prevent long SOUR:LIST payloads that can overrun the 2450 SCPI input parser.
-    If Len(listCsv) > MV_K2450_FAST_MAX_LIST_CHARS Then
-        MV_SetError "K2450 -363 list too long (" & CStr(Len(listCsv)) & " chars)"
-        K2450_FastRunChunk = False
-        Exit Function
-    End If
-
     Call MV_ClearError
 
-    If modeKey = "CURRENT" Then
-        If Not MV_GPIB_Write(MV_K2450_Device, "SOUR:FUNC CURR") Then GoTo Fail
-        If Not MV_GPIB_Write(MV_K2450_Device, "SOUR:LIST:CURR " & listCsv) Then GoTo Fail
-    Else
-        If Not MV_GPIB_Write(MV_K2450_Device, "SOUR:FUNC VOLT") Then GoTo Fail
-        If Not MV_GPIB_Write(MV_K2450_Device, "SOUR:LIST:VOLT " & listCsv) Then GoTo Fail
+    ' Upload source list in writes that stay within MV_K2450_FAST_BATCH_MAX_CHARS.
+    ' First write uses SOUR:LIST:CURR; subsequent writes use :APPend.
+    ' We build each batch value-by-value so the CSV never overruns the SCPI input buffer.
+    firstBatch = True
+    batchCsv = ""
+    For i = fromIdx To toIdx
+        valStr = CStr(points(i))
+        ' Flush current batch before it would exceed the char limit.
+        If batchCsv <> "" Then
+            If Len(batchCsv) + 1 + Len(valStr) > MV_K2450_FAST_BATCH_MAX_CHARS Then
+                If firstBatch Then
+                    If modeKey = "CURRENT" Then
+                        If Not MV_GPIB_Write(MV_K2450_Device, "SOUR:LIST:CURR " & batchCsv) Then GoTo Fail
+                    Else
+                        If Not MV_GPIB_Write(MV_K2450_Device, "SOUR:LIST:VOLT " & batchCsv) Then GoTo Fail
+                    End If
+                    firstBatch = False
+                Else
+                    If modeKey = "CURRENT" Then
+                        If Not MV_GPIB_Write(MV_K2450_Device, "SOUR:LIST:CURR:APP " & batchCsv) Then GoTo Fail
+                    Else
+                        If Not MV_GPIB_Write(MV_K2450_Device, "SOUR:LIST:VOLT:APP " & batchCsv) Then GoTo Fail
+                    End If
+                End If
+                batchCsv = ""
+            End If
+        End If
+        If batchCsv = "" Then
+            batchCsv = valStr
+        Else
+            batchCsv = batchCsv & "," & valStr
+        End If
+    Next i
+
+    ' Flush remaining values.
+    If batchCsv <> "" Then
+        If firstBatch Then
+            If modeKey = "CURRENT" Then
+                If Not MV_GPIB_Write(MV_K2450_Device, "SOUR:LIST:CURR " & batchCsv) Then GoTo Fail
+            Else
+                If Not MV_GPIB_Write(MV_K2450_Device, "SOUR:LIST:VOLT " & batchCsv) Then GoTo Fail
+            End If
+        Else
+            If modeKey = "CURRENT" Then
+                If Not MV_GPIB_Write(MV_K2450_Device, "SOUR:LIST:CURR:APP " & batchCsv) Then GoTo Fail
+            Else
+                If Not MV_GPIB_Write(MV_K2450_Device, "SOUR:LIST:VOLT:APP " & batchCsv) Then GoTo Fail
+            End If
+        End If
     End If
 
     If settle_s < 0# Then settle_s = 0#
 
     If Not MV_GPIB_Write(MV_K2450_Device, "TRAC:CLE ""defbuffer1""") Then GoTo Fail
-    If modeKey = "CURRENT" Then
-        If Not MV_GPIB_Write(MV_K2450_Device, "SOUR:SWE:CURR:LIST 1, " & CStr(settle_s)) Then GoTo Fail
-        If Not MV_GPIB_Write(MV_K2450_Device, "SENS:FUNC 'VOLT'") Then GoTo Fail
-    Else
-        If Not MV_GPIB_Write(MV_K2450_Device, "SOUR:SWE:VOLT:LIST 1, " & CStr(settle_s)) Then GoTo Fail
-        If Not MV_GPIB_Write(MV_K2450_Device, "SENS:FUNC 'CURR'") Then GoTo Fail
+
+    ' Build the trigger model only on the first chunk.  Re-running SOUR:SWE:*:LIST on
+    ' every chunk reconfigures the instrument's source engine and causes a visible
+    ' output-state transition (LED blink) even though OUTP is never toggled by us.
+    If Not sweepModelReady Then
+        If modeKey = "CURRENT" Then
+            If Not MV_GPIB_Write(MV_K2450_Device, "SOUR:SWE:CURR:LIST 1, " & CStr(settle_s)) Then GoTo Fail
+        Else
+            If Not MV_GPIB_Write(MV_K2450_Device, "SOUR:SWE:VOLT:LIST 1, " & CStr(settle_s)) Then GoTo Fail
+        End If
+        sweepModelReady = True
     End If
 
     If Not MV_GPIB_Write(MV_K2450_Device, "INIT") Then GoTo Fail
     If Not MV_GPIB_Write(MV_K2450_Device, "*WAI") Then GoTo Fail
 
-    waitStartDate = Date
-    waitStartTimer = Timer
-    Do
-        If Not MV_GPIB_Query(MV_K2450_Device, "TRAC:ACT?", actTxt) Then GoTo Fail
-        If Not K2450_ParseLongScalar(actTxt, actCount) Then
-            If MV_GPIBDebug Then MV_Log "[K2450][FAST][TRACE] TRAC:ACT? non-scalar reply='" & actTxt & "'"
-            MV_WaitSeconds 0.02
-            DoEvents
-            GoTo ContinueWait
-        End If
-        If actCount >= chunkCount Then Exit Do
-
-        elapsed_s = (CDbl(Date - waitStartDate) * 86400#) + (Timer - waitStartTimer)
-        If elapsed_s >= MV_K2450_FAST_WAIT_TIMEOUT_S Then
-            MV_SetError "K2450 fast sweep timeout: expected " & CStr(chunkCount) & " points, got " & CStr(actCount)
-            K2450_FastRunChunk = False
-            Exit Function
-        End If
-
-        MV_WaitSeconds 0.02
-        DoEvents
-ContinueWait:
-    Loop
+    ' Drain any stale output-buffer text (for example from a prior timed-out OUTP?)
+    ' without issuing device clear/reset commands that can disturb trigger state.
+    Call MV_GPIB_DrainDeviceReadBuffer(MV_K2450_Device)
+    Call MV_ClearError
 
     okReadBulk = K2450_QueryTraceRangeCsv(1, chunkCount, "READ", readVals)
 
@@ -1056,21 +1115,16 @@ ContinueWait:
         okReadBulk = K2450_QueryTraceRangeCsv(1, chunkCount, "READING", readVals)
     End If
 
-    okSrcBulk = K2450_QueryTraceRangeCsv(1, chunkCount, "SOUR", srcVals)
-
     If Not okReadBulk Then
-        If Not K2450_ReadChunkByPoint(chunkCount, readVals, srcVals) Then
+        If Not K2450_ReadChunkByPoint(chunkCount, readVals) Then
             MV_SetError "K2450 fast read count mismatch"
             K2450_FastRunChunk = False
             Exit Function
         End If
-    ElseIf Not okSrcBulk Then
-        If MV_GPIBDebug Then MV_Log "[K2450][FAST][TRACE] SOUR unavailable; using commanded setpoints for chunk"
-        Call K2450_CopySetpointsToSource(points, fromIdx, toIdx, srcVals)
     End If
 
     outRead = readVals
-    outSource = srcVals
+    Call K2450_CopySetpointsToSource(points, fromIdx, toIdx, outSource)
     K2450_FastRunChunk = True
     Exit Function
 
@@ -1078,7 +1132,7 @@ Fail:
     K2450_FastRunChunk = False
 End Function
 
-Public Function K2450_IV_RunFast(ByVal ch As String, ByVal sourceMode As String, ByVal startVal As Double, ByVal maxVal As Double, ByVal minVal As Double, ByVal stepVal As Double, ByVal directionMode As Integer, ByVal settle_s As Double, Optional ByVal rampToStart As Boolean = True, Optional ByVal rampRatePerS As Double = 0#, Optional ByVal comment As String = "") As Boolean
+Public Function K2450_IV_RunFast(ByVal ch As String, ByVal sourceMode As String, ByVal startVal As Double, ByVal maxVal As Double, ByVal minVal As Double, ByVal stepVal As Double, ByVal directionMode As Integer, ByVal settle_s As Double, Optional ByVal rampToStart As Boolean = True, Optional ByVal rampRatePerS As Double = 0#, Optional ByVal comment As String = "", Optional ByVal tbRefresh_s As Double = 1#) As Boolean
     Dim points() As Double
     Dim segments() As Integer
     Dim vAll() As Double
@@ -1105,6 +1159,12 @@ Public Function K2450_IV_RunFast(ByVal ch As String, ByVal sourceMode As String,
     Dim logStartTimer As Double
     Dim acqElapsed_s As Double
     Dim logElapsed_s As Double
+    Dim cachedTempK As Double
+    Dim cachedFieldOe As Double
+    Dim lastTBRefreshDate As Date
+    Dim lastTBRefreshTimer As Double
+    Dim tbAge_s As Double
+    Dim sweepModelReady As Boolean
 
     modeKey = K2450_NormalizeSourceMode(sourceMode)
     If modeKey = "" Then
@@ -1131,6 +1191,19 @@ Public Function K2450_IV_RunFast(ByVal ch As String, ByVal sourceMode As String,
     ReDim iAll(0 To pointCount - 1)
 
     outputWasOn = K2450_IsOutputOn()
+
+    ' Ensure instrument is idle before editing trace buffer settings.
+    Call MV_GPIB_Write(MV_K2450_Device, "ABOR")
+    Call MV_GPIB_Write(MV_K2450_Device, "TRIG:LOAD ""EMPTY""")
+
+    ' Pre-size defbuffer1 to exactly the number of sweep points so the instrument
+    ' does not need to reallocate memory mid-sweep.  If resize fails on this
+    ' firmware/state, continue with existing buffer size instead of aborting startup.
+    If Not MV_GPIB_Write(MV_K2450_Device, "TRAC:POIN " & CStr(pointCount) & ", ""defbuffer1""") Then
+        If MV_GPIBDebug Then MV_Log "[K2450][FAST][WARN] TRAC:POIN resize failed; continuing"
+        Call MV_ClearError
+    End If
+
     If Not K2450_OutputOn() Then
         K2450_IV_RunFast = False
         Exit Function
@@ -1143,24 +1216,18 @@ Public Function K2450_IV_RunFast(ByVal ch As String, ByVal sourceMode As String,
     acqStartDate = Date
     acqStartTimer = Timer
 
+    sweepModelReady = False
     writeIdx = 0
+    ' Chunk at the instrument list maximum (2500).  K2450_FastRunChunk uploads in
+    ' sub-batches of 100 internally, so no -363 overrun risk here.
     chunkSize = MV_K2450_FAST_CHUNK_POINTS
     fromIdx = LBound(points)
     Do While fromIdx <= UBound(points)
         toIdx = fromIdx + chunkSize - 1
         If toIdx > UBound(points) Then toIdx = UBound(points)
 
-RetryChunk:
     Call MV_ClearError
-        If Not K2450_FastRunChunk(modeKey, points, fromIdx, toIdx, settle_s, chunkRead, chunkSource) Then
-            ' Keithley -363 (input buffer overrun): reduce list chunk and retry.
-            If (InStr(1, UCase$(MV_LastError), "-363") > 0 Or InStr(1, UCase$(MV_LastError), "INPUT BUFFER OVERRUN") > 0) And chunkSize > 1 Then
-                chunkSize = chunkSize \ 2
-                If chunkSize < 1 Then chunkSize = 1
-                toIdx = fromIdx + chunkSize - 1
-                If toIdx > UBound(points) Then toIdx = UBound(points)
-                GoTo RetryChunk
-            End If
+        If Not K2450_FastRunChunk(modeKey, points, fromIdx, toIdx, settle_s, chunkRead, chunkSource, sweepModelReady) Then
             GoTo Fail
         End If
 
@@ -1208,6 +1275,12 @@ RetryChunk:
 
     logStartDate = Date
     logStartTimer = Timer
+    If tbRefresh_s < 0# Then tbRefresh_s = 0#
+
+    cachedTempK = DYNA_GetTemperature_K()
+    cachedFieldOe = DYNA_GetField_Oe()
+    lastTBRefreshDate = Date
+    lastTBRefreshTimer = Timer
 
     statusTxt = "OK"
     For i = LBound(points) To UBound(points)
@@ -1218,8 +1291,23 @@ RetryChunk:
             statusTxt = "OK"
         End If
 
-        If Not K2450_LogPointMeasured(chNorm, comment, vAll(j), iAll(j), rAll(j), directionMode, segments(i), j, points(i), settle_s, rampToStart, statusTxt) Then
-            GoTo Fail
+        If K2450_LogUsesFastSchema() Then
+            tbAge_s = (CDbl(Date - lastTBRefreshDate) * 86400#) + (Timer - lastTBRefreshTimer)
+            If tbAge_s < 0# Then tbAge_s = 0#
+            If tbRefresh_s > 0# And tbAge_s >= tbRefresh_s Then
+                cachedTempK = DYNA_GetTemperature_K()
+                cachedFieldOe = DYNA_GetField_Oe()
+                lastTBRefreshDate = Date
+                lastTBRefreshTimer = Timer
+            End If
+
+            If Not K2450_LogPointFastMeasuredTB(comment, vAll(j), iAll(j), rAll(j), j, statusTxt, cachedTempK, cachedFieldOe) Then
+                GoTo Fail
+            End If
+        Else
+            If Not K2450_LogPointMeasured(chNorm, comment, vAll(j), iAll(j), rAll(j), directionMode, segments(i), j, points(i), settle_s, rampToStart, statusTxt) Then
+                GoTo Fail
+            End If
         End If
     Next
 

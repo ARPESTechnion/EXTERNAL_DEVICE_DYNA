@@ -11,6 +11,7 @@ Declare Function viWrite Lib "visa32.dll" (ByVal vi As Long, ByVal buffer As Str
 Declare Function viRead Lib "visa32.dll" (ByVal vi As Long, ByVal buffer As String, ByVal count As Long, ByRef retCount As Long) As Long
 Declare Function viSetAttribute Lib "visa32.dll" (ByVal vi As Long, ByVal attrName As Long, ByVal attrValue As Long) As Long
 Declare Function viClose Lib "visa32.dll" (ByVal vi As Long) As Long
+Declare Function viClear Lib "visa32.dll" (ByVal vi As Long) As Long
 
 ' =========================================================================
 ' VISA32 CONSTANTS
@@ -50,8 +51,18 @@ Private Function MV_GPIB_ReadLineFromHandle(ByVal viHandle As Long, ByRef outTex
         On Error GoTo 0
 
         If Not VISA_StatusIsSuccess(status) Then
-            outErr = "viRead returned " & CStr(status)
-            MV_GPIB_ReadLineFromHandle = False
+            If status = VI_ERROR_TMO Then
+                If Trim$(outText) <> "" Then
+                    outText = Trim$(outText)
+                    MV_GPIB_ReadLineFromHandle = True
+                Else
+                    outErr = "viRead returned " & CStr(status)
+                    MV_GPIB_ReadLineFromHandle = False
+                End If
+            Else
+                outErr = "viRead returned " & CStr(status)
+                MV_GPIB_ReadLineFromHandle = False
+            End If
             Exit Function
         End If
 
@@ -80,20 +91,98 @@ Private Function MV_GPIB_ReadLineFromHandle(ByVal viHandle As Long, ByRef outTex
             Exit Function
         End If
 
-        If retCount < MV_GPIB_READ_CHUNK_SIZE Then
-            outText = Trim$(outText)
-            If outText <> "" Then
-                MV_GPIB_ReadLineFromHandle = True
-            Else
-                outErr = "viRead returned empty response"
-                MV_GPIB_ReadLineFromHandle = False
-            End If
-            Exit Function
-        End If
+        ' Do not treat short reads as end-of-message.  Some VISA backends return
+        ' varying chunk sizes before the final terminator/EOI.
     Next
 
     outErr = "response exceeds " & CStr(MV_GPIB_READ_CHUNK_SIZE * MV_GPIB_MAX_QUERY_CHUNKS) & " bytes"
     MV_GPIB_ReadLineFromHandle = False
+End Function
+
+Public Function MV_GPIB_QueryWithTimeout(ByVal deviceKey As String, ByVal cmd As String, ByRef outText As String, ByVal timeout_s As Double, Optional ByVal quietFail As Boolean = False) As Boolean
+    Dim attempt As Integer
+    Dim lastErr As String
+    Dim address As Integer
+    Dim viHandle As Long
+    Dim status As Long
+    Dim retCount As Long
+    Dim fullCmd As String
+    Dim readErr As String
+    Dim writeOk As Boolean
+    Dim timeout_ms As Long
+    Dim default_timeout_ms As Long
+
+    outText = ""
+    If timeout_s <= 0# Then
+        MV_GPIB_QueryWithTimeout = MV_GPIB_Query(deviceKey, cmd, outText)
+        Exit Function
+    End If
+
+    If Trim$(deviceKey) = "" Then
+        MV_SetError "GPIB query failed: device is not connected"
+        MV_GPIB_QueryWithTimeout = False
+        Exit Function
+    End If
+
+    If Not MV_GPIB_ParseAddress(deviceKey, address) Then
+        MV_SetError "GPIB query failed: invalid device address: " & deviceKey
+        MV_GPIB_QueryWithTimeout = False
+        Exit Function
+    End If
+
+    viHandle = GetVIHandle(address)
+    If viHandle = 0 Then
+        MV_SetError "GPIB query failed: device handle not found for address " & CStr(address)
+        MV_GPIB_QueryWithTimeout = False
+        Exit Function
+    End If
+
+    If MV_GPIBDebug Then MV_Log "[GPIB][Q] " & cmd
+
+    fullCmd = cmd & vbLf
+    timeout_ms = CLng(timeout_s * 1000#)
+    default_timeout_ms = CLng(MV_GPIB_TIMEOUT_S * 1000#)
+    Call MV_GPIB_SetTimeoutMs(viHandle, timeout_ms)
+
+    writeOk = False
+    For attempt = 1 To MV_GPIB_RETRY_COUNT
+        On Error Resume Next
+        status = viWrite(viHandle, fullCmd, Len(fullCmd), retCount)
+        On Error GoTo 0
+        If VISA_StatusIsSuccess(status) Then
+            writeOk = True
+            Exit For
+        End If
+        lastErr = "viWrite returned " & CStr(status)
+        If MV_GPIBDebug Then MV_Log "[GPIB][Q][write retry " & CStr(attempt) & "] " & lastErr
+        MV_WaitSeconds 0.01
+        DoEvents
+    Next
+
+    If Not writeOk Then
+        Call MV_GPIB_SetTimeoutMs(viHandle, default_timeout_ms)
+        If Not quietFail Then MV_SetError "GPIB query write failed: " & cmd & " :: " & lastErr
+        MV_GPIB_QueryWithTimeout = False
+        Exit Function
+    End If
+
+    For attempt = 1 To MV_GPIB_RETRY_COUNT
+        MV_WaitSeconds 0.01
+        If MV_GPIB_ReadLineFromHandle(viHandle, outText, readErr) Then
+            If MV_GPIBDebug Then MV_Log "[GPIB][R] " & outText
+            Call MV_GPIB_SetTimeoutMs(viHandle, default_timeout_ms)
+            MV_GPIB_QueryWithTimeout = True
+            Exit Function
+        End If
+        lastErr = readErr
+        If MV_GPIBDebug Then MV_Log "[GPIB][Q][read retry " & CStr(attempt) & "] " & lastErr
+        outText = ""
+        DoEvents
+    Next
+
+    Call MV_GPIB_SetTimeoutMs(viHandle, default_timeout_ms)
+    If Not quietFail Then MV_SetError "GPIB query failed after retries: " & cmd & " :: " & lastErr
+    MV_GPIB_QueryWithTimeout = False
 End Function
 
 Private Sub MV_GPIB_SetTimeoutMs(ByVal viHandle As Long, ByVal timeoutMs As Long)
@@ -334,6 +423,33 @@ Public Function MV_GPIB_Connect(ByVal resource As String, ByRef deviceKey As Str
     End If
 End Function
 
+' Issue a GPIB Selective Device Clear (SDC) to flush both the instrument input and
+' output queues without resetting settings.  Use before a critical query when stale
+' responses may be queued (e.g., after a timed-out OUTP? verification attempt).
+Public Function MV_GPIB_Clear(ByVal deviceKey As String) As Boolean
+    Dim address As Integer
+    Dim viHandle As Long
+    Dim status As Long
+
+    If Trim$(deviceKey) = "" Then
+        MV_GPIB_Clear = False
+        Exit Function
+    End If
+    If Not MV_GPIB_ParseAddress(deviceKey, address) Then
+        MV_GPIB_Clear = False
+        Exit Function
+    End If
+    viHandle = GetVIHandle(address)
+    If viHandle = 0 Then
+        MV_GPIB_Clear = False
+        Exit Function
+    End If
+    On Error Resume Next
+    status = viClear(viHandle)
+    On Error GoTo 0
+    MV_GPIB_Clear = VISA_StatusIsSuccess(status)
+End Function
+
 Public Function MV_GPIB_Write(ByVal deviceKey As String, ByVal cmd As String) As Boolean
     Dim attempt As Integer
     Dim lastErr As String
@@ -429,33 +545,42 @@ Public Function MV_GPIB_Query(ByVal deviceKey As String, ByVal cmd As String, By
             Exit Function
         End If
     End If
-    
+
+    ' Write the command ONCE.  Retrying viWrite when the read timed out would
+    ' re-queue a second response on the instrument, causing the next query to
+    ' consume stale data (the well-known double-send corruption).
+    Dim writeOk As Boolean
+    writeOk = False
     For attempt = 1 To MV_GPIB_RETRY_COUNT
-        ' Send command
         On Error Resume Next
         status = viWrite(viHandle, fullCmd, Len(fullCmd), retCount)
         On Error GoTo 0
-        
-        If Not VISA_StatusIsSuccess(status) Then
-            lastErr = "viWrite returned " & CStr(status)
-            If MV_GPIBDebug Then MV_Log "[GPIB][Q][retry " & CStr(attempt) & "] " & lastErr
-            MV_WaitSeconds 0.01
-            DoEvents
-            GoTo QueryRetry
+        If VISA_StatusIsSuccess(status) Then
+            writeOk = True
+            Exit For
         End If
-
+        lastErr = "viWrite returned " & CStr(status)
+        If MV_GPIBDebug Then MV_Log "[GPIB][Q][write retry " & CStr(attempt) & "] " & lastErr
         MV_WaitSeconds 0.01
+        DoEvents
+    Next
 
+    If Not writeOk Then
+        MV_SetError "GPIB query write failed: " & cmd & " :: " & lastErr
+        MV_GPIB_Query = False
+        Exit Function
+    End If
+
+    ' Retry reads only — never re-issue the write.
+    For attempt = 1 To MV_GPIB_RETRY_COUNT
+        MV_WaitSeconds 0.01
         If MV_GPIB_ReadLineFromHandle(viHandle, outText, readErr) Then
             If MV_GPIBDebug Then MV_Log "[GPIB][R] " & outText
             MV_GPIB_Query = True
             Exit Function
-        Else
-            lastErr = readErr
         End If
-        
-QueryRetry:
-        If MV_GPIBDebug Then MV_Log "[GPIB][Q][retry " & CStr(attempt) & "] " & lastErr
+        lastErr = readErr
+        If MV_GPIBDebug Then MV_Log "[GPIB][Q][read retry " & CStr(attempt) & "] " & lastErr
         outText = ""
         DoEvents
     Next
@@ -496,6 +621,32 @@ Public Function MV_GPIB_Read(ByVal deviceKey As String, ByRef outText As String)
         MV_SetError "GPIB read failed: " & readErr
         MV_GPIB_Read = False
     End If
+End Function
+
+Public Function MV_GPIB_DrainDeviceReadBuffer(ByVal deviceKey As String) As Boolean
+    Dim address As Integer
+    Dim viHandle As Long
+
+    If Trim$(deviceKey) = "" Then
+        MV_SetError "GPIB drain failed: device is not connected"
+        MV_GPIB_DrainDeviceReadBuffer = False
+        Exit Function
+    End If
+
+    If Not MV_GPIB_ParseAddress(deviceKey, address) Then
+        MV_SetError "GPIB drain failed: invalid device address: " & deviceKey
+        MV_GPIB_DrainDeviceReadBuffer = False
+        Exit Function
+    End If
+
+    viHandle = GetVIHandle(address)
+    If viHandle = 0 Then
+        MV_SetError "GPIB drain failed: device handle not found for address " & CStr(address)
+        MV_GPIB_DrainDeviceReadBuffer = False
+        Exit Function
+    End If
+
+    MV_GPIB_DrainDeviceReadBuffer = MV_GPIB_DrainPendingRead(viHandle)
 End Function
 
 Public Function MV_GPIB_WaitForMeasure(ByVal deviceKey As String, ByVal timeout_s As Double) As Boolean
