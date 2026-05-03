@@ -37,10 +37,21 @@ EH:
     DYNA_WaitForTempFieldStable = False
 End Function
 
+Public Function DYNA_WaitForTemperatureStable(ByVal timeout_s As Double) As Boolean
+    On Error GoTo EH
+    ' 1 = temperature only
+    DynaCool.WaitFor 1, CLng(timeout_s), 0 'mvseq:K2450_IV_Fast_TempCycle.seq(1)>0004 Wait For %t
+    DYNA_WaitForTemperatureStable = True
+    Exit Function
+EH:
+    MV_SetError "DynaCool WaitFor temperature failed: " & Err.Description
+    DYNA_WaitForTemperatureStable = False
+End Function
+
 Public Function DYNA_SetTempAndWait(ByVal targetK As Double, ByVal rateKmin As Double, ByVal mode As Integer, ByVal timeout_s As Double) As Boolean
     On Error GoTo EH
-    DynaCool.SetTemperature targetK, rateKmin, mode
-    DYNA_SetTempAndWait = DYNA_WaitForTempFieldStable(timeout_s)
+    DynaCool.SetTemperature targetK, rateKmin, mode 'mvseq:K2450_IV_Fast_TempCycle.seq(1)>0004 Set Temp
+    DYNA_SetTempAndWait = DYNA_WaitForTemperatureStable(timeout_s)
     Exit Function
 EH:
     MV_SetError "DynaCool SetTemperature failed: " & Err.Description

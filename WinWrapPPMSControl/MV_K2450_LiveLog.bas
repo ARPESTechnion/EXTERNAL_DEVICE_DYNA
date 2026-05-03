@@ -12,6 +12,7 @@ Private MV_K2450LogSeq As Long
 Private MV_K2450LogDetailed As Boolean
 Private MV_K2450LogStartDate As Date
 Private MV_K2450LogStartTimer As Double
+Private MV_K2450LastElapsed_s As Double
 Private MV_K2450BatchWrite As Boolean
 Private MV_K2450LogSchema As Integer
 Private MV_K2450FastRowBuffer As String
@@ -25,6 +26,11 @@ Private Function K2450Log_ElapsedSeconds() As Double
     Dim elapsed As Double
     elapsed = (CDbl(Date - MV_K2450LogStartDate) * 86400#) + (Timer - MV_K2450LogStartTimer)
     If elapsed < 0# Then elapsed = 0#
+
+    ' Keep log time monotonic in case system clock/timer jumps backwards.
+    If elapsed < MV_K2450LastElapsed_s Then elapsed = MV_K2450LastElapsed_s
+    MV_K2450LastElapsed_s = elapsed
+
     K2450Log_ElapsedSeconds = elapsed
 End Function
 
@@ -75,6 +81,11 @@ Private Function K2450Log_EndsWithIgnoreCase(ByVal txt As String, ByVal suffix A
     End If
 End Function
 
+Private Function K2450Log_FileExists(ByVal filePath As String) As Boolean
+    On Error Resume Next
+    K2450Log_FileExists = (Dir$(filePath) <> "")
+End Function
+
 Private Function K2450Log_BoolText(ByVal x As Boolean) As String
     If x Then
         K2450Log_BoolText = "1"
@@ -102,7 +113,7 @@ Private Function K2450Log_AppendFastRows(ByVal rowsText As String) As Boolean
     On Error GoTo EH
     fn = FreeFile
     Open MV_K2450LogPath For Append As #fn
-    Print #fn, rowsText;
+    Print #fn, rowsText
     Close #fn
     K2450Log_AppendFastRows = True
     Exit Function
@@ -146,9 +157,10 @@ Public Function K2450_LogUsesFastSchema() As Boolean
     K2450_LogUsesFastSchema = (MV_K2450LogSchema = K2450_LOG_SCHEMA_FAST_MIN)
 End Function
 
-Public Function K2450_LogInit(ByVal datPath As String, ByVal runTitle As String, Optional ByVal detailed As Boolean = True, Optional ByVal bufferedWrite As Boolean = False, Optional ByVal schemaMode As String = "FULL", Optional ByVal headerNote As String = "") As Boolean
+Public Function K2450_LogInit(ByVal datPath As String, ByVal runTitle As String, Optional ByVal detailed As Boolean = True, Optional ByVal bufferedWrite As Boolean = False, Optional ByVal schemaMode As String = "FULL", Optional ByVal headerNote As String = "", Optional ByVal appendExisting As Boolean = False) As Boolean
     On Error GoTo EH
     Dim headerText As String
+    Dim fileExists As Boolean
 
     MV_K2450LogPath = datPath
     If Not K2450Log_EndsWithIgnoreCase(MV_K2450LogPath, ".dat") Then
@@ -161,8 +173,20 @@ Public Function K2450_LogInit(ByVal datPath As String, ByVal runTitle As String,
     MV_K2450LogSchema = K2450Log_ParseSchema(schemaMode)
     MV_K2450FastRowBuffer = ""
     MV_K2450FastRowCount = 0
-    MV_K2450LogStartDate = Date
-    MV_K2450LogStartTimer = Timer
+    fileExists = K2450Log_FileExists(MV_K2450LogPath)
+
+    ' Preserve one time origin when appending multiple IV sweeps to the same file.
+    If appendExisting And fileExists Then
+        If CDbl(MV_K2450LogStartDate) = 0# Then
+            MV_K2450LogStartDate = Date
+            MV_K2450LogStartTimer = Timer
+            MV_K2450LastElapsed_s = 0#
+        End If
+    Else
+        MV_K2450LogStartDate = Date
+        MV_K2450LogStartTimer = Timer
+        MV_K2450LastElapsed_s = 0#
+    End If
 
     If Trim$(runTitle) = "" Then runTitle = "K2450 live log"
     Call K2450_SetRunId(runTitle)
@@ -211,8 +235,12 @@ Public Function K2450_LogInit(ByVal datPath As String, ByVal runTitle As String,
         headerText = headerText & " | " & headerNote
     End If
 
-    MV_K2450DataFile.CreateFileAndWriteHeader MV_K2450LogPath, runTitle, headerText
-    If MV_K2450BatchWrite Then
+    If appendExisting And fileExists Then
+        ' Keep existing file/header and append new rows to it.
+    Else
+        MV_K2450DataFile.CreateFileAndWriteHeader MV_K2450LogPath, runTitle, headerText
+    End If
+    If MV_K2450BatchWrite And Not (appendExisting And fileExists) Then
         Call MV_K2450DataFile.BeginBatchWrite
     End If
 

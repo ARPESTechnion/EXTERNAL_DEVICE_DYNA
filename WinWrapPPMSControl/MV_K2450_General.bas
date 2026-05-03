@@ -643,6 +643,17 @@ Public Function K2450_IV_BuildSetpoints(ByVal startVal As Double, ByVal maxVal A
     K2450_IV_BuildSetpoints = K2450_IV_BuildSetpointsCore(startVal, maxVal, minVal, stepVal, directionMode, points, segments)
 End Function
 
+Public Function K2450_IV_GetSetpointCount(ByVal startVal As Double, ByVal maxVal As Double, ByVal minVal As Double, ByVal stepVal As Double, ByVal directionMode As Integer, ByRef outCount As Long) As Boolean
+    Dim pts() As Double
+    Dim segs() As Integer
+    If Not K2450_IV_BuildSetpointsCore(startVal, maxVal, minVal, stepVal, directionMode, pts, segs) Then
+        K2450_IV_GetSetpointCount = False
+        Exit Function
+    End If
+    outCount = UBound(pts) - LBound(pts) + 1
+    K2450_IV_GetSetpointCount = (outCount > 0)
+End Function
+
 Private Function K2450_RampSourceTo(ByVal sourceMode As String, ByVal targetVal As Double, ByVal ratePerS As Double) As Boolean
     Dim modeKey As String
     Dim currentVal As Double
@@ -1313,9 +1324,7 @@ Public Function K2450_IV_RunFast(ByVal ch As String, ByVal sourceMode As String,
 
     logElapsed_s = (CDbl(Date - logStartDate) * 86400#) + (Timer - logStartTimer)
     If logElapsed_s < 0# Then logElapsed_s = 0#
-    If MV_GPIBDebug Then
-        MV_Log "[K2450][FAST] points=" & CStr(pointCount) & ", acq_s=" & Format$(acqElapsed_s, "0.000") & ", post_log_s=" & Format$(logElapsed_s, "0.000")
-    End If
+    MV_Log "[K2450][FAST] points=" & CStr(pointCount) & ", acq_s=" & Format$(acqElapsed_s, "0.000") & ", post_log_s=" & Format$(logElapsed_s, "0.000") & ", total_s=" & Format$(acqElapsed_s + logElapsed_s, "0.000")
 
     lastPointIdx = UBound(points)
     MV_K2450G_SourceSetpoint = points(lastPointIdx)
