@@ -61,6 +61,7 @@ Public Const MV_GPIB_TIMEOUT_S As Double = 5#
 ' Built-in MultiVu.GPIB device keys (empty means disconnected).
 Public MV_K2600_Device As String
 Public MV_K2450_Device As String
+Public MV_K7001_Device As String
 Public MV_GPIBDebug As Boolean
 
 ' Session-level paths/state

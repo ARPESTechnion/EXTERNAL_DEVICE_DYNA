@@ -112,6 +112,36 @@ Public Sub Test_NoHardware_K2450_Logger()
     MV_Log "[TEST][K2450-LOGGER] PASS file=" & path
 End Sub
 
+Public Sub Test_NoHardware_K7001_Mappings()
+    Dim ok As Boolean
+
+    MV_Log "[TEST][K7001-MAP] starting mapping self-check"
+
+    Call K7001_ClearMappings()
+    Call K7001_LoadDefaultMappings()
+
+    ok = K7001_DefineChannel("A", 1, 2, 3, 4)
+    If Not ok Then
+        MV_Log "[TEST][K7001-MAP] FAIL define A: " & MV_LastError
+        Exit Sub
+    End If
+
+    ok = K7001_DefineChannel(" a ", 4, 3, 2, 1)
+    If Not ok Then
+        MV_Log "[TEST][K7001-MAP] FAIL overwrite a: " & MV_LastError
+        Exit Sub
+    End If
+
+    ok = Not K7001_DefineChannel("bad", 11, 1, 1, 1)
+    If Not ok Then
+        MV_Log "[TEST][K7001-MAP] FAIL expected range validation"
+        Exit Sub
+    End If
+
+    Call K7001_PrintMappings()
+    MV_Log "[TEST][K7001-MAP] PASS"
+End Sub
+
 Public Sub Test_NoHardware_PostAnalysisReplay(Optional ByVal etoDataPath As String = "")
     Const CH1_IV_CURR_COL As Long = 9
     Const CH1_IV_VOLT_COL As Long = 10
@@ -184,6 +214,7 @@ Public Sub Test_NoHardware_All()
     Call Test_NoHardware_Logger()
     Call Test_NoHardware_K2450_IV_Setpoints()
     Call Test_NoHardware_K2450_Logger()
+    Call Test_NoHardware_K7001_Mappings()
     Call Test_NoHardware_PostAnalysisReplay()
     Call Test_Logger_HeaderCheck()
     Call Test_Sweep_RowPerPoint()
@@ -215,6 +246,16 @@ Public Sub Test_VISA32_Connection()
         MV_Log "[VISA32-TEST] K2450 disconnected"
     Else
         MV_Log "[VISA32-TEST] K2450 connection FAILED (hardware may not be present): " & MV_LastError
+    End If
+
+    MV_Log "[VISA32-TEST] Attempting K7001 connection..."
+    ok = K7001_Connect()
+    If ok Then
+        MV_Log "[VISA32-TEST] K7001 successfully connected"
+        Call K7001_Disconnect()
+        MV_Log "[VISA32-TEST] K7001 disconnected"
+    Else
+        MV_Log "[VISA32-TEST] K7001 connection FAILED (hardware may not be present): " & MV_LastError
     End If
 
     Call MV_GPIB_CloseAll()

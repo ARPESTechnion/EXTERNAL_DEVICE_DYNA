@@ -242,6 +242,7 @@ Private rmSession As Long                ' Global VISA Resource Manager handle
 Private VISA_Initialized As Boolean      ' Flag: RM successfully opened
 Private K2600_VIHandle As Long           ' VI handle for K2600 device
 Private K2450_VIHandle As Long           ' VI handle for K2450 device
+Private K7001_VIHandle As Long           ' VI handle for K7001 device
 
 ' =========================================================================
 ' HELPER: INITIALIZE VISTA RESOURCE MANAGER (called once at startup)
@@ -315,6 +316,8 @@ Private Function GetVIHandle(ByVal address As Integer) As Long
         GetVIHandle = K2600_VIHandle
     ElseIf address = 18 Then
         GetVIHandle = K2450_VIHandle
+    ElseIf address = 7 Then
+        GetVIHandle = K7001_VIHandle
     Else
         GetVIHandle = 0
     End If
@@ -328,6 +331,8 @@ Private Sub SetVIHandle(ByVal address As Integer, ByVal viHandle As Long)
         K2600_VIHandle = viHandle
     ElseIf address = 18 Then
         K2450_VIHandle = viHandle
+    ElseIf address = 7 Then
+        K7001_VIHandle = viHandle
     End If
 End Sub
 
@@ -731,6 +736,15 @@ Public Sub MV_GPIB_CloseAll()
         K2450_VIHandle = 0
         If MV_GPIBDebug Then MV_Log "[VISA] K2450 device (address 18) closed"
     End If
+
+    ' Close K7001 device
+    If K7001_VIHandle <> 0 Then
+        On Error Resume Next
+        status = viClose(K7001_VIHandle)
+        On Error GoTo 0
+        K7001_VIHandle = 0
+        If MV_GPIBDebug Then MV_Log "[VISA] K7001 device (address 7) closed"
+    End If
     
     ' Close Resource Manager
     If VISA_Initialized And rmSession <> 0 Then
@@ -745,4 +759,5 @@ Public Sub MV_GPIB_CloseAll()
     ' Clear device keys
     MV_K2600_Device = ""
     MV_K2450_Device = ""
+    MV_K7001_Device = ""
 End Sub

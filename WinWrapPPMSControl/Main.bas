@@ -5,6 +5,7 @@
 '#Uses "C:\Users\Ilay\OneDrive - Technion\Desktop\MC_Projects\Extarnal_Device_Dyna\WinWrapPPMSControl\MV_K2450_Hall.bas"
 '#Uses "C:\Users\Ilay\OneDrive - Technion\Desktop\MC_Projects\Extarnal_Device_Dyna\WinWrapPPMSControl\MV_K2450_General.bas"
 '#Uses "C:\Users\Ilay\OneDrive - Technion\Desktop\MC_Projects\Extarnal_Device_Dyna\WinWrapPPMSControl\MV_K2450_LiveLog.bas"
+'#Uses "C:\Users\Ilay\OneDrive - Technion\Desktop\MC_Projects\Extarnal_Device_Dyna\WinWrapPPMSControl\MV_K7001.bas"
 '#Uses "C:\Users\Ilay\OneDrive - Technion\Desktop\MC_Projects\Extarnal_Device_Dyna\WinWrapPPMSControl\MV_IV_PostAnalysis.bas"
 '#Uses "C:\Users\Ilay\OneDrive - Technion\Desktop\MC_Projects\Extarnal_Device_Dyna\WinWrapPPMSControl\MV_RTPostAnalysis.bas"
 '#Uses "C:\Users\Ilay\OneDrive - Technion\Desktop\MC_Projects\Extarnal_Device_Dyna\WinWrapPPMSControl\MV_RunWrappers.bas"
@@ -15,6 +16,7 @@
 '#Uses "C:\Users\Ilay\OneDrive - Technion\Desktop\MC_Projects\Extarnal_Device_Dyna\WinWrapPPMSControl\Macro_K2450_IV_Fast_TempCycle.bas"
 '#Uses "C:\Users\Ilay\OneDrive - Technion\Desktop\MC_Projects\Extarnal_Device_Dyna\WinWrapPPMSControl\Macro_Helmholtz_BSweep.bas"
 '#Uses "C:\Users\Ilay\OneDrive - Technion\Desktop\MC_Projects\Extarnal_Device_Dyna\WinWrapPPMSControl\Macro_K2600_OutputOff_Check.bas"
+'#Uses "C:\Users\Ilay\OneDrive - Technion\Desktop\MC_Projects\Extarnal_Device_Dyna\WinWrapPPMSControl\Macro_Hall_ETO_Switch_TempField.bas"
 '#Uses "C:\Users\Ilay\OneDrive - Technion\Desktop\MC_Projects\Extarnal_Device_Dyna\WinWrapPPMSControl\MV_TestFunctions_Legacy.bas"  ' Optional: enable legacy tests/utilities
 
 Option Explicit
@@ -80,6 +82,12 @@ Private Sub PrintFunctionCatalog()
     MV_Log "  Run_K2450_IV_SweepFast(datPath, directionMode, startVal, maxVal, minVal, stepVal, sourceSpec, settle_s, nplc, avgCount, rampRatePerS, ...)"
     MV_Log "  K2450_LogInit(datPath, runTitle), K2450_LogPoint([Ch], [comment]), K2450_LogClose()"
     MV_Log ""
+    MV_Log "Switch Matrix (K7001 + 7012-S 4x10)"
+    MV_Log "  K7001_Connect([resource]) / K7001_Disconnect()"
+    MV_Log "  K7001_OpenAll(), K7001_CloseChannel(name)"
+    MV_Log "  K7001_DefineChannel(name, iPlusOut, vPlusOut, vMinusOut, iMinusOut)"
+    MV_Log "  K7001_LoadDefaultMappings(), K7001_ClearMappings(), K7001_PrintMappings()"
+    MV_Log ""
     MV_Log "DynaCool + Data"
     MV_Log "  DYNA_GetTemperature_K(), DYNA_GetField_Oe()"
     MV_Log "  DYNA_SetField(field_Oe, rate_Oe_s), DYNA_SetFieldAndWait(field_Oe, rate_Oe_s, timeout_s)"
@@ -130,6 +138,9 @@ Sub Main()
     MV_Log "[MAIN]   Macro_Run_K2600_OutputOff_Check"
     MV_Log "[MAIN]     File: Macro_K2600_OutputOff_Check.bas"
     MV_Log "[MAIN]     Edit: resource name and zero-current tolerance"
+    MV_Log "[MAIN]   Macro_Run_Hall_ETO_Switch_TempField"
+    MV_Log "[MAIN]     File: Macro_Hall_ETO_Switch_TempField.bas"
+    MV_Log "[MAIN]     Edit: Temp/Field loops, ETOR params, switch mappings, output path"
     MV_Log "[MAIN] ========================================"
 
     ' -----------------------------------------------------------------------
@@ -142,4 +153,5 @@ Sub Main()
     ' Call Macro_Run_K2450_IV_Fast_TempCycle()
     ' Call Macro_Run_Helmholtz_BSweep()
     ' Call Macro_Run_K2600_OutputOff_Check()
+    ' Call Macro_Run_Hall_ETO_Switch_TempField()
 End Sub
