@@ -1,3 +1,10 @@
+'#Uses "..\Core\MV_Constants.bas"
+'#Uses "..\Instruments\MV_K2450_Hall.bas"
+'#Uses "..\Instruments\MV_K2450_General.bas"
+'#Uses "..\Instruments\MV_K2450_LiveLog.bas"
+'#Uses "..\Runners\MV_RunWrappers.bas"
+'#Uses "..\Core\MV_GpibIO.bas"
+
 Option Explicit
 
 Public Sub Macro_Run_K2450_IV_Slow()

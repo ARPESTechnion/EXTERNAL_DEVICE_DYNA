@@ -1,8 +1,8 @@
-'#Uses "..\Utility\Macros__QD_Library_Oct_2015\MultiVuDataFile\MultiVuDataFile.cls"
-'#Uses "C:\Users\Ilay\OneDrive - Technion\Desktop\MC_Projects\Extarnal_Device_Dyna\WinWrapPPMSControl\MV_Constants.bas"
-'#Uses "C:\Users\Ilay\OneDrive - Technion\Desktop\MC_Projects\Extarnal_Device_Dyna\WinWrapPPMSControl\MV_DynaHelpers.bas"
-'#Uses "C:\Users\Ilay\OneDrive - Technion\Desktop\MC_Projects\Extarnal_Device_Dyna\WinWrapPPMSControl\MV_K2600_Helmholtz.bas"
-'#Uses "C:\Users\Ilay\OneDrive - Technion\Desktop\MC_Projects\Extarnal_Device_Dyna\WinWrapPPMSControl\MV_IV_PostAnalysis.bas"
+'#Uses "..\..\Utility\Macros__QD_Library_Oct_2015\MultiVuDataFile\MultiVuDataFile.cls"
+'#Uses "..\Core\MV_Constants.bas"
+'#Uses "..\Core\MV_DynaHelpers.bas"
+'#Uses "..\Instruments\MV_K2600_Helmholtz.bas"
+'#Uses ".\MV_IV_PostAnalysis.bas"
 
 Option Explicit
 
@@ -41,15 +41,6 @@ Private Const COL_CH2_VALID As String = "Ch2_Valid"
 Private Const COL_CH2_AVG_S As String = "Ch2_AveragingTime_s"
 Private Const COL_CH2_GAIN As String = "Ch2_Gain"
 
-Private Sub Merged_SetNumericOrBlank(ByRef rowData() As Variant, ByVal idxLabel As Integer, ByVal idxValue As Integer, ByVal colName As String, ByVal value As Double)
-    rowData(idxLabel) = colName
-    If MV_IsFinite(value) Then
-        rowData(idxValue) = value
-    Else
-        rowData(idxValue) = ""
-    End If
-End Sub
-
 Private Sub Merged_SetLongOrBlank(ByRef rowData() As Variant, ByVal idxLabel As Integer, ByVal idxValue As Integer, ByVal colName As String, ByVal value As Long, ByVal isPresent As Boolean)
     rowData(idxLabel) = colName
     If isPresent Then
@@ -72,25 +63,11 @@ Private Sub Merged_SetBoolAsIntOrBlank(ByRef rowData() As Variant, ByVal idxLabe
     End If
 End Sub
 
-Private Function Merged_EndsWithIgnoreCase(ByVal txt As String, ByVal suffix As String) As Boolean
-    Dim lt As String
-    Dim ls As String
-
-    lt = LCase$(txt)
-    ls = LCase$(suffix)
-
-    If Len(lt) < Len(ls) Then
-        Merged_EndsWithIgnoreCase = False
-    Else
-        Merged_EndsWithIgnoreCase = (Right$(lt, Len(ls)) = ls)
-    End If
-End Function
-
 Public Function Merged_InitPostAnalysisLog(ByVal filePath As String) As Boolean
     On Error GoTo EH
 
     MV_MergedLogPath = filePath
-    If Not Merged_EndsWithIgnoreCase(MV_MergedLogPath, ".dat") Then
+    If Not MV_EndsWithIgnoreCase(MV_MergedLogPath, ".dat") Then
         MV_MergedLogPath = MV_MergedLogPath & ".dat"
     End If
 
@@ -306,23 +283,23 @@ Public Function PostAnalysis_AppendMergedRow(ByVal etoDataPath As String, _
     rowData(26) = MV_HallCompliance_V
     rowData(27) = COL_HALL_NPLC
     rowData(28) = MV_HallNPLC
-    Call Merged_SetNumericOrBlank(rowData, 29, 30, COL_HALL_VOLTAGE_V, hallVoltage_V)
-    Call Merged_SetNumericOrBlank(rowData, 31, 32, COL_HALL_FIELD_OE, hallField_Oe)
+    Call MV_SetNumericOrBlank(rowData, 29, 30, COL_HALL_VOLTAGE_V, hallVoltage_V)
+    Call MV_SetNumericOrBlank(rowData, 31, 32, COL_HALL_FIELD_OE, hallField_Oe)
 
     If measureCh1 Then
-        Call Merged_SetNumericOrBlank(rowData, 33, 34, COL_CH1_R_OHM, resultCh1.resistance_Ohm)
-        Call Merged_SetNumericOrBlank(rowData, 35, 36, COL_CH1_OFFSET_V, resultCh1.offset_V)
-        Call Merged_SetNumericOrBlank(rowData, 37, 38, COL_CH1_R2, resultCh1.fitQuality_R2)
+        Call MV_SetNumericOrBlank(rowData, 33, 34, COL_CH1_R_OHM, resultCh1.resistance_Ohm)
+        Call MV_SetNumericOrBlank(rowData, 35, 36, COL_CH1_OFFSET_V, resultCh1.offset_V)
+        Call MV_SetNumericOrBlank(rowData, 37, 38, COL_CH1_R2, resultCh1.fitQuality_R2)
         Call Merged_SetLongOrBlank(rowData, 39, 40, COL_CH1_ROWCOUNT, resultCh1.rowCount, True)
         Call Merged_SetBoolAsIntOrBlank(rowData, 41, 42, COL_CH1_VALID, resultCh1.isValid, True)
         If ch1HasAvg Then
-            Call Merged_SetNumericOrBlank(rowData, 43, 44, COL_CH1_AVG_S, ch1Avg_s)
+            Call MV_SetNumericOrBlank(rowData, 43, 44, COL_CH1_AVG_S, ch1Avg_s)
         Else
             rowData(43) = COL_CH1_AVG_S
             rowData(44) = ""
         End If
         If ch1HasGain Then
-            Call Merged_SetNumericOrBlank(rowData, 45, 46, COL_CH1_GAIN, ch1Gain)
+            Call MV_SetNumericOrBlank(rowData, 45, 46, COL_CH1_GAIN, ch1Gain)
         Else
             rowData(45) = COL_CH1_GAIN
             rowData(46) = ""
@@ -338,19 +315,19 @@ Public Function PostAnalysis_AppendMergedRow(ByVal etoDataPath As String, _
     End If
 
     If measureCh2 Then
-        Call Merged_SetNumericOrBlank(rowData, 47, 48, COL_CH2_R_OHM, resultCh2.resistance_Ohm)
-        Call Merged_SetNumericOrBlank(rowData, 49, 50, COL_CH2_OFFSET_V, resultCh2.offset_V)
-        Call Merged_SetNumericOrBlank(rowData, 51, 52, COL_CH2_R2, resultCh2.fitQuality_R2)
+        Call MV_SetNumericOrBlank(rowData, 47, 48, COL_CH2_R_OHM, resultCh2.resistance_Ohm)
+        Call MV_SetNumericOrBlank(rowData, 49, 50, COL_CH2_OFFSET_V, resultCh2.offset_V)
+        Call MV_SetNumericOrBlank(rowData, 51, 52, COL_CH2_R2, resultCh2.fitQuality_R2)
         Call Merged_SetLongOrBlank(rowData, 53, 54, COL_CH2_ROWCOUNT, resultCh2.rowCount, True)
         Call Merged_SetBoolAsIntOrBlank(rowData, 55, 56, COL_CH2_VALID, resultCh2.isValid, True)
         If ch2HasAvg Then
-            Call Merged_SetNumericOrBlank(rowData, 57, 58, COL_CH2_AVG_S, ch2Avg_s)
+            Call MV_SetNumericOrBlank(rowData, 57, 58, COL_CH2_AVG_S, ch2Avg_s)
         Else
             rowData(57) = COL_CH2_AVG_S
             rowData(58) = ""
         End If
         If ch2HasGain Then
-            Call Merged_SetNumericOrBlank(rowData, 59, 60, COL_CH2_GAIN, ch2Gain)
+            Call MV_SetNumericOrBlank(rowData, 59, 60, COL_CH2_GAIN, ch2Gain)
         Else
             rowData(59) = COL_CH2_GAIN
             rowData(60) = ""

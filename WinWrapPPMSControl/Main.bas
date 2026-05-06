@@ -1,23 +1,25 @@
  
-'#Uses "C:\Users\Ilay\OneDrive - Technion\Desktop\MC_Projects\Extarnal_Device_Dyna\WinWrapPPMSControl\MV_Constants.bas"
-'#Uses "C:\Users\Ilay\OneDrive - Technion\Desktop\MC_Projects\Extarnal_Device_Dyna\WinWrapPPMSControl\MV_HelmholtzLog.bas"
-'#Uses "C:\Users\Ilay\OneDrive - Technion\Desktop\MC_Projects\Extarnal_Device_Dyna\WinWrapPPMSControl\MV_K2600_Helmholtz.bas"
-'#Uses "C:\Users\Ilay\OneDrive - Technion\Desktop\MC_Projects\Extarnal_Device_Dyna\WinWrapPPMSControl\MV_K2450_Hall.bas"
-'#Uses "C:\Users\Ilay\OneDrive - Technion\Desktop\MC_Projects\Extarnal_Device_Dyna\WinWrapPPMSControl\MV_K2450_General.bas"
-'#Uses "C:\Users\Ilay\OneDrive - Technion\Desktop\MC_Projects\Extarnal_Device_Dyna\WinWrapPPMSControl\MV_K2450_LiveLog.bas"
-'#Uses "C:\Users\Ilay\OneDrive - Technion\Desktop\MC_Projects\Extarnal_Device_Dyna\WinWrapPPMSControl\MV_K7001.bas"
-'#Uses "C:\Users\Ilay\OneDrive - Technion\Desktop\MC_Projects\Extarnal_Device_Dyna\WinWrapPPMSControl\MV_IV_PostAnalysis.bas"
-'#Uses "C:\Users\Ilay\OneDrive - Technion\Desktop\MC_Projects\Extarnal_Device_Dyna\WinWrapPPMSControl\MV_RTPostAnalysis.bas"
-'#Uses "C:\Users\Ilay\OneDrive - Technion\Desktop\MC_Projects\Extarnal_Device_Dyna\WinWrapPPMSControl\MV_RunWrappers.bas"
-'#Uses "C:\Users\Ilay\OneDrive - Technion\Desktop\MC_Projects\Extarnal_Device_Dyna\WinWrapPPMSControl\MV_GpibIO.bas"
-'#Uses "C:\Users\Ilay\OneDrive - Technion\Desktop\MC_Projects\Extarnal_Device_Dyna\WinWrapPPMSControl\Sub fn_IP_Loop_Helm_Loop_Bsweep().vb"
-'#Uses "C:\Users\Ilay\OneDrive - Technion\Desktop\MC_Projects\Extarnal_Device_Dyna\WinWrapPPMSControl\Macro_K2450_IV_Slow.bas"
-'#Uses "C:\Users\Ilay\OneDrive - Technion\Desktop\MC_Projects\Extarnal_Device_Dyna\WinWrapPPMSControl\Macro_K2450_IV_Fast.bas"
-'#Uses "C:\Users\Ilay\OneDrive - Technion\Desktop\MC_Projects\Extarnal_Device_Dyna\WinWrapPPMSControl\Macro_K2450_IV_Fast_TempCycle.bas"
-'#Uses "C:\Users\Ilay\OneDrive - Technion\Desktop\MC_Projects\Extarnal_Device_Dyna\WinWrapPPMSControl\Macro_Helmholtz_BSweep.bas"
-'#Uses "C:\Users\Ilay\OneDrive - Technion\Desktop\MC_Projects\Extarnal_Device_Dyna\WinWrapPPMSControl\Macro_K2600_OutputOff_Check.bas"
-'#Uses "C:\Users\Ilay\OneDrive - Technion\Desktop\MC_Projects\Extarnal_Device_Dyna\WinWrapPPMSControl\Macro_Hall_ETO_Switch_TempField.bas"
-'#Uses "C:\Users\Ilay\OneDrive - Technion\Desktop\MC_Projects\Extarnal_Device_Dyna\WinWrapPPMSControl\MV_TestFunctions_Legacy.bas"  ' Optional: enable legacy tests/utilities
+'#Uses ".\Core\MV_Constants.bas"
+'#Uses ".\Analysis\MV_HelmholtzLog.bas"
+'#Uses ".\Instruments\MV_K2600_Helmholtz.bas"
+'#Uses ".\Instruments\MV_K2450_Hall.bas"
+'#Uses ".\Instruments\MV_K2450_General.bas"
+'#Uses ".\Instruments\MV_K2450_LiveLog.bas"
+'#Uses ".\Instruments\MV_K7001.bas"
+'#Uses ".\Analysis\MV_IV_PostAnalysis.bas"
+'#Uses ".\Analysis\MV_RTPostAnalysis.bas"
+'#Uses ".\Runners\MV_RunWrappers.bas"
+'#Uses ".\Core\MV_GpibIO.bas"
+'#Uses ".\Core\MV_DynaHelpers.bas"
+'#Uses ".\Runners\MV_HelmBSweepLoop.bas"
+'#Uses ".\Macros\Macro_K2450_IV_Slow.bas"
+'#Uses ".\Macros\Macro_K2450_IV_Fast.bas"
+'#Uses ".\Macros\Macro_K2450_IV_Fast_TempCycle.bas"
+'#Uses ".\Macros\Macro_Helmholtz_BSweep.bas"
+'#Uses ".\Macros\Macro_K2600_OutputOff_Check.bas"
+'#Uses ".\Macros\Macro_Hall_ETO_Switch_TempField.bas"
+'#Uses ".\Macros\Macro_Hall_K2450_Switch_TempField.bas"
+'#Uses ".\Legacy\MV_TestFunctions_Legacy.bas"  ' Optional: enable legacy tests/utilities
 
 Option Explicit
 
@@ -81,6 +83,7 @@ Private Sub PrintFunctionCatalog()
     MV_Log "  Run_K2450_IV_Sweep(datPath, directionMode, startVal, maxVal, minVal, stepVal, sourceSpec, settle_s, nplc, avgCount, rampRatePerS, ...)"
     MV_Log "  Run_K2450_IV_SweepFast(datPath, directionMode, startVal, maxVal, minVal, stepVal, sourceSpec, settle_s, nplc, avgCount, rampRatePerS, ...)"
     MV_Log "  K2450_LogInit(datPath, runTitle), K2450_LogPoint([Ch], [comment]), K2450_LogClose()"
+    MV_Log "  K2450_LogInitWide(datPath, runTitle, chNames()), K2450_LogWidePoint(ch, V, I, R, [comment], [status])"
     MV_Log ""
     MV_Log "Switch Matrix (K7001 + 7012-S 4x10)"
     MV_Log "  K7001_Connect([resource]) / K7001_Disconnect()"
@@ -149,9 +152,10 @@ Sub Main()
     ' Keep all others commented.
     ' -----------------------------------------------------------------------
     ' Call Macro_Run_K2450_IV_Slow()
-    ' Call Macro_Run_K2450_IV_Fast()
+     Call Macro_Run_K2450_IV_Fast()
     ' Call Macro_Run_K2450_IV_Fast_TempCycle()
     ' Call Macro_Run_Helmholtz_BSweep()
     ' Call Macro_Run_K2600_OutputOff_Check()
     ' Call Macro_Run_Hall_ETO_Switch_TempField()
+    ' Call Macro_Run_Hall_K2450_Switch_TempField()
 End Sub

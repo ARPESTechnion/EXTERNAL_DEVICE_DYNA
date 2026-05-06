@@ -1,7 +1,7 @@
-'#Uses "C:\Users\Ilay\OneDrive - Technion\Desktop\MC_Projects\Extarnal_Device_Dyna\WinWrapPPMSControl\MV_Constants.bas"
-'#Uses "C:\Users\Ilay\OneDrive - Technion\Desktop\MC_Projects\Extarnal_Device_Dyna\WinWrapPPMSControl\MV_DynaHelpers.bas"
-'#Uses "C:\Users\Ilay\OneDrive - Technion\Desktop\MC_Projects\Extarnal_Device_Dyna\WinWrapPPMSControl\MV_GpibIO.bas"
-'#Uses "C:\Users\Ilay\OneDrive - Technion\Desktop\MC_Projects\Extarnal_Device_Dyna\WinWrapPPMSControl\MV_K2450_Hall.bas"
+'#Uses "..\Core\MV_Constants.bas"
+'#Uses "..\Core\MV_DynaHelpers.bas"
+'#Uses "..\Core\MV_GpibIO.bas"
+'#Uses ".\MV_K2450_Hall.bas"
 
 Option Explicit
 
@@ -17,7 +17,7 @@ Private Const MV_K2450_MAX_SOURCE_V As Double = 210#
 Private Const MV_K2450_MAX_SOURCE_A As Double = 1.05
 Private Const MV_K2450_MAX_COMP_V As Double = 210#
 Private Const MV_K2450_MAX_COMP_A As Double = 1.05
-Public Const MV_K2450_EPS As Double = 0.000000000001
+Public  Const MV_K2450_EPS As Double = 0.000000000001
 Private Const MV_K2450_FAST_CHUNK_POINTS As Long = 2500  ' instrument max list size via SOUR:LIST + APPend
 Private Const MV_K2450_FAST_BATCH_MAX_CHARS As Long = 200 ' max CSV payload chars per SOUR:LIST or :APPend write
 Private Const MV_K2450_FAST_WAIT_TIMEOUT_S As Double = 30#
@@ -1182,10 +1182,8 @@ Public Function K2450_IV_RunFast(ByVal ch As String, ByVal sourceMode As String,
     Dim logElapsed_s As Double
     Dim cachedTempK As Double
     Dim cachedFieldOe As Double
-    Dim lastTBRefreshDate As Date
-    Dim lastTBRefreshTimer As Double
-    Dim tbAge_s As Double
     Dim sweepModelReady As Boolean
+    Dim logBaseElapsed_s As Double
 
     modeKey = K2450_NormalizeSourceMode(sourceMode)
     If modeKey = "" Then
@@ -1300,37 +1298,27 @@ Public Function K2450_IV_RunFast(ByVal ch As String, ByVal sourceMode As String,
 
     cachedTempK = DYNA_GetTemperature_K()
     cachedFieldOe = DYNA_GetField_Oe()
-    lastTBRefreshDate = Date
-    lastTBRefreshTimer = Timer
+    logBaseElapsed_s = K2450_LogGetElapsedSeconds()
 
-    statusTxt = "OK"
-    For i = LBound(points) To UBound(points)
-        j = i - LBound(points)
-        If Not MV_IsFinite(vAll(j)) Or Not MV_IsFinite(iAll(j)) Then
-            statusTxt = "READ_FAIL"
-        Else
-            statusTxt = "OK"
+    If K2450_LogUsesFastSchema() Then
+        ' Write all points in a single bulk call to eliminate per-point function overhead.
+        If Not K2450_LogFastBulkWrite(comment, vAll, iAll, rAll, pointCount, cachedTempK, cachedFieldOe, logBaseElapsed_s, acqElapsed_s) Then
+            GoTo Fail
         End If
-
-        If K2450_LogUsesFastSchema() Then
-            tbAge_s = (CDbl(Date - lastTBRefreshDate) * 86400#) + (Timer - lastTBRefreshTimer)
-            If tbAge_s < 0# Then tbAge_s = 0#
-            If tbRefresh_s > 0# And tbAge_s >= tbRefresh_s Then
-                cachedTempK = DYNA_GetTemperature_K()
-                cachedFieldOe = DYNA_GetField_Oe()
-                lastTBRefreshDate = Date
-                lastTBRefreshTimer = Timer
+    Else
+        statusTxt = "OK"
+        For i = LBound(points) To UBound(points)
+            j = i - LBound(points)
+            If Not MV_IsFinite(vAll(j)) Or Not MV_IsFinite(iAll(j)) Then
+                statusTxt = "READ_FAIL"
+            Else
+                statusTxt = "OK"
             End If
-
-            If Not K2450_LogPointFastMeasuredTB(comment, vAll(j), iAll(j), rAll(j), j, statusTxt, cachedTempK, cachedFieldOe) Then
-                GoTo Fail
-            End If
-        Else
             If Not K2450_LogPointMeasured(chNorm, comment, vAll(j), iAll(j), rAll(j), directionMode, segments(i), j, points(i), settle_s, rampToStart, statusTxt) Then
                 GoTo Fail
             End If
-        End If
-    Next
+        Next
+    End If
 
     logElapsed_s = (CDbl(Date - logStartDate) * 86400#) + (Timer - logStartTimer)
     If logElapsed_s < 0# Then logElapsed_s = 0#

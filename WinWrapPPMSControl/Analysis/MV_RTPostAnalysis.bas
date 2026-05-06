@@ -1,5 +1,5 @@
-'#Uses "..\Utility\Macros__QD_Library_Oct_2015\MultiVuDataFile\MultiVuDataFile.cls"
-'#Uses "C:\Users\Ilay\OneDrive - Technion\Desktop\MC_Projects\Extarnal_Device_Dyna\WinWrapPPMSControl\MV_Constants.bas"
+'#Uses "..\..\Utility\Macros__QD_Library_Oct_2015\MultiVuDataFile\MultiVuDataFile.cls"
+'#Uses "..\Core\MV_Constants.bas"
 
 Option Explicit
 
@@ -25,17 +25,6 @@ Private Const COL_RT_CH2_DRDT  As String = "Ch2_abs_dRdT_OhmPerK"
 
 ' =========================================================
 ' Internal helpers
-' =========================================================
-Private Function RT_TryParseDouble(ByVal textValue As String, ByRef outValue As Double) As Boolean
-    On Error GoTo ParseFail
-    outValue = CDbl(Trim$(textValue))
-    RT_TryParseDouble = True
-    Exit Function
-ParseFail:
-    outValue = 0#
-    RT_TryParseDouble = False
-End Function
-
 ' =========================================================
 ' RT_AnalyzeFile
 '
@@ -153,20 +142,20 @@ Public Function RT_AnalyzeFile(ByVal dataFilePath As String, _
             okTemp  = False
             okField = False
             If UBound(parts) >= RT_COL_TEMP Then
-                okTemp = RT_TryParseDouble(parts(RT_COL_TEMP), tempVal)
+                okTemp = MV_TryParseDouble(parts(RT_COL_TEMP), tempVal)
             End If
             If UBound(parts) >= RT_COL_FIELD Then
-                okField = RT_TryParseDouble(parts(RT_COL_FIELD), fieldVal)
+                okField = MV_TryParseDouble(parts(RT_COL_FIELD), fieldVal)
             End If
 
             If okTemp And okField Then
                 okR1 = False
                 okR2 = False
                 If UBound(parts) >= RT_COL_R_CH1 Then
-                    okR1 = RT_TryParseDouble(parts(RT_COL_R_CH1), rCh1Val)
+                    okR1 = MV_TryParseDouble(parts(RT_COL_R_CH1), rCh1Val)
                 End If
                 If UBound(parts) >= RT_COL_R_CH2 Then
-                    okR2 = RT_TryParseDouble(parts(RT_COL_R_CH2), rCh2Val)
+                    okR2 = MV_TryParseDouble(parts(RT_COL_R_CH2), rCh2Val)
                 End If
 
                 rowTemps(rowTotal)  = tempVal

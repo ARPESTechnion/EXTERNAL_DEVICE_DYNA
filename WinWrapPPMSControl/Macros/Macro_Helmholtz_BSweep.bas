@@ -1,3 +1,15 @@
+'#Uses "..\Core\MV_Constants.bas"
+'#Uses "..\Analysis\MV_HelmholtzLog.bas"
+'#Uses "..\Instruments\MV_K2600_Helmholtz.bas"
+'#Uses "..\Instruments\MV_K2450_Hall.bas"
+'#Uses "..\Instruments\MV_K2450_General.bas"
+'#Uses "..\Instruments\MV_K2450_LiveLog.bas"
+'#Uses "..\Instruments\MV_K7001.bas"
+'#Uses "..\Analysis\MV_IV_PostAnalysis.bas"
+'#Uses "..\Analysis\MV_RTPostAnalysis.bas"
+'#Uses "..\Runners\MV_RunWrappers.bas"
+'#Uses "..\Core\MV_GpibIO.bas"
+'#Uses "..\Runners\MV_HelmBSweepLoop.bas"
 Option Explicit
 
 Public Sub Macro_Run_Helmholtz_BSweep()

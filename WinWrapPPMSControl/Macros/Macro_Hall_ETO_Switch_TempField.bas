@@ -1,3 +1,8 @@
+'#Uses "..\Runners\MV_RunWrappers.bas"
+'#Uses "..\Core\MV_Constants.bas"
+'#Uses "..\Core\MV_GpibIO.bas"
+'#Uses "..\Instruments\MV_K7001.bas"
+
 Option Explicit
 
 Public Sub Macro_Run_Hall_ETO_Switch_TempField()

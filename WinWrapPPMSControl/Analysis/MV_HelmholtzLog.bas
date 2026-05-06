@@ -1,5 +1,5 @@
-'#Uses "..\Utility\Macros__QD_Library_Oct_2015\MultiVuDataFile\MultiVuDataFile.cls"
-'#Uses "C:\Users\Ilay\OneDrive - Technion\Desktop\MC_Projects\Extarnal_Device_Dyna\WinWrapPPMSControl\MV_Constants.bas"
+'#Uses "..\..\Utility\Macros__QD_Library_Oct_2015\MultiVuDataFile\MultiVuDataFile.cls"
+'#Uses "..\Core\MV_Constants.bas"
 
 Option Explicit
 
@@ -20,27 +20,6 @@ Private Const COL_HALL_COMPLIANCE_V As String = "Hall Compliance (V)"
 Private Const COL_HALL_NPLC As String = "Hall NPLC"
 Private Const COL_HALL_VOLTAGE_V As String = "Hall Voltage (V)"
 Private Const COL_HALL_FIELD_OE As String = "Hall Field (Oe)"
-
-Private Sub Log_SetNumericOrBlank(ByRef rowData() As Variant, ByVal idxLabel As Integer, ByVal idxValue As Integer, ByVal colName As String, ByVal value As Double)
-    rowData(idxLabel) = colName
-    If MV_IsFinite(value) Then
-        rowData(idxValue) = value
-    Else
-        rowData(idxValue) = ""
-    End If
-End Sub
-
-Private Function MV_EndsWithIgnoreCase(ByVal txt As String, ByVal suffix As String) As Boolean
-    Dim lt As String
-    Dim ls As String
-    lt = LCase$(txt)
-    ls = LCase$(suffix)
-    If Len(lt) < Len(ls) Then
-        MV_EndsWithIgnoreCase = False
-    Else
-        MV_EndsWithIgnoreCase = (Right$(lt, Len(ls)) = ls)
-    End If
-End Function
 
 Public Function MV_InitHelmholtzLog(ByVal filePath As String) As Boolean
     On Error GoTo EH
@@ -128,8 +107,8 @@ Public Function Log_WriteHelmholtzRow(ByVal time_s As Double, _
     rowData(26) = hallCompliance_V
     rowData(27) = COL_HALL_NPLC
     rowData(28) = hallNplc
-    Call Log_SetNumericOrBlank(rowData, 29, 30, COL_HALL_VOLTAGE_V, hallVoltage_V)
-    Call Log_SetNumericOrBlank(rowData, 31, 32, COL_HALL_FIELD_OE, hallField_Oe)
+    Call MV_SetNumericOrBlank(rowData, 29, 30, COL_HALL_VOLTAGE_V, hallVoltage_V)
+    Call MV_SetNumericOrBlank(rowData, 31, 32, COL_HALL_FIELD_OE, hallField_Oe)
     Call MV_HelmDataFile.WriteDataUsingArray(rowData, False)
 
     Log_WriteHelmholtzRow = True

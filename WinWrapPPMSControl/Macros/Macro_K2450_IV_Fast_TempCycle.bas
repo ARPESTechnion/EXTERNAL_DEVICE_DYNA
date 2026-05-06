@@ -1,6 +1,42 @@
-'#Uses "C:\Users\Ilay\OneDrive - Technion\Desktop\MC_Projects\Extarnal_Device_Dyna\WinWrapPPMSControl\MV_RunWrappers.bas"
+'#Uses "..\Core\MV_Constants.bas"
+'#Uses "..\Instruments\MV_K2450_Hall.bas"
+'#Uses "..\Instruments\MV_K2450_General.bas"
+'#Uses "..\Instruments\MV_K2450_LiveLog.bas"
+'#Uses "..\Runners\MV_RunWrappers.bas"
+'#Uses "..\Core\MV_GpibIO.bas"
 
 Option Explicit
+
+' FTC (Fast Temperature Cycle) sweep configuration.
+' Set these before calling Macro_Run_K2450_IV_Fast_TempCycle(),
+' or edit the defaults inside the macro body.
+Public K2450RW_FTC_TempList_K_Csv As String
+Public K2450RW_FTC_MaxCurrentList_mA_Csv As String
+Public K2450RW_FTC_PointsPerIV_List_Csv As String
+Public K2450RW_FTC_HighTemp_K As Double
+Public K2450RW_FTC_TempRampRate_Kmin As Double
+Public K2450RW_FTC_TempSetMode As Integer
+Public K2450RW_FTC_TempStableTimeout_s As Double
+Public K2450RW_FTC_TempSettleDelay_s As Double
+Public K2450RW_FTC_RepeatsPerTemp As Integer
+Public K2450RW_FTC_SourceSpec As String
+Public K2450RW_FTC_Start_mA As Double
+Public K2450RW_FTC_MinStep_uA As Double
+Public K2450RW_FTC_Nplc As Double
+Public K2450RW_FTC_AvgCount As Integer
+Public K2450RW_FTC_SweepSettle_s As Double
+Public K2450RW_FTC_RampRate_mA_per_s As Double
+Public K2450RW_FTC_Compliance_V As Double
+Public K2450RW_FTC_Use4Wire As Boolean
+Public K2450RW_FTC_AutoRange As Boolean
+Public K2450RW_FTC_TbRefresh_s As Double
+Public K2450RW_FTC_DirectionFirst As Integer
+Public K2450RW_FTC_DirectionSecond As Integer
+Public K2450RW_FTC_ResourceName As String
+Public K2450RW_FTC_SampleChannelTag As String
+Public K2450RW_FTC_BaseFolder As String
+Public K2450RW_FTC_RunPrefix As String
+Public K2450RW_FTC_DebugGPIB As Boolean
 
 Public Sub Macro_Run_K2450_IV_Fast_TempCycle()
     ' =========================================================
@@ -10,7 +46,7 @@ Public Sub Macro_Run_K2450_IV_Fast_TempCycle()
     Dim MaxCurrentList_mA_Csv As String
     Dim PointsPerIV_List_Csv As String
 
-    TempList_K_Csv = "300, 299, 298, 297, 296, 295, 294, 293, 292, 291"
+    TempList_K_Csv = "2.67, 2.665, 2.66, 2.655, 2.65, 2.645, 2.64, 2.635, 2.63, 2.625"
     MaxCurrentList_mA_Csv = "0.065, 0.07, 0.075, 0.08, 0.085, 0.09, 0.095, 0.1, 0.105, 0.11"
     PointsPerIV_List_Csv = "1024, 1024, 1024, 1024, 1024, 1024, 1024, 1024, 1024, 1024"
 
@@ -28,7 +64,7 @@ Public Sub Macro_Run_K2450_IV_Fast_TempCycle()
     Dim TempStableTimeout_s As Double
     Dim RepeatsPerTemp As Integer
 
-    HighTemp_K = 300#
+    HighTemp_K = 5#
     TempRampRate_Kmin = 10#
     TempSetMode = 0
     TempStableTimeout_s = 60#

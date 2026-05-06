@@ -1,5 +1,5 @@
-'#Uses "C:\Users\Ilay\OneDrive - Technion\Desktop\MC_Projects\Extarnal_Device_Dyna\WinWrapPPMSControl\MV_Constants.bas"
-'#Uses "C:\Users\Ilay\OneDrive - Technion\Desktop\MC_Projects\Extarnal_Device_Dyna\WinWrapPPMSControl\MV_K2600_Helmholtz.bas"
+'#Uses "..\Core\MV_Constants.bas"
+'#Uses "..\Instruments\MV_K2600_Helmholtz.bas"
 
 Option Explicit
 

@@ -1,3 +1,10 @@
+'#Uses "..\Core\MV_Constants.bas"
+'#Uses "..\Instruments\MV_K2450_Hall.bas"
+'#Uses "..\Instruments\MV_K2450_General.bas"
+'#Uses "..\Instruments\MV_K2450_LiveLog.bas"
+'#Uses "..\Runners\MV_RunWrappers.bas"
+'#Uses "..\Core\MV_GpibIO.bas"
+
 Option Explicit
 
 Public Sub Macro_Run_K2450_IV_Fast()
@@ -19,7 +26,6 @@ Public Sub Macro_Run_K2450_IV_Fast()
     Dim RampRatePerS As Double ' Ramp rate to start value (A/s), 0 for immediate
     Dim Compliance_V As Double ' Compliance limit (V)
     Dim Use4Wire As Boolean    ' True = 4-wire sense
-    Dim AutoRange As Boolean   ' True = auto-range
 
     IvDirection = K2450_IV_DIR_START_MAX_MIN_START
     Start_A = 0#
@@ -27,12 +33,11 @@ Public Sub Macro_Run_K2450_IV_Fast()
     Min_A = -0.001
     Step_A = 0.000004
     Settle_s = 0#
-    Nplc = 1#
+    Nplc = 0.01#
     AvgCount = 1
     RampRatePerS = 0#
     Compliance_V = 20#
     Use4Wire = True
-    AutoRange = True
 
     ' =========================================================
     ' Run labeling and file configuration - edit these values
@@ -84,10 +89,11 @@ Public Sub Macro_Run_K2450_IV_Fast()
                                 Compliance_V, _
                                 SampleChannelTag, _
                                 Use4Wire, _
-                                AutoRange, _
+                                True, _
                                 ResourceName, _
                                 RunComment, _
-                                TbRefresh_s)
+                                TbRefresh_s, _
+                                False)
 
     elapsed_s = (CDbl(Date - runStartDate) * 86400#) + (Timer - runStartTimer)
     If elapsed_s < 0# Then elapsed_s = 0#

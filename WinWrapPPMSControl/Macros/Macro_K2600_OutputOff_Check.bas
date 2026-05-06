@@ -1,3 +1,9 @@
+'#Uses "..\Core\MV_Constants.bas"
+'#Uses "..\Analysis\MV_HelmholtzLog.bas"
+'#Uses "..\Instruments\MV_K2600_Helmholtz.bas"
+'#Uses "..\Runners\MV_RunWrappers.bas"
+'#Uses "..\Core\MV_GpibIO.bas"
+
 Option Explicit
 
 Public Sub Macro_Run_K2600_OutputOff_Check()

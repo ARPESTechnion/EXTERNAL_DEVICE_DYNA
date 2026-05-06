@@ -1,4 +1,4 @@
-'#Uses "C:\Users\Ilay\OneDrive - Technion\Desktop\MC_Projects\Extarnal_Device_Dyna\WinWrapPPMSControl\MV_Constants.bas"
+'#Uses "..\Core\MV_Constants.bas"
 
 Option Explicit
 
@@ -18,16 +18,6 @@ Public Type IV_BlockResult
     rowCount As Long            ' Number of valid data points in block
     isValid As Boolean          ' True if fit succeeded and data is meaningful
 End Type
-
-Private Function IV_TryParseDouble(ByVal textValue As String, ByRef outValue As Double) As Boolean
-    On Error GoTo ParseFail
-    outValue = CDbl(Trim$(textValue))
-    IV_TryParseDouble = True
-    Exit Function
-ParseFail:
-    outValue = 0#
-    IV_TryParseDouble = False
-End Function
 
 Public Function IV_LinearRegression(currentArray() As Double, _
                                      voltageArray() As Double, _
@@ -233,8 +223,8 @@ Public Function IV_ExtractBlockWithMetadataFromFile(filePath As String, _
         parts = Split(lineText, ",")
 
         If UBound(parts) >= currentColIndex And UBound(parts) >= voltageColIndex Then
-            okI = IV_TryParseDouble(parts(currentColIndex), iA_mA)
-            okV = IV_TryParseDouble(parts(voltageColIndex), vV)
+            okI = MV_TryParseDouble(parts(currentColIndex), iA_mA)
+            okV = MV_TryParseDouble(parts(voltageColIndex), vV)
 
             If okI And okV Then
                 currentArray(rowCount) = iA_mA / 1000#
@@ -242,13 +232,13 @@ Public Function IV_ExtractBlockWithMetadataFromFile(filePath As String, _
 
                 If (Not hasAveragingTime) And averagingTimeColIndex >= 0 Then
                     If UBound(parts) >= averagingTimeColIndex Then
-                        hasAveragingTime = IV_TryParseDouble(parts(averagingTimeColIndex), averagingTime_s)
+                        hasAveragingTime = MV_TryParseDouble(parts(averagingTimeColIndex), averagingTime_s)
                     End If
                 End If
 
                 If (Not hasGain) And gainColIndex >= 0 Then
                     If UBound(parts) >= gainColIndex Then
-                        hasGain = IV_TryParseDouble(parts(gainColIndex), gainValue)
+                        hasGain = MV_TryParseDouble(parts(gainColIndex), gainValue)
                     End If
                 End If
 
@@ -367,8 +357,8 @@ Public Function IV_ExtractBlockTempFieldFromFile(filePath As String, _
         Exit Function
     End If
 
-    okTemp = IV_TryParseDouble(parts(2), temp_K)
-    okField = IV_TryParseDouble(parts(3), field_Oe)
+    okTemp = MV_TryParseDouble(parts(2), temp_K)
+    okField = MV_TryParseDouble(parts(3), field_Oe)
 
     file.Close
 

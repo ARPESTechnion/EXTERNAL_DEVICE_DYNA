@@ -1,44 +1,20 @@
-'#Uses "C:\Users\Ilay\OneDrive - Technion\Desktop\MC_Projects\Extarnal_Device_Dyna\WinWrapPPMSControl\MV_Constants.bas"
-'#Uses "C:\Users\Ilay\OneDrive - Technion\Desktop\MC_Projects\Extarnal_Device_Dyna\WinWrapPPMSControl\MV_DynaHelpers.bas"
-'#Uses "C:\Users\Ilay\OneDrive - Technion\Desktop\MC_Projects\Extarnal_Device_Dyna\WinWrapPPMSControl\MV_HelmholtzLog.bas"
-'#Uses "C:\Users\Ilay\OneDrive - Technion\Desktop\MC_Projects\Extarnal_Device_Dyna\WinWrapPPMSControl\MV_K2450_Hall.bas"
-'#Uses "C:\Users\Ilay\OneDrive - Technion\Desktop\MC_Projects\Extarnal_Device_Dyna\WinWrapPPMSControl\MV_K2450_General.bas"
-'#Uses "C:\Users\Ilay\OneDrive - Technion\Desktop\MC_Projects\Extarnal_Device_Dyna\WinWrapPPMSControl\MV_K2450_LiveLog.bas"
-'#Uses "C:\Users\Ilay\OneDrive - Technion\Desktop\MC_Projects\Extarnal_Device_Dyna\WinWrapPPMSControl\MV_K2600_Helmholtz.bas"
-'#Uses "C:\Users\Ilay\OneDrive - Technion\Desktop\MC_Projects\Extarnal_Device_Dyna\WinWrapPPMSControl\MV_GpibIO.bas"
-'#Uses "C:\Users\Ilay\OneDrive - Technion\Desktop\MC_Projects\Extarnal_Device_Dyna\WinWrapPPMSControl\MV_IV_PostAnalysis.bas"
-'#Uses "C:\Users\Ilay\OneDrive - Technion\Desktop\MC_Projects\Extarnal_Device_Dyna\WinWrapPPMSControl\MV_PostAnalysisMergedLog.bas"
+'#Uses "..\Core\MV_Constants.bas"
+'#Uses "..\Core\MV_DynaHelpers.bas"
+'#Uses "..\Analysis\MV_HelmholtzLog.bas"
+'#Uses "..\Instruments\MV_K2450_Hall.bas"
+'#Uses "..\Instruments\MV_K2450_General.bas"
+'#Uses "..\Instruments\MV_K2450_LiveLog.bas"
+'#Uses "..\Instruments\MV_K2600_Helmholtz.bas"
+'#Uses "..\Core\MV_GpibIO.bas"
+'#Uses "..\Instruments\MV_K7001.bas"
+'#Uses "..\Analysis\MV_IV_PostAnalysis.bas"
+'#Uses "..\Analysis\MV_PostAnalysisMergedLog.bas"
 
 Option Explicit
 
-Public K2450RW_FTC_TempList_K_Csv As String
-Public K2450RW_FTC_MaxCurrentList_mA_Csv As String
-Public K2450RW_FTC_PointsPerIV_List_Csv As String
-Public K2450RW_FTC_HighTemp_K As Double
-Public K2450RW_FTC_TempRampRate_Kmin As Double
-Public K2450RW_FTC_TempSetMode As Integer
-Public K2450RW_FTC_TempStableTimeout_s As Double
-Public K2450RW_FTC_TempSettleDelay_s As Double
-Public K2450RW_FTC_RepeatsPerTemp As Integer
-Public K2450RW_FTC_SourceSpec As String
-Public K2450RW_FTC_Start_mA As Double
-Public K2450RW_FTC_MinStep_uA As Double
-Public K2450RW_FTC_Nplc As Double
-Public K2450RW_FTC_AvgCount As Integer
-Public K2450RW_FTC_SweepSettle_s As Double
-Public K2450RW_FTC_RampRate_mA_per_s As Double
-Public K2450RW_FTC_Compliance_V As Double
-Public K2450RW_FTC_Use4Wire As Boolean
-Public K2450RW_FTC_AutoRange As Boolean
-Public K2450RW_FTC_TbRefresh_s As Double
-Public K2450RW_FTC_DirectionFirst As Integer
-Public K2450RW_FTC_DirectionSecond As Integer
-Public K2450RW_FTC_ResourceName As String
-Public K2450RW_FTC_SampleChannelTag As String
-Public K2450RW_FTC_BaseFolder As String
-Public K2450RW_FTC_RunPrefix As String
-Public K2450RW_FTC_DebugGPIB As Boolean
-
+' ============================================================
+' SESSION MANAGEMENT
+' ============================================================
 Public Function MV_InitSession(ByVal runName As String, ByVal helmholtzLogPath As String) As Boolean
     MV_RunName = runName
     MV_ClearError
@@ -81,6 +57,9 @@ Public Function MV_CloseSession() As Boolean
     MV_CloseSession = True
 End Function
 
+' ============================================================
+' COMBINED MEASUREMENT HELPERS
+' ============================================================
 Public Function Full_MeasureAndLog(Optional ByVal tbm_s As Double = 0.05) As Boolean
     Dim v As Double
     Dim hallOe As Double
@@ -96,6 +75,9 @@ Public Function Full_MeasureAndLog(Optional ByVal tbm_s As Double = 0.05) As Boo
     Full_MeasureAndLog = Helm_WriteLogRow(v, hallOe)
 End Function
 
+' ============================================================
+' POST-ANALYSIS WRAPPERS
+' ============================================================
 Public Function PostAnalysis_AppendAfterETO(ByVal etoDataPath As String, _
                                             ByVal hallMeasuredThisStep As Boolean, _
                                             ByVal measureCh1 As Boolean, _
@@ -239,34 +221,6 @@ Public Function PostAnalysis_ReplayOldETOScan(ByVal etoDataPath As String, _
     PostAnalysis_ReplayOldETOScan = True
 End Function
 
-Public Function SelfTest_Connections() As Boolean
-    Dim ok As Boolean
-
-    ok = K2600_Connect()
-    If ok Then ok = K2450_Connect()
-
-    SelfTest_Connections = ok
-
-    Call MV_CloseSession()
-End Function
-
-Public Function SelfTest_LimitEnforcement() As Boolean
-    Dim ok1 As Boolean
-    Dim ok2 As Boolean
-
-    ok1 = Not Helm_ValidateHelmholtzField(5000#, 10#)
-    ok2 = Not Helm_ValidateHelmholtzField(10#, 1000#)
-
-    SelfTest_LimitEnforcement = (ok1 And ok2)
-End Function
-
-Public Function SelfTest_SafeAbort() As Boolean
-    On Error Resume Next
-    Call K2600_OutputOff()
-    Call K2450_OutputOff()
-    SelfTest_SafeAbort = True
-End Function
-
 Private Function K2450RW_NormalizeSourceSpec(ByVal sourceSpec As String, ByRef outMode As String, ByRef outScale As Double) As Boolean
     Dim key As String
 
@@ -292,6 +246,9 @@ Private Function K2450RW_NormalizeSourceSpec(ByVal sourceSpec As String, ByRef o
     K2450RW_NormalizeSourceSpec = True
 End Function
 
+' ============================================================
+' IV SWEEP RUN FUNCTIONS
+' ============================================================
 Public Function Run_K2450_IV_Live(ByVal datPath As String, _
                                   ByVal runTitle As String, _
                                   ByVal ch As String, _
@@ -484,6 +441,7 @@ Public Function Run_K2450_IV_SweepFast(ByVal datPath As String, _
     Dim autoConnected As Boolean
     Dim ok As Boolean
     Dim headerNote As String
+    Dim expectedPoints As Long
 
     If Not K2450RW_NormalizeSourceSpec(sourceSpec, sourceMode, sourceScale) Then
         Run_K2450_IV_SweepFast = False
@@ -506,6 +464,9 @@ Public Function Run_K2450_IV_SweepFast(ByVal datPath As String, _
         Run_K2450_IV_SweepFast = False
         Exit Function
     End If
+
+    expectedPoints = K2450RW_GetSweepPointCount(startScaled, maxScaled, minScaled, Abs(stepScaled), directionMode)
+    If expectedPoints < 1 Then expectedPoints = 0
 
     If compliance < 0# Then
         If sourceMode = "CURRENT" Then
@@ -541,7 +502,7 @@ Public Function Run_K2450_IV_SweepFast(ByVal datPath As String, _
     If use4Wire Then s4w = "1" Else s4w = "0"
     If autoRange Then sAr = "1" Else sAr = "0"
     headerNote = "mode=" & sourceMode & "; compliance=" & CStr(compliance) & "; nplc=" & CStr(nplc) & "; avg=" & CStr(avgCount) & "; settle_s=" & CStr(settle_s) & "; tb_refresh_s=" & CStr(tbRefresh_s) & "; use4wire=" & s4w & "; autorange=" & sAr & "; start=" & Format$(Now, "YYYY-MM-DD HH:MM:SS")
-    If Not K2450_LogInit(datPath, runTitle, False, True, "FAST_MIN", headerNote, appendExisting) Then GoTo Fail
+    If Not K2450_LogInit(datPath, runTitle, False, True, "FAST_MIN", headerNote, appendExisting, expectedPoints) Then GoTo Fail
 
     ok = K2450_IV_RunFast(ch, sourceMode, startScaled, maxScaled, minScaled, stepScaled, directionMode, settle_s, True, rampRatePerS, comment, tbRefresh_s)
 
@@ -907,7 +868,6 @@ Public Function Run_K2450_IV_Fast_TempCycle(ByVal tempList_K_Csv As String, _
     MV_Log "[K2450RW][FAST-TC] direction_first=" & K2450RW_DirectionTag(directionFirst) & "; direction_second=" & K2450RW_DirectionTag(directionSecond)
     MV_Log "[K2450RW][FAST-TC] resource=" & resourceName & "; sample_tag=" & sampleChannelTag
     MV_Log "[K2450RW][FAST-TC] base_folder=" & baseFolder & "; run_prefix=" & runPrefix & "; debug_gpib=" & K2450RW_BoolText(debugGPIB)
-
     If repeatsPerTemp < 1 Then
         MV_SetError "RepeatsPerTemp must be >= 1"
         GoTo Fail

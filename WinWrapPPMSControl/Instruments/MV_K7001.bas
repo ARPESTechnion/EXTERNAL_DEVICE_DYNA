@@ -1,3 +1,10 @@
+'#Uses "..\Core\MV_Constants.bas"
+'#Uses "..\Core\MV_DynaHelpers.bas"
+'#Uses "..\Analysis\MV_HelmholtzLog.bas"
+'#Uses ".\MV_K2600_Helmholtz.bas"
+'#Uses "..\Core\MV_GpibIO.bas"
+
+
 Option Explicit
 
 Private Const K7001_CARD_SLOT As Integer = 1
@@ -42,7 +49,6 @@ End Function
 
 Private Function K7001_ValidateOutput(ByVal outputNumber As Integer, ByVal rowNumber As Integer) As Boolean
     If outputNumber < K7001_MIN_OUTPUT Or outputNumber > K7001_MAX_OUTPUT Then
-        MV_SetError "K7001 output for " & K7001_RowName(rowNumber) & " out of range (1..10): " & CStr(outputNumber)
         K7001_ValidateOutput = False
         Exit Function
     End If
@@ -117,7 +123,7 @@ Public Function K7001_DefineChannel(ByVal logicalName As String, _
     nameKey = K7001_NormalizeName(nameLabel)
 
     If nameKey = "" Then
-        MV_SetError "K7001 logical name cannot be empty"
+        MV_Log "[K7001][ERROR] logical name cannot be empty"
         K7001_DefineChannel = False
         Exit Function
     End If
@@ -222,7 +228,7 @@ Public Function K7001_Connect(Optional ByVal resource As String = "") As Boolean
     If MV_GPIB_Query(MV_K7001_Device, "*IDN?", idn) Then
         MV_Log "[K7001] connected: resource=" & resource & "; idn=" & idn
     Else
-        MV_Log "[K7001][WARN] connected but IDN query failed: resource=" & resource & "; err=" & MV_LastError
+        MV_Log "[K7001][WARN] connected but IDN query failed: resource=" & resource
     End If
 
     Call K7001_EnsureDefaultsLoaded()
@@ -239,7 +245,7 @@ End Function
 
 Public Function K7001_OpenAll() As Boolean
     If MV_K7001_Device = "" Then
-        MV_SetError "K7001 not connected"
+        MV_Log "[K7001][ERROR] not connected"
         K7001_OpenAll = False
         Exit Function
     End If
@@ -263,7 +269,7 @@ Public Function K7001_CloseChannel(ByVal logicalName As String) As Boolean
     Dim p4 As String
 
     If MV_K7001_Device = "" Then
-        MV_SetError "K7001 not connected"
+        MV_Log "[K7001][ERROR] not connected"
         K7001_CloseChannel = False
         Exit Function
     End If
@@ -273,7 +279,7 @@ Public Function K7001_CloseChannel(ByVal logicalName As String) As Boolean
     nameKey = K7001_NormalizeName(logicalName)
     idx = K7001_FindIndex(nameKey)
     If idx < 0 Then
-        MV_SetError "K7001 unknown logical channel name: " & logicalName
+        MV_Log "[K7001][ERROR] unknown logical channel name: " & logicalName
         K7001_CloseChannel = False
         Exit Function
     End If

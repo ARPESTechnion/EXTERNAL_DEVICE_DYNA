@@ -1,4 +1,4 @@
-'#Uses "C:\Users\Ilay\OneDrive - Technion\Desktop\MC_Projects\Extarnal_Device_Dyna\WinWrapPPMSControl\MV_Constants.bas"
+'#Uses ".\MV_Constants.bas"
 
 Option Explicit
 

@@ -1,4 +1,56 @@
+'#Uses "..\Core\MV_Constants.bas"
+'#Uses "..\Analysis\MV_HelmholtzLog.bas"
+'#Uses "..\Instruments\MV_K2600_Helmholtz.bas"
+'#Uses "..\Instruments\MV_K2450_Hall.bas"
+'#Uses "..\Instruments\MV_K2450_General.bas"
+'#Uses "..\Instruments\MV_K2450_LiveLog.bas"
+'#Uses "..\Instruments\MV_K7001.bas"
+'#Uses "..\Analysis\MV_IV_PostAnalysis.bas"
+'#Uses "..\Analysis\MV_RTPostAnalysis.bas"
+'#Uses "..\Runners\MV_RunWrappers.bas"
+'#Uses "..\Core\MV_GpibIO.bas"
+'#Uses "..\Runners\MV_HelmBSweepLoop.bas"
+'#Uses "..\Macros\Macro_K2450_IV_Slow.bas"
+'#Uses "..\Macros\Macro_K2450_IV_Fast.bas"
+'#Uses "..\Macros\Macro_K2450_IV_Fast_TempCycle.bas"
+'#Uses "..\Macros\Macro_Helmholtz_BSweep.bas"
+'#Uses "..\Macros\Macro_K2600_OutputOff_Check.bas"
+'#Uses "..\Macros\Macro_Hall_ETO_Switch_TempField.bas"
+
+
 Option Explicit
+
+' ---------------------------------------------------------------------------
+' Self-tests: moved from MV_RunWrappers.bas — they belong with test utilities,
+' not with the shared library orchestration layer.
+' ---------------------------------------------------------------------------
+Public Function SelfTest_Connections() As Boolean
+    Dim ok As Boolean
+
+    ok = K2600_Connect()
+    If ok Then ok = K2450_Connect()
+
+    SelfTest_Connections = ok
+
+    Call MV_CloseSession()
+End Function
+
+Public Function SelfTest_LimitEnforcement() As Boolean
+    Dim ok1 As Boolean
+    Dim ok2 As Boolean
+
+    ok1 = Not Helm_ValidateHelmholtzField(5000#, 10#)
+    ok2 = Not Helm_ValidateHelmholtzField(10#, 1000#)
+
+    SelfTest_LimitEnforcement = (ok1 And ok2)
+End Function
+
+Public Function SelfTest_SafeAbort() As Boolean
+    On Error Resume Next
+    Call K2600_OutputOff()
+    Call K2450_OutputOff()
+    SelfTest_SafeAbort = True
+End Function
 
 Public Sub Test_NoHardware_Limits()
     Dim ok As Boolean

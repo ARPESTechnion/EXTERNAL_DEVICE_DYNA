@@ -58,6 +58,9 @@ Public Const MV_GPIB_TERM_CHAR As Integer = 10
 Public Const MV_GPIB_EOI As Boolean = True
 Public Const MV_GPIB_TIMEOUT_S As Double = 5#
 
+' ============================================================
+' RUNTIME STATE — mutable session and instrument handles
+' ============================================================
 ' Built-in MultiVu.GPIB device keys (empty means disconnected).
 Public MV_K2600_Device As String
 Public MV_K2450_Device As String
@@ -96,6 +99,9 @@ Public Const MV_CH_CURR_A As Integer = 10
 Public Const MV_CH_CURR_B As Integer = 11
 Public Const MV_CH_EXT_STATUS As Integer = 12
 
+' ============================================================
+' DEFAULT RESET & SESSION CLOCK
+' ============================================================
 Public Sub MV_ResetDefaults()
     MV_HelmCompliance_V = MV_DEFAULT_HELM_COMPLIANCE_V
     MV_HelmNPLC = MV_DEFAULT_HELM_NPLC
@@ -148,6 +154,9 @@ Public Function Hall_ApplyPreset(ByVal presetName As String) As Boolean
     Hall_ApplyPreset = True
 End Function
 
+' ============================================================
+' UTILITY FUNCTIONS — error, log, math, timing
+' ============================================================
 Public Sub MV_SetError(ByVal msg As String)
     MV_LastError = msg
     MV_Log "[MV][ERROR] " & msg
@@ -172,3 +181,37 @@ Public Sub MV_WaitSeconds(ByVal seconds As Double)
         DoEvents
     Loop
 End Sub
+
+' ============================================================
+' SHARED DATA HELPERS — used by all log-writing modules
+' ============================================================
+Public Sub MV_SetNumericOrBlank(ByRef rowData() As Variant, ByVal idxLabel As Integer, ByVal idxValue As Integer, ByVal colName As String, ByVal value As Double)
+    rowData(idxLabel) = colName
+    If MV_IsFinite(value) Then
+        rowData(idxValue) = value
+    Else
+        rowData(idxValue) = ""
+    End If
+End Sub
+
+Public Function MV_EndsWithIgnoreCase(ByVal txt As String, ByVal suffix As String) As Boolean
+    Dim lt As String
+    Dim ls As String
+    lt = LCase$(txt)
+    ls = LCase$(suffix)
+    If Len(lt) < Len(ls) Then
+        MV_EndsWithIgnoreCase = False
+    Else
+        MV_EndsWithIgnoreCase = (Right$(lt, Len(ls)) = ls)
+    End If
+End Function
+
+Public Function MV_TryParseDouble(ByVal textValue As String, ByRef outValue As Double) As Boolean
+    On Error GoTo ParseFail
+    outValue = CDbl(Trim$(textValue))
+    MV_TryParseDouble = True
+    Exit Function
+ParseFail:
+    outValue = 0#
+    MV_TryParseDouble = False
+End Function
