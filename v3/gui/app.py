@@ -739,7 +739,7 @@ class MeasureApp:
     def _connect_switch(self) -> bool:
         backend = str(SWITCH_BACKEND).strip().lower()
 
-        if backend in {"keithley7001", "keithley2001"}:
+        if backend == "keithley7001":
             if self.USE_MOCKUP:
                 from Utility.Keithley7001 import MockKeithley7001 as SwitchDriver
                 inst = SwitchDriver()
@@ -758,7 +758,7 @@ class MeasureApp:
         else:
             raise ValueError(
                 f"Unsupported switch backend '{SWITCH_BACKEND}'. "
-                "Use 'my_switch', 'keithley7001', or 'keithley2001'."
+                "Use 'my_switch' or 'keithley7001'."
             )
 
         inst.connect()

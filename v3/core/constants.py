@@ -14,7 +14,7 @@ from __future__ import annotations
 KEITHLEY2600_ADDRESS = "GPIB0::26::INSTR"
 KEITHLEY2450_ADDRESS = "GPIB0::18::INSTR"
 LOCKIN_ADDRESS = "GPIB0::8::INSTR"
-SWITCH_BACKEND = "my_switch"  # "my_switch" | "keithley7001" | "keithley2001"
+SWITCH_BACKEND = "my_switch"  # "my_switch" | "keithley7001"
 SWITCH_ADDRESS_MY = "USB0::0x0957::0x0507::MY56482243::INSTR"
 SWITCH_ADDRESS_7001 = "GPIB0::7::INSTR"
 # Backward-compatible alias used in older code paths.
@@ -42,7 +42,7 @@ ALL_INSTRUMENTS = (
 )
 
 # Switch matrix routing/label capacity by backend.
-SWITCH_PIN_MAX = 10 if str(SWITCH_BACKEND).strip().lower() in {"keithley7001", "keithley2001"} else 8
+SWITCH_PIN_MAX = 10 if str(SWITCH_BACKEND).strip().lower() == "keithley7001" else 8
 
 # Logical switch channels supported by the app/script DSL.
 LOGICAL_CHANNELS = tuple("abcdefghij") if SWITCH_PIN_MAX >= 10 else tuple("abcdefgh")
