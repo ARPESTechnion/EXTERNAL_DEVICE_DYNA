@@ -141,6 +141,36 @@ def _parse_source_value(raw: str | float | int | None, *, mode: str, default: fl
     return float(text)
 
 
+def _parse_iv_range_value(
+    raw: str | float | int | None,
+    *,
+    quantity: str,
+    default: float | None = None,
+) -> float | None:
+    if raw is None:
+        return default
+    text = str(raw).strip().lower()
+    if text == "":
+        return default
+    if text == "auto":
+        return None
+
+    if quantity == "current":
+        if text.endswith("ma"):
+            return float(text[:-2]) * 1e-3
+        if text.endswith("ua"):
+            return float(text[:-2]) * 1e-6
+        if text.endswith("a"):
+            return float(text[:-1])
+        return float(text)
+
+    if text.endswith("mv"):
+        return float(text[:-2]) * 1e-3
+    if text.endswith("v"):
+        return float(text[:-1])
+    return float(text)
+
+
 def _kw_with_unit_suffix(cmd: ParsedCommand, key: str, milli_key: str) -> str | None:
     milli_val = cmd.get_str(milli_key, None)
     if milli_val is not None:
@@ -731,6 +761,7 @@ def _dispatch(
             ctx.ui_bus.post(W_RESULTS_NEW_POINT, True)
 
         elif name == "measure_iv_curve":
+            t0 = time.perf_counter()
             mode = cmd.get_str("mode", "current")
             mode_norm = str(mode).strip().lower()
             source_mode = "current" if mode_norm in {"current", "source_current", "i"} else "voltage"
@@ -755,8 +786,23 @@ def _dispatch(
             if iv_min is None and iv_max is None and stop is None:
                 raise ValueError("measure_iv_curve requires start,min,max,step (preferred) or start,stop,step")
 
-            source_range = cmd.get_float("source_range")
-            measure_range = cmd.get_float("measure_range")
+            if source_mode == "current":
+                source_range_raw = _kw_with_unit_suffix(cmd, "source_range", "source_range_ma")
+            else:
+                source_range_raw = cmd.get_str("source_range", None)
+            source_range = _parse_iv_range_value(
+                source_range_raw,
+                quantity="current" if source_mode == "current" else "voltage",
+            )
+
+            if source_mode == "voltage":
+                measure_range_raw = _kw_with_unit_suffix(cmd, "measure_range", "measure_range_ma")
+            else:
+                measure_range_raw = cmd.get_str("measure_range", None)
+            measure_range = _parse_iv_range_value(
+                measure_range_raw,
+                quantity="voltage" if source_mode == "current" else "current",
+            )
             compliance = cmd.get_float("compliance")
             nplc = cmd.get_float("nplc", app.hall_tab.k2450_nplc.get())
             auto_range = cmd.get_bool("auto_range", True)
@@ -793,7 +839,11 @@ def _dispatch(
             wrote = ctx.data_mgr.write_rows(result["points"], measurement_type="IV")
             if wrote > 0:
                 ctx.ui_bus.post(W_RESULTS_NEW_POINT, True)
-            ctx.ui_bus.post_log(f"IV curve recorded ({result['point_count']} points)")
+            elapsed_s = max(0.0, time.perf_counter() - t0)
+            ctx.ui_bus.post_log(
+                f"IV curve recorded ({result['point_count']} points in {elapsed_s:.2f} s, "
+                f"engine={result.get('engine', 'point')})"
+            )
 
         elif name == "continuous_measure_hall_field":
             current_mA = cmd.get_float("current", app.hall_tab.k2450_current.get())

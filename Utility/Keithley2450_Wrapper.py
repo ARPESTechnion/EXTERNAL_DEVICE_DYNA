@@ -39,6 +39,35 @@ class Keithley2450Wrapper:
         self._compliance_current = 0.1
         self._source_enabled = False
         self._voltage_filter_count = 10
+        self._initialize_source_current_measure_voltage_state()
+
+    def _initialize_source_current_measure_voltage_state(self):
+        """Best-effort startup state: source current, measure voltage."""
+        try:
+            self.instrument.write(":ABOR")
+        except Exception:
+            pass
+        try:
+            self.instrument.write("*CLS")
+        except Exception:
+            pass
+        try:
+            self.instrument.write(":OUTP OFF")
+        except Exception:
+            pass
+        try:
+            self.instrument.write(":SOUR:FUNC CURR")
+        except Exception:
+            pass
+        try:
+            self.instrument.write(":SENS:FUNC 'VOLT'")
+        except Exception:
+            pass
+        try:
+            self.instrument.write(":SENS:VOLT:RANG 21")
+            self.instrument.write(":SENS:VOLT:RANG:AUTO ON")
+        except Exception:
+            pass
 
     def _set_timeout_ms(self, timeout_ms):
         """Best-effort VISA timeout configuration in milliseconds."""
@@ -91,6 +120,7 @@ class Keithley2450Wrapper:
             self.configure_terminals_and_sense(terminals='REAR', remote_sense=True)
         except Exception:
             pass
+        self._initialize_source_current_measure_voltage_state()
     
     def configure_terminals_and_sense(self, terminals='REAR', remote_sense=True):
         """
@@ -165,13 +195,29 @@ class Keithley2450Wrapper:
     def connect(self):
         """Already connected on instantiation with pymeasure."""
         self.connected = True
+        self._initialize_source_current_measure_voltage_state()
         return "Keithley 2450 connected via pymeasure"
     
     def disconnect(self):
         """Disconnect from the instrument."""
-        self.disable_source()
-        if hasattr(self.instrument, 'shutdown'):
-            self.instrument.shutdown()
+        try:
+            self.instrument.write(":ABOR")
+        except Exception:
+            pass
+        try:
+            self.instrument.write("*CLS")
+        except Exception:
+            pass
+        try:
+            self.disable_source()
+        except Exception:
+            pass
+        try:
+            adapter = getattr(self.instrument, "adapter", None)
+            if adapter is not None and hasattr(adapter, "close"):
+                adapter.close()
+        except Exception:
+            pass
         self.connected = False
     
     def reset(self):
@@ -179,6 +225,7 @@ class Keithley2450Wrapper:
         self.instrument.reset()
         # Reset returns the SMU to defaults, so enforce project wiring mode.
         self.configure_terminals_and_sense(terminals='REAR', remote_sense=True)
+        self._initialize_source_current_measure_voltage_state()
         self._source_current = 0
         self._source_voltage = 0
         self.disable_source()
@@ -250,16 +297,24 @@ class Keithley2450Wrapper:
         self._set_measure_timeout(nplc=nplc, repetitions=repetitions)
         for attempt in range(2):
             try:
-                # Use pymeasure's built-in method which properly configures sense function
-                if repetitions <= 1:
-                    self.instrument.measure_voltage(nplc=nplc, voltage=voltage, auto_range=auto_range)
-                    return (self.instrument.voltage, 0.0)
+                # Explicit SCPI avoids firmware-dependent pymeasure helper behavior
+                # that may configure an incompatible sense function/range state.
+                self.instrument.write(":SENS:FUNC 'VOLT'")
+                self.instrument.write(f":SENS:VOLT:NPLC {float(nplc):.6g}")
+                if bool(auto_range):
+                    self.instrument.write(":SENS:VOLT:RANG:AUTO ON")
+                else:
+                    self.instrument.write(":SENS:VOLT:RANG:AUTO OFF")
+                    self.instrument.write(f":SENS:VOLT:RANG {abs(float(voltage)):.12g}")
 
-                # Multiple measurements for software averaging
+                if repetitions <= 1:
+                    raw = self.instrument.ask("READ?")
+                    return (float(self._parse_first_csv_float(raw)), 0.0)
+
                 measurements = []
                 for _ in range(repetitions):
-                    self.instrument.measure_voltage(nplc=nplc, voltage=voltage, auto_range=auto_range)
-                    measurements.append(self.instrument.voltage)
+                    raw = self.instrument.ask("READ?")
+                    measurements.append(float(self._parse_first_csv_float(raw)))
 
                 avg_voltage = np.mean(measurements)
                 std_voltage = np.std(measurements, ddof=1) if len(measurements) > 1 else 0.0
@@ -312,6 +367,162 @@ class Keithley2450Wrapper:
                     self._recover_comm_state()
                     continue
                 raise
+
+    @staticmethod
+    def _to_float_list_csv(values):
+        return ",".join(f"{float(v):.12g}" for v in values)
+
+    @staticmethod
+    def _is_input_buffer_overrun(exc):
+        msg = str(exc).lower()
+        return "-363" in msg or "input buffer overrun" in msg
+
+    @staticmethod
+    def _is_undefined_header(exc):
+        msg = str(exc).lower()
+        return "-113" in msg or "undefined header" in msg
+
+    @staticmethod
+    def _parse_first_csv_float(raw_text):
+        tokens = [tok.strip() for tok in str(raw_text).replace("\n", ",").split(",") if tok.strip()]
+        if not tokens:
+            raise ValueError("Empty trace response")
+        return float(tokens[0])
+
+    def run_iv_sweep_fast(
+        self,
+        *,
+        mode: str,
+        setpoints: list[float],
+        nplc: float = 1.0,
+        measure_range: float | None = None,
+        auto_range: bool = True,
+        settle_time: float = 0.0,
+        repetitions: int = 1,
+    ) -> list[float]:
+        """Run an instrument-side list IV sweep and return measured values.
+
+        Parameters
+        ----------
+        mode : str
+            'source_current' or 'source_voltage'.
+        setpoints : list[float]
+            Source list values in A (current mode) or V (voltage mode).
+        nplc : float
+            Measurement NPLC.
+        measure_range : float | None
+            Fixed sense range when auto_range=False.
+        auto_range : bool
+            Enable/disable sense autorange.
+        settle_time : float
+            Source delay per point (s).
+        repetitions : int
+            Per-point averaging count.
+        """
+        count = len(setpoints)
+        if count <= 0:
+            return []
+
+        mode_norm = str(mode).strip().lower()
+        if mode_norm not in {"source_current", "source_voltage"}:
+            raise ValueError("mode must be source_current or source_voltage")
+
+        reps = max(int(repetitions), 1)
+        if reps != 1:
+            raise RuntimeError("Fast IV supports repetitions=1 only")
+        integ = max(float(nplc), 0.0)
+        estimated_s = count * (max(float(settle_time), 0.0) + (integ * reps * 0.02))
+        timeout_ms = int(max(self._default_timeout_ms, (estimated_s + 2.0) * 2000.0))
+        self._set_timeout_ms(timeout_ms)
+
+        if mode_norm == "source_current":
+            self.instrument.write(":SOUR:FUNC CURR")
+            self.instrument.write(":SENS:FUNC 'VOLT'")
+            self.instrument.write(f":SENS:VOLT:NPLC {float(nplc):.6g}")
+            if auto_range:
+                self.instrument.write(":SENS:VOLT:RANG:AUTO ON")
+            elif measure_range is not None:
+                self.instrument.write(":SENS:VOLT:RANG:AUTO OFF")
+                self.instrument.write(f":SENS:VOLT:RANG {float(measure_range):.6g}")
+            list_first_cmd = "SOUR:LIST:CURR"
+            list_append_cmd = "SOUR:LIST:CURR:APP"
+            sweep_cmd = f"SOUR:SWE:CURR:LIST 1, {max(float(settle_time), 0.0):.6g}"
+        else:
+            self.instrument.write(":SOUR:FUNC VOLT")
+            self.instrument.write(":SENS:FUNC 'CURR'")
+            self.instrument.write(f":SENS:CURR:NPLC {float(nplc):.6g}")
+            if auto_range:
+                self.instrument.write(":SENS:CURR:RANG:AUTO ON")
+            elif measure_range is not None:
+                self.instrument.write(":SENS:CURR:RANG:AUTO OFF")
+                self.instrument.write(f":SENS:CURR:RANG {float(measure_range):.6g}")
+            list_first_cmd = "SOUR:LIST:VOLT"
+            list_append_cmd = "SOUR:LIST:VOLT:APP"
+            sweep_cmd = f"SOUR:SWE:VOLT:LIST 1, {max(float(settle_time), 0.0):.6g}"
+
+        def _upload_list_values(chunk_setpoints):
+            max_chars = 200
+            batch = ""
+            first = True
+            for value in chunk_setpoints:
+                val_str = f"{float(value):.12g}"
+                if batch and (len(batch) + 1 + len(val_str) > max_chars):
+                    cmd = list_first_cmd if first else list_append_cmd
+                    self.instrument.write(f"{cmd} {batch}")
+                    first = False
+                    batch = ""
+                batch = val_str if not batch else f"{batch},{val_str}"
+            if batch:
+                cmd = list_first_cmd if first else list_append_cmd
+                self.instrument.write(f"{cmd} {batch}")
+
+        def _run_chunk(chunk_setpoints):
+            chunk_count = len(chunk_setpoints)
+            _upload_list_values(chunk_setpoints)
+            self.instrument.write('TRAC:CLE "defbuffer1"')
+            self.instrument.write(sweep_cmd)
+            self.instrument.write(":INIT")
+            self.instrument.write("*WAI")
+
+            chunk_values = []
+            for idx in range(1, chunk_count + 1):
+                point_value = None
+                last_exc = None
+                for _attempt in range(3):
+                    try:
+                        raw = self.instrument.ask(f'TRAC:DATA? {idx}, {idx}, "defbuffer1", READ')
+                        point_value = self._parse_first_csv_float(raw)
+                        break
+                    except Exception as exc:
+                        last_exc = exc
+                        if self._is_undefined_header(exc):
+                            raise
+                        time.sleep(0.02)
+                if point_value is None:
+                    raise RuntimeError(f"Fast IV point read failed at index {idx}: {last_exc}")
+                chunk_values.append(float(point_value))
+            return chunk_values
+
+        values = []
+        cursor = 0
+        chunk_size = count
+        min_chunk = 8
+
+        while cursor < count:
+            chunk_count = min(chunk_size, count - cursor)
+            chunk = [float(v) for v in setpoints[cursor:cursor + chunk_count]]
+            try:
+                values.extend(_run_chunk(chunk))
+                cursor += chunk_count
+            except Exception as exc:
+                if self._is_input_buffer_overrun(exc) and chunk_count > min_chunk:
+                    chunk_size = max(min_chunk, chunk_count // 2)
+                    continue
+                raise
+
+        if len(values) != count:
+            raise RuntimeError(f"Fast IV readback length mismatch: expected {count}, got {len(values)}")
+        return values
 
     def measure_resistance(self, nplc=1, resistance=1.05, auto_range=True, repetitions=1):
         """

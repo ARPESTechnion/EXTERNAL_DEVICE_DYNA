@@ -284,6 +284,27 @@ class TestMeasureResistance(unittest.TestCase):
         self.assertAlmostEqual(result["IV_Source_Current"], 1.0)
         self.assertAlmostEqual(result["IV_Measured_Voltage"], 1.2)
 
+    def test_autorange_primes_safe_voltage_range_before_apply_current(self):
+        ctx = _make_context()
+        mock_k2450 = ctx.bus.get_raw(INST_KEITHLEY2450)
+        mock_k2450.measure_voltage.return_value = (0.5, 0.01)
+
+        measure_resistance(
+            ctx,
+            current=1e-3,
+            compliance=5.0,
+            nplc=1.0,
+            voltage_range=None,
+            auto_range=True,
+            settle_time=0.0,
+            repetitions=1,
+        )
+
+        write_calls = [c.args[0] for c in mock_k2450.write.call_args_list]
+        self.assertIn(":SENS:FUNC 'VOLT'", write_calls)
+        self.assertIn(":SENS:VOLT:RANG 21", write_calls)
+        self.assertIn(":SENS:VOLT:RANG:AUTO ON", write_calls)
+
 
 class TestMeasureIvCurve(unittest.TestCase):
     def test_current_mode_iv_curve(self):

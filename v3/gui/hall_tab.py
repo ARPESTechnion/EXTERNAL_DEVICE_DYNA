@@ -9,6 +9,7 @@ calibration.  Displays live Hall voltage and field readouts.
 from __future__ import annotations
 
 import threading
+import traceback
 import time
 import tkinter as tk
 from tkinter import ttk
@@ -41,6 +42,8 @@ class HallTab(BaseTab):
         "Bond Hall Bar 2": -1.9647e-05,
     }
     _CUSTOM_PRESET_NAME = "Custom"
+    _IV_RANGE_OPTIONS_V = ("auto", "0.02", "0.2", "2", "20", "200")
+    _IV_RANGE_OPTIONS_MA = ("auto", "0.01", "0.1", "1", "10", "100", "1050")
 
     def __init__(self, parent: ttk.Frame, app: "MeasureApp") -> None:
         super().__init__(parent, app)
@@ -51,6 +54,10 @@ class HallTab(BaseTab):
         self._source_led_after_id: str | None = None
         self._updating_preset = False
         self._k2450_aux_worker: threading.Thread | None = None
+        self._iv_source_range_label: ttk.Label | None = None
+        self._iv_measure_range_label: ttk.Label | None = None
+        self._iv_source_range_menu: ttk.OptionMenu | None = None
+        self._iv_measure_range_menu: ttk.OptionMenu | None = None
 
     def create_widgets(self) -> None:
         self._conn_header = ConnectionHeader(
@@ -210,10 +217,14 @@ class HallTab(BaseTab):
 
         ttk.Label(aux, text="Reps:").grid(row=5, column=0, sticky="w", padx=5, pady=2)
         ValidatingEntry(aux, textvariable=self.k2450_iv_repetitions, width=8, validator=make_float_validator(1.0, 1000.0)).grid(row=5, column=1, sticky="w", padx=5, pady=2)
-        ttk.Label(aux, text="Source Range:").grid(row=5, column=2, sticky="w", padx=(10, 2), pady=2)
-        ttk.OptionMenu(aux, self.k2450_iv_source_range, "auto", "auto", "0.02", "0.2", "2", "20", "200").grid(row=5, column=3, sticky="w", padx=5, pady=2)
-        ttk.Label(aux, text="Measure Range:").grid(row=5, column=4, sticky="w", padx=(10, 2), pady=2)
-        ttk.OptionMenu(aux, self.k2450_iv_measure_range, "auto", "auto", "0.02", "0.2", "2", "20", "200").grid(row=5, column=5, sticky="w", padx=5, pady=2)
+        self._iv_source_range_label = ttk.Label(aux, text="Source Range (mA):")
+        self._iv_source_range_label.grid(row=5, column=2, sticky="w", padx=(10, 2), pady=2)
+        self._iv_source_range_menu = ttk.OptionMenu(aux, self.k2450_iv_source_range, "auto", *self._IV_RANGE_OPTIONS_MA)
+        self._iv_source_range_menu.grid(row=5, column=3, sticky="w", padx=5, pady=2)
+        self._iv_measure_range_label = ttk.Label(aux, text="Measure Range (V):")
+        self._iv_measure_range_label.grid(row=5, column=4, sticky="w", padx=(10, 2), pady=2)
+        self._iv_measure_range_menu = ttk.OptionMenu(aux, self.k2450_iv_measure_range, "auto", *self._IV_RANGE_OPTIONS_V)
+        self._iv_measure_range_menu.grid(row=5, column=5, sticky="w", padx=5, pady=2)
 
         ramp_row = ttk.Frame(aux)
         ramp_row.grid(row=6, column=0, columnspan=6, sticky="w", padx=5, pady=2)
@@ -234,7 +245,38 @@ class HallTab(BaseTab):
 
         self._apply_hall_bar_preset(self.k2450_hall_bar.get())
         self.k2450_hall_v2gauss.trace_add("write", self._on_manual_v2gauss_changed)
+        self.k2450_iv_mode.trace_add("write", self._on_iv_mode_changed)
+        self._update_iv_range_controls()
         self._sync_hall_metadata_to_data_manager()
+
+    def _set_option_menu_values(self, menu_widget: ttk.OptionMenu, variable: tk.StringVar, values: tuple[str, ...]) -> None:
+        menu = menu_widget["menu"]
+        menu.delete(0, "end")
+        for token in values:
+            menu.add_command(label=token, command=tk._setit(variable, token))
+        if str(variable.get()) not in values:
+            variable.set(values[0])
+
+    def _on_iv_mode_changed(self, *_args: object) -> None:
+        self._update_iv_range_controls()
+
+    def _update_iv_range_controls(self) -> None:
+        if self._iv_source_range_label is None or self._iv_measure_range_label is None:
+            return
+        if self._iv_source_range_menu is None or self._iv_measure_range_menu is None:
+            return
+
+        mode_norm = str(self.k2450_iv_mode.get()).strip().lower()
+        if mode_norm in {"current", "source_current", "i"}:
+            self._iv_source_range_label.configure(text="Source Range (mA):")
+            self._iv_measure_range_label.configure(text="Measure Range (V):")
+            self._set_option_menu_values(self._iv_source_range_menu, self.k2450_iv_source_range, self._IV_RANGE_OPTIONS_MA)
+            self._set_option_menu_values(self._iv_measure_range_menu, self.k2450_iv_measure_range, self._IV_RANGE_OPTIONS_V)
+        else:
+            self._iv_source_range_label.configure(text="Source Range (V):")
+            self._iv_measure_range_label.configure(text="Measure Range (mA):")
+            self._set_option_menu_values(self._iv_source_range_menu, self.k2450_iv_source_range, self._IV_RANGE_OPTIONS_V)
+            self._set_option_menu_values(self._iv_measure_range_menu, self.k2450_iv_measure_range, self._IV_RANGE_OPTIONS_MA)
 
     def _sync_hall_metadata_to_data_manager(self) -> None:
         try:
@@ -680,9 +722,16 @@ class HallTab(BaseTab):
 
     def _on_measure_iv_curve(self) -> None:
         try:
+            start = float(self.k2450_iv_start.get())
+            iv_min = float(self.k2450_iv_min.get())
+            iv_max = float(self.k2450_iv_max.get())
             step = float(self.k2450_iv_step.get())
             if abs(step) < 1e-15:
                 raise ValueError("IV step must be non-zero")
+            if iv_min >= iv_max:
+                raise ValueError("IV min must be smaller than IV max")
+            if not (iv_min < start < iv_max):
+                raise ValueError("IV start must be larger than min and smaller than max")
         except Exception as exc:
             self._append_status(str(exc), is_error=True)
             self.app.ui_bus.post_log(f"IV measure error: {exc}")
@@ -813,7 +862,12 @@ class HallTab(BaseTab):
             iv_auto_range = measure_range is None
 
             iv_mode = str(self.k2450_iv_mode.get())
-            _ma_to_a = 1e-3 if iv_mode.strip().lower() in {"current", "source_current", "i"} else 1.0
+            mode_norm = iv_mode.strip().lower()
+            _ma_to_a = 1e-3 if mode_norm in {"current", "source_current", "i"} else 1.0
+            if source_range is not None and mode_norm in {"current", "source_current", "i"}:
+                source_range *= 1e-3
+            if measure_range is not None and mode_norm in {"voltage", "source_voltage", "v"}:
+                measure_range *= 1e-3
             ramp_enabled = bool(self.k2450_iv_ramp_to_start.get())
 
             result = measure_iv_curve(
@@ -837,47 +891,48 @@ class HallTab(BaseTab):
                 env_sample_interval=float(self.k2450_iv_env_interval.get()),
             )
 
-            wrote = ctx.data_mgr.write_rows(result.get("points", []), measurement_type="IV")
-            if wrote > 0:
-                self.app.ui_bus.post(W_RESULTS_NEW_POINT, True)
+            if not isinstance(result, dict):
+                raise RuntimeError(f"Invalid IV result payload type: {type(result).__name__}")
 
-            elapsed_s = max(0.0, time.perf_counter() - t0)
-            cleanup = result.get("cleanup", {}) if isinstance(result, dict) else {}
-            ramp_requested = bool(cleanup.get("requested_ramp_to_start"))
-            zero_requested = bool(cleanup.get("requested_reset_to_zero"))
+            try:
+                rows = result.get("points", [])
+                if isinstance(rows, tuple):
+                    rows = list(rows)
+                elif not isinstance(rows, list):
+                    rows = []
 
-            if ramp_requested:
-                pre_ramp_status = "done" if cleanup.get("ramped_to_start") else "not needed"
-            else:
-                pre_ramp_status = "off"
+                wrote = ctx.data_mgr.write_rows(rows, measurement_type="IV")
+                if wrote > 0:
+                    self.app.ui_bus.post(W_RESULTS_NEW_POINT, True)
 
-            if zero_requested:
-                post_ramp_status = "done" if cleanup.get("reset_to_zero") else "failed"
-            else:
-                post_ramp_status = "off"
-
-            output_status = "disabled" if cleanup.get("source_disabled") else "left enabled"
-            ramp_mode = "ON" if ramp_requested else "OFF"
-
-            cleanup_msg = (
-                f"IV cleanup (Ramp {ramp_mode}): "
-                f"pre-ramp->start={pre_ramp_status}; "
-                f"post-ramp->zero={post_ramp_status}; "
-                f"output={output_status}"
-            )
-
-            def _apply() -> None:
-                self.k2450_aux_result.configure(text=f"IV: {result.get('point_count', 0)} points")
-                self._append_status(
-                    f"Recorded IV curve with {result.get('point_count', 0)} points in {elapsed_s:.2f} s"
+                elapsed_s = max(0.0, time.perf_counter() - t0)
+                engine = str(result.get("engine", "point")).strip().lower()
+                engine_msg = (
+                    "IV engine: instrument-side fast sweep"
+                    if engine == "fast"
+                    else "IV engine: point-by-point fallback"
                 )
-                self._append_status(cleanup_msg)
-                self.app.ui_bus.post_log(f"K2450 IV curve recorded: {result.get('point_count', 0)} points")
-                self.app.ui_bus.post_log(f"K2450 {cleanup_msg}")
 
-            self.app.root.after(0, _apply)
+                def _apply() -> None:
+                    self.k2450_aux_result.configure(text=f"IV: {result.get('point_count', 0)} points")
+                    self._append_status(
+                        f"Recorded IV curve with {result.get('point_count', 0)} points in {elapsed_s:.2f} s"
+                    )
+                    self._append_status(engine_msg)
+                    self.app.ui_bus.post_log(
+                        f"K2450 IV curve recorded: {result.get('point_count', 0)} points in {elapsed_s:.2f} s "
+                        f"(engine={result.get('engine', 'point')})"
+                    )
+                    self.app.ui_bus.post_log(f"K2450 {engine_msg}")
+
+                self.app.root.after(0, _apply)
+            except Exception:
+                logger.exception("IV post-processing failed")
+                self.app.ui_bus.post_log("IV post-processing warning: measurement finished, but result handling had an issue")
         except Exception as exc:
             exc_text = str(exc)
+            logger.error("IV measurement worker failed: %s", exc_text)
+            logger.debug("IV measurement traceback:\n%s", traceback.format_exc())
             def _show_error() -> None:
                 self._append_status(f"IV measurement failed: {exc_text}", is_error=True)
                 self.app.ui_bus.post_log(f"IV measure error: {exc_text}")

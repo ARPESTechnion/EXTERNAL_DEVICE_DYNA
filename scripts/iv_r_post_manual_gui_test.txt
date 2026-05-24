@@ -23,9 +23,9 @@ measure_resistance current_ma=0.5 compliance=2.0 voltage_range=auto nplc=0.5 set
 # ramp_to_start=true keeps ramp behavior enabled in script path.
 # ------------------------------------------------------------------
 add_note IV test 1 manual measure range 20mV
-measure_iv_curve mode=current start_ma=0.0 min_ma=-0.01 max_ma=0.01 step_ma=0.00004 shape=start_max_min_start measure_range=0.02 compliance=0.02 nplc=0.01 auto_range=false settle_time=0 repetitions=1 keep_output=false ramp_to_start=true
+measure_iv_curve mode=current start_ma=0.0 min_ma=-0.01 max_ma=0.01 step_ma=0.00004 shape=start_max_min_start measure_range=0.02  source_range_ma=0.01 compliance=0.02 nplc=0.01 settle_time=0 repetitions=1 keep_output=false ramp_to_start=true
 
 add_note IV test 2 auto measure range
-measure_iv_curve mode=current start_ma=0.0 min_ma=-0.01 max_ma=0.01 step_ma=0.00004 shape=start_min_max_start compliance=2.0 auto_range=true nplc=0.01 settle_time=0 repetitions=1 keep_output=false ramp_to_start=true
+measure_iv_curve mode=current start_ma=0.0 min_ma=-0.01 max_ma=0.01 step_ma=0.00004 shape=start_min_max_start compliance=2.0 nplc=0.01 settle_time=0 repetitions=1 keep_output=true ramp_to_start=true
 
 add_note Post-manual IV/R validation finished

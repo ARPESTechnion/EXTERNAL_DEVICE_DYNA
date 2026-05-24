@@ -588,6 +588,20 @@ def measure_resistance(
     start_helmholtz = ctx.helmholtz.snapshot()
 
     try:
+        # Some K2450 firmware states reject compliance updates when voltage
+        # sense is left in a very low range (for example 20 mV from prior auto
+        # range). Prime a safe sense range before changing source limits.
+        try:
+            ctx.bus.execute(INST_KEITHLEY2450, "write", ":SENS:FUNC 'VOLT'")
+            ctx.bus.execute(INST_KEITHLEY2450, "write", ":SENS:VOLT:RANG 21")
+            if bool(auto_range):
+                ctx.bus.execute(INST_KEITHLEY2450, "write", ":SENS:VOLT:RANG:AUTO ON")
+            elif voltage_range is not None:
+                ctx.bus.execute(INST_KEITHLEY2450, "write", ":SENS:VOLT:RANG:AUTO OFF")
+                ctx.bus.execute(INST_KEITHLEY2450, "write", f":SENS:VOLT:RANG {abs(float(voltage_range)):.12g}")
+        except Exception:
+            logger.debug("Could not precondition K2450 voltage sense range", exc_info=True)
+
         source_range = max(abs(current_a) * 1.2, _KEITHLEY_CURRENT_RES_A)
         ctx.bus.execute(
             INST_KEITHLEY2450,
@@ -693,6 +707,15 @@ def measure_iv_curve(
         else:
             sweep_stop = start
 
+    if iv_min is not None and iv_max is not None:
+        iv_min_f = float(iv_min)
+        iv_max_f = float(iv_max)
+        start_f = float(start)
+        if iv_min_f >= iv_max_f:
+            raise ValueError("IV min must be smaller than IV max")
+        if not (iv_min_f < start_f < iv_max_f):
+            raise ValueError("IV start must be larger than min and smaller than max")
+
     setpoints = _build_iv_setpoints(start, sweep_stop, step, shape=normalized_shape, iv_min=iv_min, iv_max=iv_max)
     if compliance is None:
         compliance = 10.0 if source_mode == "source_current" else 0.1
@@ -723,6 +746,7 @@ def measure_iv_curve(
     cleanup_ramped_to_start = False
     cleanup_reset_to_zero = False
     cleanup_source_disabled = False
+    engine_mode = "point"
 
     def _maybe_refresh_env() -> tuple[float, float]:
         nonlocal _env_last_time, _last_temp, _last_field
@@ -732,6 +756,31 @@ def measure_iv_curve(
             _last_field = ctx.get_ppms_field()
             _env_last_time = now
         return _last_temp, _last_field
+
+    def _normalize_fast_payload(fast_raw: Any, logical_points: int, reps: int) -> list[float]:
+        if isinstance(fast_raw, (int, float)):
+            raw_values = [float(fast_raw)]
+        elif isinstance(fast_raw, (list, tuple)):
+            raw_values = [float(v) for v in fast_raw]
+        else:
+            raise RuntimeError("invalid fast IV payload type")
+
+        if reps <= 1:
+            if len(raw_values) != logical_points:
+                raise RuntimeError("invalid fast IV payload length")
+            return raw_values
+
+        expanded_points = logical_points * reps
+        if len(raw_values) == logical_points:
+            return raw_values
+        if len(raw_values) != expanded_points:
+            raise RuntimeError("invalid fast IV payload length")
+
+        collapsed = []
+        for i in range(logical_points):
+            seg = raw_values[i * reps:(i + 1) * reps]
+            collapsed.append(sum(seg) / float(len(seg)))
+        return collapsed
 
     try:
         if source_mode == "source_current":
@@ -753,40 +802,97 @@ def measure_iv_curve(
                 except Exception:
                     logger.debug("Could not pre-ramp IV source to start", exc_info=True)
 
-            for index, source_current_a in enumerate(setpoints, start=1):
-                ctx.bus.execute(INST_KEITHLEY2450, "set_source_current_amps", source_current_a)
-                if settle_time > 0:
-                    time.sleep(settle_time)
-                measured_voltage_v, measured_voltage_std = ctx.bus.execute(
-                    INST_KEITHLEY2450,
-                    "measure_voltage",
-                    nplc=nplc,
-                    voltage=measure_range if measure_range is not None else 21.0,
-                    auto_range=auto_range,
-                    repetitions=repetitions,
-                )
-                measured_current_a = float(source_current_a)
-                snap = ctx.helmholtz.snapshot()
-                cur_temp, cur_field = _maybe_refresh_env()
-                point = {
-                    "Time": ctx.data_mgr.elapsed_time(),
-                    "Channel": active_channel,
-                    "IV_Point": index,
-                    "IV_Source_Current": source_current_a * 1e3,
-                    "IV_Source_Voltage": NAN,
-                    "IV_Measured_Voltage": measured_voltage_v,
-                    "IV_Measured_Current": measured_current_a * 1e3,
-                    "Temp": cur_temp,
-                    "In-plane_Field": cur_field,
-                    "Helmholtz_Current": snap.get("Helmholtz_Current", start_helmholtz.get("Helmholtz_Current")),
-                    "Helmholtz_Field": snap.get("Helmholtz_Field", start_helmholtz.get("Helmholtz_Field")),
-                }
-                points.append(point)
-                if on_point is not None:
-                    try:
-                        on_point(point)
-                    except Exception:
-                        logger.debug("IV on_point callback failed", exc_info=True)
+            fast_values = None
+            if setpoints:
+                try:
+                    reps_i = max(int(repetitions), 1)
+                    fast_setpoints = [float(sp) for sp in setpoints]
+                    if reps_i > 1:
+                        expanded = []
+                        for sp in fast_setpoints:
+                            expanded.extend([sp] * reps_i)
+                        fast_setpoints = expanded
+                    fast_raw = ctx.bus.execute(
+                        INST_KEITHLEY2450,
+                        "run_iv_sweep_fast",
+                        mode=source_mode,
+                        setpoints=fast_setpoints,
+                        nplc=nplc,
+                        measure_range=measure_range,
+                        auto_range=auto_range,
+                        settle_time=settle_time,
+                        repetitions=1,
+                    )
+                    fast_values = _normalize_fast_payload(fast_raw, len(setpoints), reps_i)
+                    engine_mode = "fast"
+                except Exception:
+                    logger.info("Fast IV path unavailable; falling back to point mode", exc_info=True)
+
+            if fast_values is not None:
+                try:
+                    for index, source_current_a in enumerate(setpoints, start=1):
+                        measured_voltage_v = float(fast_values[index - 1])
+                        measured_current_a = float(source_current_a)
+                        snap = ctx.helmholtz.snapshot()
+                        cur_temp, cur_field = _maybe_refresh_env()
+                        point = {
+                            "Time": ctx.data_mgr.elapsed_time(),
+                            "Channel": active_channel,
+                            "IV_Point": index,
+                            "IV_Source_Current": source_current_a * 1e3,
+                            "IV_Source_Voltage": NAN,
+                            "IV_Measured_Voltage": measured_voltage_v,
+                            "IV_Measured_Current": measured_current_a * 1e3,
+                            "Temp": cur_temp,
+                            "In-plane_Field": cur_field,
+                            "Helmholtz_Current": snap.get("Helmholtz_Current", start_helmholtz.get("Helmholtz_Current")),
+                            "Helmholtz_Field": snap.get("Helmholtz_Field", start_helmholtz.get("Helmholtz_Field")),
+                        }
+                        points.append(point)
+                        if on_point is not None:
+                            try:
+                                on_point(point)
+                            except Exception:
+                                logger.debug("IV on_point callback failed", exc_info=True)
+                except Exception:
+                    logger.info("Fast IV processing failed; falling back to point mode", exc_info=True)
+                    fast_values = None
+                    points.clear()
+            if fast_values is None:
+                for index, source_current_a in enumerate(setpoints, start=1):
+                    ctx.bus.execute(INST_KEITHLEY2450, "set_source_current_amps", source_current_a)
+                    if settle_time > 0:
+                        time.sleep(settle_time)
+                    measured_voltage_v, measured_voltage_std = ctx.bus.execute(
+                        INST_KEITHLEY2450,
+                        "measure_voltage",
+                        nplc=nplc,
+                        voltage=measure_range if measure_range is not None else 21.0,
+                        auto_range=auto_range,
+                        repetitions=repetitions,
+                    )
+                    measured_current_a = float(source_current_a)
+                    snap = ctx.helmholtz.snapshot()
+                    cur_temp, cur_field = _maybe_refresh_env()
+                    point = {
+                        "Time": ctx.data_mgr.elapsed_time(),
+                        "Channel": active_channel,
+                        "IV_Point": index,
+                        "IV_Source_Current": source_current_a * 1e3,
+                        "IV_Source_Voltage": NAN,
+                        "IV_Measured_Voltage": measured_voltage_v,
+                        "IV_Measured_Current": measured_current_a * 1e3,
+                        "Temp": cur_temp,
+                        "In-plane_Field": cur_field,
+                        "Helmholtz_Current": snap.get("Helmholtz_Current", start_helmholtz.get("Helmholtz_Current")),
+                        "Helmholtz_Field": snap.get("Helmholtz_Field", start_helmholtz.get("Helmholtz_Field")),
+                    }
+                    points.append(point)
+                    if on_point is not None:
+                        try:
+                            on_point(point)
+                        except Exception:
+                            logger.debug("IV on_point callback failed", exc_info=True)
 
         else:
             ctx.bus.execute(
@@ -807,40 +913,97 @@ def measure_iv_curve(
                 except Exception:
                     logger.debug("Could not pre-ramp IV source to start", exc_info=True)
 
-            for index, source_voltage_v in enumerate(setpoints, start=1):
-                ctx.bus.execute(INST_KEITHLEY2450, "set_source_voltage_volts", source_voltage_v)
-                if settle_time > 0:
-                    time.sleep(settle_time)
-                measured_current_a, measured_current_std = ctx.bus.execute(
-                    INST_KEITHLEY2450,
-                    "measure_current",
-                    nplc=nplc,
-                    current=measure_range if measure_range is not None else 1.05,
-                    auto_range=auto_range,
-                    repetitions=repetitions,
-                )
-                measured_voltage_v = float(source_voltage_v)
-                snap = ctx.helmholtz.snapshot()
-                cur_temp, cur_field = _maybe_refresh_env()
-                point = {
-                    "Time": ctx.data_mgr.elapsed_time(),
-                    "Channel": active_channel,
-                    "IV_Point": index,
-                    "IV_Source_Current": NAN,
-                    "IV_Source_Voltage": source_voltage_v,
-                    "IV_Measured_Voltage": measured_voltage_v,
-                    "IV_Measured_Current": measured_current_a * 1e3,
-                    "Temp": cur_temp,
-                    "In-plane_Field": cur_field,
-                    "Helmholtz_Current": snap.get("Helmholtz_Current", start_helmholtz.get("Helmholtz_Current")),
-                    "Helmholtz_Field": snap.get("Helmholtz_Field", start_helmholtz.get("Helmholtz_Field")),
-                }
-                points.append(point)
-                if on_point is not None:
-                    try:
-                        on_point(point)
-                    except Exception:
-                        logger.debug("IV on_point callback failed", exc_info=True)
+            fast_values = None
+            if setpoints:
+                try:
+                    reps_i = max(int(repetitions), 1)
+                    fast_setpoints = [float(sp) for sp in setpoints]
+                    if reps_i > 1:
+                        expanded = []
+                        for sp in fast_setpoints:
+                            expanded.extend([sp] * reps_i)
+                        fast_setpoints = expanded
+                    fast_raw = ctx.bus.execute(
+                        INST_KEITHLEY2450,
+                        "run_iv_sweep_fast",
+                        mode=source_mode,
+                        setpoints=fast_setpoints,
+                        nplc=nplc,
+                        measure_range=measure_range,
+                        auto_range=auto_range,
+                        settle_time=settle_time,
+                        repetitions=1,
+                    )
+                    fast_values = _normalize_fast_payload(fast_raw, len(setpoints), reps_i)
+                    engine_mode = "fast"
+                except Exception:
+                    logger.info("Fast IV path unavailable; falling back to point mode", exc_info=True)
+
+            if fast_values is not None:
+                try:
+                    for index, source_voltage_v in enumerate(setpoints, start=1):
+                        measured_current_a = float(fast_values[index - 1])
+                        measured_voltage_v = float(source_voltage_v)
+                        snap = ctx.helmholtz.snapshot()
+                        cur_temp, cur_field = _maybe_refresh_env()
+                        point = {
+                            "Time": ctx.data_mgr.elapsed_time(),
+                            "Channel": active_channel,
+                            "IV_Point": index,
+                            "IV_Source_Current": NAN,
+                            "IV_Source_Voltage": source_voltage_v,
+                            "IV_Measured_Voltage": measured_voltage_v,
+                            "IV_Measured_Current": measured_current_a * 1e3,
+                            "Temp": cur_temp,
+                            "In-plane_Field": cur_field,
+                            "Helmholtz_Current": snap.get("Helmholtz_Current", start_helmholtz.get("Helmholtz_Current")),
+                            "Helmholtz_Field": snap.get("Helmholtz_Field", start_helmholtz.get("Helmholtz_Field")),
+                        }
+                        points.append(point)
+                        if on_point is not None:
+                            try:
+                                on_point(point)
+                            except Exception:
+                                logger.debug("IV on_point callback failed", exc_info=True)
+                except Exception:
+                    logger.info("Fast IV processing failed; falling back to point mode", exc_info=True)
+                    fast_values = None
+                    points.clear()
+            if fast_values is None:
+                for index, source_voltage_v in enumerate(setpoints, start=1):
+                    ctx.bus.execute(INST_KEITHLEY2450, "set_source_voltage_volts", source_voltage_v)
+                    if settle_time > 0:
+                        time.sleep(settle_time)
+                    measured_current_a, measured_current_std = ctx.bus.execute(
+                        INST_KEITHLEY2450,
+                        "measure_current",
+                        nplc=nplc,
+                        current=measure_range if measure_range is not None else 1.05,
+                        auto_range=auto_range,
+                        repetitions=repetitions,
+                    )
+                    measured_voltage_v = float(source_voltage_v)
+                    snap = ctx.helmholtz.snapshot()
+                    cur_temp, cur_field = _maybe_refresh_env()
+                    point = {
+                        "Time": ctx.data_mgr.elapsed_time(),
+                        "Channel": active_channel,
+                        "IV_Point": index,
+                        "IV_Source_Current": NAN,
+                        "IV_Source_Voltage": source_voltage_v,
+                        "IV_Measured_Voltage": measured_voltage_v,
+                        "IV_Measured_Current": measured_current_a * 1e3,
+                        "Temp": cur_temp,
+                        "In-plane_Field": cur_field,
+                        "Helmholtz_Current": snap.get("Helmholtz_Current", start_helmholtz.get("Helmholtz_Current")),
+                        "Helmholtz_Field": snap.get("Helmholtz_Field", start_helmholtz.get("Helmholtz_Field")),
+                    }
+                    points.append(point)
+                    if on_point is not None:
+                        try:
+                            on_point(point)
+                        except Exception:
+                            logger.debug("IV on_point callback failed", exc_info=True)
 
     finally:
         # ramp_to_start: optional intermediate ramp from sweep end back to start.
@@ -890,6 +1053,7 @@ def measure_iv_curve(
         "mode": source_mode,
         "shape": normalized_shape,
         "point_count": len(points),
+        "engine": engine_mode,
         "points": points,
         "cleanup": {
             "ramped_to_start": cleanup_ramped_to_start,

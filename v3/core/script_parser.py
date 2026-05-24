@@ -206,7 +206,7 @@ ALLOWED_KWARGS: dict[str, set[str]] = {
         "current", "current_ma", "compliance", "nplc", "voltage_range", "settle_time", "repetitions",
     },
     "measure_iv_curve": {
-        "mode", "shape", "start", "start_ma", "min", "min_ma", "max", "max_ma", "iv_min", "iv_max", "stop", "stop_ma", "step", "step_ma", "source_range", "measure_range",
+        "mode", "shape", "start", "start_ma", "min", "min_ma", "max", "max_ma", "iv_min", "iv_max", "stop", "stop_ma", "step", "step_ma", "source_range", "source_range_ma", "measure_range", "measure_range_ma",
         "compliance", "nplc", "auto_range", "settle_time", "repetitions",
         "keep_output", "ramp_to_start", "reset_to_zero",
     },

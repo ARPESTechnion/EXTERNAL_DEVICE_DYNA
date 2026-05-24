@@ -336,6 +336,76 @@ continuous_measure_hall_field [current=I] [nplc=N] [compliance_v=V] [voltage_ran
     continuous_measure_hall_field nplc=1 filter_count=5
     continuous_measure_hall_field current=1.0 compliance_v=2 tbm=0.2
 
+measure_resistance [current=I | current_ma=I] [compliance=V] [nplc=N] [voltage_range=RANGE] [settle_time=S] [repetitions=N]
+  Description: Measure sample resistance using K2450 current source + voltage sense
+  Arguments (optional):
+    current=I         - Source current in A
+    current_ma=I      - Source current in mA (alias)
+    compliance=V      - Voltage compliance in V (default: 10)
+    nplc=N            - Integration time in power-line cycles (default: 1)
+    voltage_range=RANGE - Voltage measure range in V/mV or "auto" (default: auto)
+    settle_time=S     - Delay after sourcing current before read (seconds, default: 0)
+    repetitions=N     - Number of reads to average (integer >= 1, default: 1)
+  Notes:
+    - Either current or current_ma is required
+    - Uses fixed range when voltage_range is provided and auto when omitted/auto
+  Examples:
+    measure_resistance current=1e-3
+    measure_resistance current_ma=0.5 voltage_range=20mV compliance=0.05
+    measure_resistance current=5e-4 nplc=5 repetitions=3
+
+measure_iv_curve mode=<current|voltage> shape=<shape> start=<val> [min=<val> max=<val> | stop=<val>] step=<val> [...optional args...]
+  Description: Measure IV curve with K2450 using fast instrument-side sweep when available, with automatic fallback
+  Required arguments:
+    mode             - current or voltage
+    shape            - Sweep shape (see list below)
+    start            - Start setpoint (A for current mode, V for voltage mode)
+    step             - Step size (same units as start, non-zero)
+  Preferred sweep limits:
+    min + max        - Preferred; explicit lower/upper sweep bounds
+  Legacy sweep limits:
+    stop             - Used when min/max are omitted
+  Current-mode aliases:
+    start_ma, min_ma, max_ma, stop_ma, step_ma
+  Shape options:
+    start_min_max_start
+    start_max_min_start
+    start_min_start
+    start_max_start
+    single
+    return
+    loop (alias of start_min_max_start)
+    bidirectional (alias of start_min_max_start)
+  Optional arguments:
+    compliance       - V in current mode, A in voltage mode
+    nplc             - Integration time in power-line cycles
+    auto_range       - true/false for measurement autorange (default: true)
+    settle_time      - Source delay per point (seconds)
+    repetitions      - Per-point averaging count (integer >= 1)
+    keep_output      - true/false (default: false)
+    ramp_to_start    - true/false (default: true)
+    reset_to_zero    - true/false (default: true when ramp_to_start=true)
+  Mode-aware range options:
+    source_range     - current mode: source current range (A; supports uA/mA/A suffix)
+                      voltage mode: source voltage range (V; supports mV/V suffix)
+    source_range_ma  - alias for source current range in current mode
+    measure_range    - current mode: measured voltage range (V; supports mV/V suffix)
+                      voltage mode: measured current range (A; supports uA/mA/A suffix)
+    measure_range_ma - alias for measured current range in voltage mode
+  Range auto behavior:
+    - Omit source_range/measure_range to keep auto behavior
+    - source_range=auto and measure_range=auto are accepted
+  Validation rules:
+    - min must be smaller than max
+    - start must be larger than min and smaller than max
+  Runtime notes:
+    - Log reports point count, elapsed time, and engine mode (fast or point fallback)
+    - Cleanup/ramp status message is intentionally not printed in status log
+  Examples:
+    measure_iv_curve mode=current shape=start_min_max_start start_ma=0 min_ma=-1 max_ma=1 step_ma=0.1 auto_range=true
+    measure_iv_curve mode=current shape=start_max_start start=0 stop=1e-3 step=1e-4 source_range=1mA measure_range=0.2
+    measure_iv_curve mode=voltage shape=start_max_start start=0 stop=0.5 step=0.05 source_range=2 measure_range_ma=10 auto_range=false
+
 enable_hall_output [current=I] [compliance_v=V]
   Description: Enable Keithley2450 Hall source output
   Arguments (optional):

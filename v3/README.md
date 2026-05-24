@@ -252,6 +252,8 @@ The list below mirrors the parser command set in `v3/core/script_parser.py` (`VA
 - Hall:
   - `measure_hall_field`
   - `continuous_measure_hall_field`
+  - `measure_resistance`
+  - `measure_iv_curve`
   - `enable_hall_output`
   - `disable_hall_output`
 - LockIn measurement:
@@ -287,7 +289,7 @@ The list below mirrors the parser command set in `v3/core/script_parser.py` (`VA
 
 Command categories:
 - Setpoints: `set_dyna_temp`, `set_dyna_field`, `set_helmholtz_field`
-- Measurements: `measure_hall_field`, `continuous_measure_hall_field`, `measure_lockin`, `continuous_measure_lockin`, `full_measure`, `continuous_full_measure`
+- Measurements: `measure_hall_field`, `continuous_measure_hall_field`, `measure_resistance`, `measure_iv_curve`, `measure_lockin`, `continuous_measure_lockin`, `full_measure`, `continuous_full_measure`
 - Hall source control: `enable_hall_output`, `disable_hall_output`
 - LockIn utilities: `auto_gain`, `auto_phase`, `auto_reserve`, `set_lockin_*`
 - Wait/coordination: `wait_for ...`, `time_sweep ...`, `for_loop ...`
@@ -307,6 +309,19 @@ LockIn sensitivity utility:
 - `set_lockin_sensitivity <index>` sets SR830 sensitivity directly.
 - Valid `index` values are integers `0..26`.
 - Command updates the LockIn GUI sensitivity selector and applies immediately to the instrument.
+
+IV command updates (latest):
+- `measure_iv_curve` supports preferred syntax `start + min + max + step` and fallback `start + stop + step`.
+- Current-mode aliases are supported: `start_ma`, `min_ma`, `max_ma`, `stop_ma`, `step_ma`.
+- Range kwargs are mode-aware:
+  - `source_range`: current mode uses current range; voltage mode uses voltage range.
+  - `measure_range`: current mode uses voltage sense range; voltage mode uses current sense range.
+- Extra aliases are supported for current ranges:
+  - `source_range_ma` (current mode)
+  - `measure_range_ma` (voltage mode)
+- Bounds validation is enforced: `min < start < max` and `min < max`.
+- IV run logging reports point count, elapsed time, and engine mode (`fast` or `point` fallback).
+- Cleanup/ramp status text is intentionally omitted from the Hall status log.
 
 Example:
 

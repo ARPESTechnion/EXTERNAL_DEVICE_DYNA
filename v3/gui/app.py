@@ -666,6 +666,11 @@ class MeasureApp:
             inst.query("*IDN?")
         inst.connect()
         inst.reset()
+        for _cmd in (":SOUR:FUNC CURR", ":SENS:FUNC 'VOLT'", ":SENS:VOLT:RANG 21", ":SENS:VOLT:RANG:AUTO ON"):
+            try:
+                inst.write(_cmd)
+            except Exception:
+                logger.debug("K2450 init command failed: %s", _cmd, exc_info=True)
         self.bus.connect(INST_KEITHLEY2450, inst)
         return True
 
@@ -673,9 +678,15 @@ class MeasureApp:
         old = self.bus.disconnect(INST_KEITHLEY2450)
         if old is not None:
             try:
-                old.disable_source()
-                old.shutdown()
-                old.disconnect()
+                if hasattr(old, "disconnect"):
+                    old.disconnect()
+                else:
+                    for method in ("disable_source", "shutdown", "close"):
+                        if hasattr(old, method):
+                            try:
+                                getattr(old, method)()
+                            except Exception:
+                                pass
             except Exception:  # noqa: BLE001
                 logger.exception("Hall cleanup failed")
 
