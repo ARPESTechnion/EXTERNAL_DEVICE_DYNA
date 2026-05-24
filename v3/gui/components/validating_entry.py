@@ -29,6 +29,26 @@ def make_float_validator(min_value: float | None = None, max_value: float | None
     return _validate
 
 
+def make_int_validator(min_value: int | None = None, max_value: int | None = None, *, allow_empty: bool = False) -> Validator:
+    """Create an integer-range validator for entry values."""
+
+    def _validate(raw: str) -> bool:
+        text = raw.strip()
+        if text == "":
+            return allow_empty
+        try:
+            value = int(text, 10)
+        except Exception:
+            return False
+        if min_value is not None and value < min_value:
+            return False
+        if max_value is not None and value > max_value:
+            return False
+        return True
+
+    return _validate
+
+
 class ValidatingEntry(tk.Entry):
     """Entry that highlights invalid values without blocking typing."""
 

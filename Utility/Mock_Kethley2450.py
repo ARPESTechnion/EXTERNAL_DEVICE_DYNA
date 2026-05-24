@@ -23,6 +23,7 @@ class MockKeithley2450:
         self._auto_range = True
         self._voltage_filter_count = 10
         self._wires = 2
+        self._load_resistance_ohm = 1200.0
 
     @property
     def source_mode(self):
@@ -44,16 +45,16 @@ class MockKeithley2450:
         # Simulate measurement
         if self._source_mode == 'current':
             return self._source_current + np.random.normal(0, 1e-6)
-        else:
-            return np.random.normal(0, 1e-6)
+        if abs(self._load_resistance_ohm) > 1e-12:
+            return (self._source_voltage / self._load_resistance_ohm) + np.random.normal(0, 1e-6)
+        return np.random.normal(0, 1e-6)
 
     @property
     def voltage(self):
         # Simulate measurement
         if self._source_mode == 'voltage':
             return self._source_voltage + np.random.normal(0, 1e-3)
-        else:
-            return np.random.normal(0, 1e-3)
+        return (self._source_current * self._load_resistance_ohm) + np.random.normal(0, 1e-3)
 
     @property
     def source_current(self):
@@ -128,13 +129,18 @@ class MockKeithley2450:
         acquisition_time_s = max(float(nplc), 0.0) * 0.02 * reps
         if acquisition_time_s > 0:
             time.sleep(acquisition_time_s)
-        # Simulate measurement
+
+        if self.source_mode == 'current':
+            base_voltage = self._source_current * self._load_resistance_ohm
+        else:
+            base_voltage = self._source_voltage
+
         sigma = max(abs(self._voltage_range), 1e-6) * 0.01
         if reps <= 1:
-            value = np.random.normal(self._source_voltage if self.source_mode == 'voltage' else 0, sigma)
+            value = np.random.normal(base_voltage, sigma)
             return (value, 0.0)
         measurements = [
-            np.random.normal(self._source_voltage if self.source_mode == 'voltage' else 0, sigma)
+            np.random.normal(base_voltage, sigma)
             for _ in range(reps)
         ]
         avg_voltage = float(np.mean(measurements))
@@ -150,17 +156,48 @@ class MockKeithley2450:
         acquisition_time_s = max(float(nplc), 0.0) * 0.02 * reps
         if acquisition_time_s > 0:
             time.sleep(acquisition_time_s)
+
+        if self.source_mode == 'voltage':
+            if abs(self._load_resistance_ohm) > 1e-12:
+                base_current = self._source_voltage / self._load_resistance_ohm
+            else:
+                base_current = 0.0
+        else:
+            base_current = self._source_current
+
         sigma = max(abs(self._current_range), 1e-9) * 0.01
         if reps <= 1:
-            value = np.random.normal(self._source_current if self.source_mode == 'current' else 0, sigma)
+            value = np.random.normal(base_current, sigma)
             return (value, 0.0)
         measurements = [
-            np.random.normal(self._source_current if self.source_mode == 'current' else 0, sigma)
+            np.random.normal(base_current, sigma)
             for _ in range(reps)
         ]
         avg_current = float(np.mean(measurements))
         std_current = float(np.std(measurements, ddof=1)) if len(measurements) > 1 else 0.0
         return (avg_current, std_current)
+
+    def measure_resistance(self, nplc=1, resistance=1.05, auto_range=True, repetitions=1):
+        current = self._source_current
+        if abs(current) < 1e-15:
+            current = 1e-3
+        measured_voltage, voltage_std = self.measure_voltage(
+            nplc=nplc,
+            voltage=resistance,
+            auto_range=auto_range,
+            repetitions=repetitions,
+        )
+        resistance_value = measured_voltage / current
+        resistance_std = abs(voltage_std / current)
+        return float(resistance_value), float(resistance_std)
+
+    def set_source_current_amps(self, amps):
+        self.source_mode = 'current'
+        self._source_current = float(amps)
+
+    def set_source_voltage_volts(self, volts):
+        self.source_mode = 'voltage'
+        self._source_voltage = float(volts)
 
     def ramp_to_current(self, target_current, steps=30, pause=20e-3):
         currents = np.linspace(self._source_current, target_current, steps)

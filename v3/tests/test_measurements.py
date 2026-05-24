@@ -23,6 +23,8 @@ from v3.core.measurements import (
     _safe_div,
     disable_hall_output,
     enable_hall_output,
+    measure_iv_curve,
+    measure_resistance,
     measure_hall,
     measure_hall_continuous,
     measure_lockin,
@@ -85,9 +87,12 @@ def _make_context(
     if hall_result is None:
         hall_result = (0.001, 0.0001)
     mock_k2450.measure_voltage.return_value = hall_result
+    mock_k2450.measure_resistance.return_value = (123.4, 0.5)
     mock_k2450.source_enabled = False
     mock_k2450._source_enabled = False
     mock_k2450.is_mock_hall = False
+    mock_k2450.set_source_current_amps.side_effect = lambda value: setattr(mock_k2450, "current_setpoint", value)
+    mock_k2450.set_source_voltage_volts.side_effect = lambda value: setattr(mock_k2450, "voltage_setpoint", value)
 
     def _enable_source_side_effect(*_args, **_kwargs):
         mock_k2450.source_enabled = True
@@ -255,6 +260,103 @@ class TestMeasureLockinContinuous(unittest.TestCase):
         )
         events = ctx.ui_bus.drain()
         self.assertAlmostEqual(events[W_LOCKIN_OUTPUT_VOLTAGE], 1.0)
+
+
+class TestMeasureResistance(unittest.TestCase):
+    def test_basic_resistance_measurement(self):
+        ctx = _make_context()
+        ctx.bus.get_raw(INST_KEITHLEY2450).measure_voltage.return_value = (1.2, 0.06)
+        result = measure_resistance(
+            ctx,
+            current=1e-3,
+            compliance=5.0,
+            nplc=1.0,
+            voltage_range=20.0,
+            auto_range=False,
+            settle_time=0.0,
+            repetitions=1,
+        )
+
+        self.assertIn("Sample_Resistance", result)
+        self.assertIn("Sample_Resistance_Error", result)
+        self.assertAlmostEqual(result["Sample_Resistance"], 1200.0)
+        self.assertAlmostEqual(result["Sample_Resistance_Error"], 60.0)
+        self.assertAlmostEqual(result["IV_Source_Current"], 1.0)
+        self.assertAlmostEqual(result["IV_Measured_Voltage"], 1.2)
+
+
+class TestMeasureIvCurve(unittest.TestCase):
+    def test_current_mode_iv_curve(self):
+        ctx = _make_context()
+        ctx.bus.get_raw(INST_KEITHLEY2450).measure_voltage.side_effect = [(1.0, 0.1), (2.0, 0.2)]
+
+        result = measure_iv_curve(
+            ctx,
+            mode="current",
+            shape="single",
+            start=1e-3,
+            stop=2e-3,
+            step=1e-3,
+            nplc=1.0,
+            repetitions=1,
+        )
+
+        self.assertEqual(result["mode"], "source_current")
+        self.assertEqual(result["point_count"], 2)
+        self.assertEqual(len(result["points"]), 2)
+        self.assertAlmostEqual(result["points"][0]["IV_Point"], 1)
+        self.assertAlmostEqual(result["points"][0]["IV_Source_Current"], 1.0)
+        self.assertAlmostEqual(result["points"][0]["IV_Measured_Voltage"], 1.0)
+        self.assertNotIn("IV_Resistance", result["points"][0])
+
+    def test_voltage_mode_iv_curve(self):
+        ctx = _make_context()
+        ctx.bus.get_raw(INST_KEITHLEY2450).measure_current.side_effect = [(1e-3, 1e-4), (2e-3, 2e-4)]
+
+        result = measure_iv_curve(
+            ctx,
+            mode="voltage",
+            shape="single",
+            start=0.1,
+            stop=0.2,
+            step=0.1,
+            nplc=1.0,
+            repetitions=1,
+        )
+
+        self.assertEqual(result["mode"], "source_voltage")
+        self.assertEqual(result["point_count"], 2)
+        self.assertAlmostEqual(result["points"][0]["IV_Point"], 1)
+        self.assertAlmostEqual(result["points"][0]["IV_Source_Voltage"], 0.1)
+        self.assertAlmostEqual(result["points"][0]["IV_Measured_Current"], 1.0)
+        self.assertNotIn("IV_Resistance", result["points"][0])
+
+    def test_return_shape_iv_curve(self):
+        ctx = _make_context()
+        mock_k2450 = ctx.bus.get_raw(INST_KEITHLEY2450)
+        mock_k2450.measure_voltage.side_effect = [
+            (0.0, 0.0),
+            (1.0, 0.0),
+            (2.0, 0.0),
+            (1.0, 0.0),
+            (0.0, 0.0),
+        ]
+
+        result = measure_iv_curve(
+            ctx,
+            mode="current",
+            shape="return",
+            start=0.0,
+            stop=2e-3,
+            step=1e-3,
+            nplc=1.0,
+            repetitions=1,
+        )
+
+        self.assertEqual(result["shape"], "return")
+        self.assertEqual(result["point_count"], 5)
+        currents = [point["IV_Source_Current"] for point in result["points"]]
+        self.assertEqual(currents, [0.0, 1.0, 2.0, 1.0, 0.0])
 
     def test_continuous_measure_disables_excitation_management_and_settling_wait(self):
         ctx = _make_context()

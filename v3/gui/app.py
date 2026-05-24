@@ -490,8 +490,8 @@ class MeasureApp:
             data_mgr=self.data_mgr,
             helmholtz=self.helmholtz,
             calibration=self.calibration,
-            get_temp=lambda: self.current_temp or float("nan"),
-            get_ppms_field=lambda: self.current_inplane_field or float("nan"),
+            get_temp=lambda: float("nan") if self.current_temp is None else self.current_temp,
+            get_ppms_field=lambda: float("nan") if self.current_inplane_field is None else self.current_inplane_field,
             get_active_channel=lambda: self.active_channel,
         )
 
@@ -728,7 +728,7 @@ class MeasureApp:
     def _connect_switch(self) -> bool:
         backend = str(SWITCH_BACKEND).strip().lower()
 
-        if backend == "keithley7001":
+        if backend in {"keithley7001", "keithley2001"}:
             if self.USE_MOCKUP:
                 from Utility.Keithley7001 import MockKeithley7001 as SwitchDriver
                 inst = SwitchDriver()
@@ -747,7 +747,7 @@ class MeasureApp:
         else:
             raise ValueError(
                 f"Unsupported switch backend '{SWITCH_BACKEND}'. "
-                "Use 'my_switch' or 'keithley7001'."
+                "Use 'my_switch', 'keithley7001', or 'keithley2001'."
             )
 
         inst.connect()

@@ -25,6 +25,7 @@ from v3.core.constants import (
     INST_KEITHLEY2450,
     INST_LOCKIN,
     INST_SWITCH,
+    SWITCH_PIN_MAX,
 )
 from v3.core.data_manager import DataManager
 from v3.core.helmholtz_controller import HelmholtzController
@@ -297,7 +298,7 @@ def measure_lockin(
             frequency = NAN
 
     # Determine active channel
-    active_channel = ctx.get_active_channel()
+    active_channel = ctx.get_active_channel() or "N/A"
 
     # Build data point
     data_point: dict[str, Any] = {
@@ -428,7 +429,7 @@ def measure_lockin_continuous(
         except Exception:
             frequency = NAN
 
-    active_channel = ctx.get_active_channel()
+    active_channel = ctx.get_active_channel() or "N/A"
 
     data_point: dict[str, Any] = {
         "Time": ctx.data_mgr.elapsed_time(),
@@ -455,6 +456,450 @@ def measure_lockin_continuous(
 
     ctx.ui_bus.post(W_LED_LOCKIN, False)
     return data_point
+
+
+def _build_linear_segment(start: float, stop: float, step_abs: float) -> list[float]:
+    """Build an inclusive linear segment from start to stop."""
+    start_f = float(start)
+    stop_f = float(stop)
+    if abs(stop_f - start_f) < 1e-15:
+        return [start_f]
+
+    signed_step = abs(step_abs) if stop_f >= start_f else -abs(step_abs)
+    points = [start_f]
+    current = start_f
+    tol = abs(signed_step) * 1e-12
+    while True:
+        nxt = current + signed_step
+        if signed_step > 0:
+            if nxt >= stop_f - tol:
+                points.append(stop_f)
+                break
+        else:
+            if nxt <= stop_f + tol:
+                points.append(stop_f)
+                break
+        points.append(float(nxt))
+        current = nxt
+    return points
+
+
+def _build_iv_setpoints(
+    start: float,
+    stop: float,
+    step: float,
+    shape: str = "start_max_start",
+    iv_min: float | None = None,
+    iv_max: float | None = None,
+) -> list[float]:
+    """Build IV setpoints for the requested sweep shape.
+
+    When *iv_min* and *iv_max* are provided they are used directly as the lower
+    and upper sweep limits, enabling asymmetric sweeps (e.g. start=0, min=-1 mA,
+    max=+1 mA).  When omitted, they are derived from min/max of start and stop.
+    """
+    start_f = float(start)
+    stop_f = float(stop)
+    step_f = float(step)
+    if abs(step_f) < 1e-15:
+        raise ValueError("IV step must be non-zero")
+
+    normalized_shape = str(shape).strip().lower()
+    aliases = {
+        "loop": "start_min_max_start",
+        "bidirectional": "start_min_max_start",
+        "start->min->max->start": "start_min_max_start",
+        "start->max->min->start": "start_max_min_start",
+        "start->min->start": "start_min_start",
+        "start->max->start": "start_max_start",
+    }
+    normalized_shape = aliases.get(normalized_shape, normalized_shape)
+    allowed = {
+        "single",
+        "return",
+        "start_min_max_start",
+        "start_max_min_start",
+        "start_min_start",
+        "start_max_start",
+    }
+    if normalized_shape not in allowed:
+        raise ValueError(
+            "shape must be one of: start_min_max_start, start_max_min_start, start_min_start, start_max_start"
+        )
+
+    # Use explicit min/max when provided (supports asymmetric sweeps).
+    actual_min = iv_min if iv_min is not None else min(start_f, stop_f)
+    actual_max = iv_max if iv_max is not None else max(start_f, stop_f)
+
+    if normalized_shape == "single":
+        targets = [start_f, stop_f]
+    elif normalized_shape == "return":
+        targets = [start_f, stop_f, start_f]
+    elif normalized_shape == "start_min_max_start":
+        targets = [start_f, actual_min, actual_max, start_f]
+    elif normalized_shape == "start_max_min_start":
+        targets = [start_f, actual_max, actual_min, start_f]
+    elif normalized_shape == "start_min_start":
+        targets = [start_f, actual_min, start_f]
+    else:
+        targets = [start_f, actual_max, start_f]
+
+    points: list[float] = [targets[0]]
+    for target in targets[1:]:
+        segment = _build_linear_segment(points[-1], target, abs(step_f))
+        if len(segment) > 1:
+            points.extend(segment[1:])
+    return points
+
+
+def measure_resistance(
+    ctx: MeasurementContext,
+    *,
+    current: float = 1e-3,
+    compliance: float = 10.0,
+    nplc: float = 1.0,
+    voltage_range: float | None = None,
+    auto_range: bool = True,
+    settle_time: float = 0.0,
+    repetitions: int = 1,
+) -> dict[str, Any]:
+    """Measure sample resistance by sourcing current and sensing voltage."""
+    current_a = float(current)
+    if abs(current_a) < 1e-15:
+        raise ValueError("current must be non-zero")
+
+    compliance_v = float(compliance)
+    nplc_f = float(nplc)
+    reps = max(int(repetitions), 1)
+    active_channel = ctx.get_active_channel()
+
+    if not bool(auto_range) and voltage_range is not None:
+        fixed_v_range = abs(float(voltage_range))
+        if fixed_v_range > 0.0 and compliance_v > fixed_v_range:
+            logger.info(
+                "Resistance: clamping compliance from %.6g V to fixed measure range %.6g V",
+                compliance_v,
+                fixed_v_range,
+            )
+            compliance_v = fixed_v_range
+
+    start_temp = ctx.get_temp()
+    start_field = ctx.get_ppms_field()
+    start_helmholtz = ctx.helmholtz.snapshot()
+
+    try:
+        source_range = max(abs(current_a) * 1.2, _KEITHLEY_CURRENT_RES_A)
+        ctx.bus.execute(
+            INST_KEITHLEY2450,
+            "apply_current",
+            current_range=source_range,
+            compliance_voltage=compliance_v,
+        )
+        ctx.bus.execute(INST_KEITHLEY2450, "enable_source")
+        ctx.bus.execute(INST_KEITHLEY2450, "set_source_current_amps", current_a)
+        if settle_time > 0:
+            time.sleep(float(settle_time))
+
+        measured_voltage, voltage_std = ctx.bus.execute(
+            INST_KEITHLEY2450,
+            "measure_voltage",
+            nplc=nplc_f,
+            voltage=21.0 if voltage_range is None else float(voltage_range),
+            auto_range=bool(auto_range),
+            repetitions=reps,
+        )
+    finally:
+        try:
+            ctx.bus.execute(INST_KEITHLEY2450, "set_source_current_amps", 0.0)
+        except Exception:
+            logger.debug("Could not reset resistance source current", exc_info=True)
+        try:
+            ctx.bus.execute(INST_KEITHLEY2450, "disable_source")
+        except Exception:
+            logger.debug("Could not disable resistance source", exc_info=True)
+
+    measured_resistance = _safe_div(float(measured_voltage), current_a)
+    resistance_std = abs(_safe_div(float(voltage_std), current_a))
+
+    end_temp = ctx.get_temp()
+    end_field = ctx.get_ppms_field()
+    end_helmholtz = ctx.helmholtz.snapshot()
+
+    avg_temp = _avg_or_nan(start_temp, end_temp)
+    avg_ppms_field = _avg_or_nan(start_field, end_field)
+    avg_helmholtz_current = _avg_or_nan(
+        start_helmholtz.get("Helmholtz_Current"),
+        end_helmholtz.get("Helmholtz_Current"),
+    )
+    avg_helmholtz_field = _avg_or_nan(
+        start_helmholtz.get("Helmholtz_Field"),
+        end_helmholtz.get("Helmholtz_Field"),
+    )
+
+    return {
+        "Time": ctx.data_mgr.elapsed_time(),
+        "Channel": active_channel,
+        "IV_Source_Current": current_a * 1e3,
+        "IV_Measured_Voltage": float(measured_voltage),
+        "Sample_Resistance": measured_resistance,
+        "Sample_Resistance_Error": resistance_std,
+        "Helmholtz_Current": avg_helmholtz_current,
+        "Helmholtz_Field": avg_helmholtz_field,
+        "Temp": avg_temp,
+        "In-plane_Field": avg_ppms_field,
+    }
+
+
+def measure_iv_curve(
+    ctx: MeasurementContext,
+    *,
+    mode: str = "current",
+    shape: str = "start_max_start",
+    start: float,
+    stop: float | None = None,
+    step: float,
+    source_range: float | None = None,
+    measure_range: float | None = None,
+    compliance: float | None = None,
+    nplc: float = 1.0,
+    auto_range: bool = True,
+    settle_time: float = 0.0,
+    repetitions: int = 1,
+    keep_output: bool = False,
+    reset_to_zero: bool = True,
+    ramp_to_start: bool = True,
+    iv_min: float | None = None,
+    iv_max: float | None = None,
+    env_sample_interval: float = 0.0,
+    on_point: Callable[[dict[str, Any]], None] | None = None,
+) -> dict[str, Any]:
+    """Measure a full IV curve as a list of per-point data rows."""
+    normalized_mode = str(mode).strip().lower()
+    if normalized_mode in {"current", "source_current", "i"}:
+        source_mode = "source_current"
+    elif normalized_mode in {"voltage", "source_voltage", "v"}:
+        source_mode = "source_voltage"
+    else:
+        raise ValueError("mode must be 'current' or 'voltage'")
+
+    normalized_shape = str(shape).strip().lower()
+
+    sweep_stop = stop
+    if sweep_stop is None:
+        if iv_max is not None:
+            sweep_stop = iv_max
+        elif iv_min is not None:
+            sweep_stop = iv_min
+        else:
+            sweep_stop = start
+
+    setpoints = _build_iv_setpoints(start, sweep_stop, step, shape=normalized_shape, iv_min=iv_min, iv_max=iv_max)
+    if compliance is None:
+        compliance = 10.0 if source_mode == "source_current" else 0.1
+    compliance_eff = float(compliance)
+    if not bool(auto_range) and measure_range is not None:
+        fixed_measure_range = abs(float(measure_range))
+        if fixed_measure_range > 0.0 and compliance_eff > fixed_measure_range:
+            logger.info(
+                "IV: clamping compliance from %.6g to fixed measure range %.6g",
+                compliance_eff,
+                fixed_measure_range,
+            )
+            compliance_eff = fixed_measure_range
+
+    start_helmholtz = ctx.helmholtz.snapshot()
+    active_channel = ctx.get_active_channel()
+
+    points: list[dict[str, Any]] = []
+    _env_last_time: float = -1.0  # forces a sample on the very first point
+    _last_temp: float = ctx.get_temp()
+    _last_field: float = ctx.get_ppms_field()
+    # Keep ramp cadence aligned with sweep cadence: one ramp step takes about
+    # the same time as one measured IV point (NPLC integration + settle time).
+    nplc_f = max(0.0, float(nplc))
+    reps_i = max(1, int(repetitions))
+    mains_hz = 50.0
+    ramp_step_pause = max(0.0, float(settle_time) + (nplc_f * reps_i / mains_hz))
+    cleanup_ramped_to_start = False
+    cleanup_reset_to_zero = False
+    cleanup_source_disabled = False
+
+    def _maybe_refresh_env() -> tuple[float, float]:
+        nonlocal _env_last_time, _last_temp, _last_field
+        now = time.perf_counter()
+        if env_sample_interval <= 0.0 or (now - _env_last_time) >= env_sample_interval:
+            _last_temp = ctx.get_temp()
+            _last_field = ctx.get_ppms_field()
+            _env_last_time = now
+        return _last_temp, _last_field
+
+    try:
+        if source_mode == "source_current":
+            ctx.bus.execute(
+                INST_KEITHLEY2450,
+                "apply_current",
+                current_range=source_range,
+                compliance_voltage=compliance_eff,
+            )
+            ctx.bus.execute(INST_KEITHLEY2450, "enable_source")
+
+            # Pre-sweep ramp: 0 → start (safe ramp before the measured sweep begins)
+            if ramp_to_start and abs(float(start)) > abs(float(step)) * 0.5:
+                try:
+                    pre_ramp = _build_linear_segment(0.0, float(start), abs(float(step)))
+                    for sp in pre_ramp[1:]:  # skip 0, which is the source's default-on state
+                        ctx.bus.execute(INST_KEITHLEY2450, "set_source_current_amps", sp)
+                        time.sleep(ramp_step_pause)
+                except Exception:
+                    logger.debug("Could not pre-ramp IV source to start", exc_info=True)
+
+            for index, source_current_a in enumerate(setpoints, start=1):
+                ctx.bus.execute(INST_KEITHLEY2450, "set_source_current_amps", source_current_a)
+                if settle_time > 0:
+                    time.sleep(settle_time)
+                measured_voltage_v, measured_voltage_std = ctx.bus.execute(
+                    INST_KEITHLEY2450,
+                    "measure_voltage",
+                    nplc=nplc,
+                    voltage=measure_range if measure_range is not None else 21.0,
+                    auto_range=auto_range,
+                    repetitions=repetitions,
+                )
+                measured_current_a = float(source_current_a)
+                snap = ctx.helmholtz.snapshot()
+                cur_temp, cur_field = _maybe_refresh_env()
+                point = {
+                    "Time": ctx.data_mgr.elapsed_time(),
+                    "Channel": active_channel,
+                    "IV_Point": index,
+                    "IV_Source_Current": source_current_a * 1e3,
+                    "IV_Source_Voltage": NAN,
+                    "IV_Measured_Voltage": measured_voltage_v,
+                    "IV_Measured_Current": measured_current_a * 1e3,
+                    "Temp": cur_temp,
+                    "In-plane_Field": cur_field,
+                    "Helmholtz_Current": snap.get("Helmholtz_Current", start_helmholtz.get("Helmholtz_Current")),
+                    "Helmholtz_Field": snap.get("Helmholtz_Field", start_helmholtz.get("Helmholtz_Field")),
+                }
+                points.append(point)
+                if on_point is not None:
+                    try:
+                        on_point(point)
+                    except Exception:
+                        logger.debug("IV on_point callback failed", exc_info=True)
+
+        else:
+            ctx.bus.execute(
+                INST_KEITHLEY2450,
+                "apply_voltage",
+                voltage_range=source_range,
+                compliance_current=compliance_eff,
+            )
+            ctx.bus.execute(INST_KEITHLEY2450, "enable_source")
+
+            # Pre-sweep ramp: 0 → start (safe ramp before the measured sweep begins)
+            if ramp_to_start and abs(float(start)) > abs(float(step)) * 0.5:
+                try:
+                    pre_ramp = _build_linear_segment(0.0, float(start), abs(float(step)))
+                    for sp in pre_ramp[1:]:
+                        ctx.bus.execute(INST_KEITHLEY2450, "set_source_voltage_volts", sp)
+                        time.sleep(ramp_step_pause)
+                except Exception:
+                    logger.debug("Could not pre-ramp IV source to start", exc_info=True)
+
+            for index, source_voltage_v in enumerate(setpoints, start=1):
+                ctx.bus.execute(INST_KEITHLEY2450, "set_source_voltage_volts", source_voltage_v)
+                if settle_time > 0:
+                    time.sleep(settle_time)
+                measured_current_a, measured_current_std = ctx.bus.execute(
+                    INST_KEITHLEY2450,
+                    "measure_current",
+                    nplc=nplc,
+                    current=measure_range if measure_range is not None else 1.05,
+                    auto_range=auto_range,
+                    repetitions=repetitions,
+                )
+                measured_voltage_v = float(source_voltage_v)
+                snap = ctx.helmholtz.snapshot()
+                cur_temp, cur_field = _maybe_refresh_env()
+                point = {
+                    "Time": ctx.data_mgr.elapsed_time(),
+                    "Channel": active_channel,
+                    "IV_Point": index,
+                    "IV_Source_Current": NAN,
+                    "IV_Source_Voltage": source_voltage_v,
+                    "IV_Measured_Voltage": measured_voltage_v,
+                    "IV_Measured_Current": measured_current_a * 1e3,
+                    "Temp": cur_temp,
+                    "In-plane_Field": cur_field,
+                    "Helmholtz_Current": snap.get("Helmholtz_Current", start_helmholtz.get("Helmholtz_Current")),
+                    "Helmholtz_Field": snap.get("Helmholtz_Field", start_helmholtz.get("Helmholtz_Field")),
+                }
+                points.append(point)
+                if on_point is not None:
+                    try:
+                        on_point(point)
+                    except Exception:
+                        logger.debug("IV on_point callback failed", exc_info=True)
+
+    finally:
+        # ramp_to_start: optional intermediate ramp from sweep end back to start.
+        # reset_to_zero: final source level after sweep completion.
+        final_setpoint = setpoints[-1] if setpoints else float(start)
+        if ramp_to_start and setpoints:
+            last_sp = setpoints[-1]
+            if abs(last_sp - start) > abs(float(step)) * 0.5:
+                try:
+                    ramp_pts = _build_linear_segment(last_sp, start, abs(float(step)))
+                    for sp in ramp_pts[1:]:
+                        if source_mode == "source_current":
+                            ctx.bus.execute(INST_KEITHLEY2450, "set_source_current_amps", sp)
+                        else:
+                            ctx.bus.execute(INST_KEITHLEY2450, "set_source_voltage_volts", sp)
+                        time.sleep(ramp_step_pause)
+                    final_setpoint = float(start)
+                    cleanup_ramped_to_start = True
+                except Exception:
+                    logger.debug("Could not ramp IV source to start", exc_info=True)
+        if reset_to_zero:
+            try:
+                if abs(final_setpoint) > abs(float(step)) * 0.5:
+                    zero_ramp_pts = _build_linear_segment(final_setpoint, 0.0, abs(float(step)))
+                    for sp in zero_ramp_pts[1:]:
+                        if source_mode == "source_current":
+                            ctx.bus.execute(INST_KEITHLEY2450, "set_source_current_amps", sp)
+                        else:
+                            ctx.bus.execute(INST_KEITHLEY2450, "set_source_voltage_volts", sp)
+                        time.sleep(ramp_step_pause)
+                else:
+                    if source_mode == "source_current":
+                        ctx.bus.execute(INST_KEITHLEY2450, "set_source_current_amps", 0.0)
+                    else:
+                        ctx.bus.execute(INST_KEITHLEY2450, "set_source_voltage_volts", 0.0)
+                cleanup_reset_to_zero = True
+            except Exception:
+                logger.debug("Could not reset IV source to zero", exc_info=True)
+        if not keep_output:
+            try:
+                ctx.bus.execute(INST_KEITHLEY2450, "disable_source")
+                cleanup_source_disabled = True
+            except Exception:
+                logger.debug("Could not disable IV source", exc_info=True)
+
+    return {
+        "mode": source_mode,
+        "shape": normalized_shape,
+        "point_count": len(points),
+        "points": points,
+        "cleanup": {
+            "ramped_to_start": cleanup_ramped_to_start,
+            "reset_to_zero": cleanup_reset_to_zero,
+            "source_disabled": cleanup_source_disabled,
+            "keep_output": bool(keep_output),
+            "requested_reset_to_zero": bool(reset_to_zero),
+            "requested_ramp_to_start": bool(ramp_to_start),
+        },
+    }
 
 
 # ============================================================================
@@ -1073,8 +1518,8 @@ def configure_channel(
     # Validate
     nums = [ip, vp, vm, im]
     for n in nums:
-        if n < 1 or n > 8:
-            raise ValueError(f"Routing number {n} out of range (1-8)")
+        if n < 1 or n > SWITCH_PIN_MAX:
+            raise ValueError(f"Routing number {n} out of range (1-{SWITCH_PIN_MAX})")
     if len(nums) != len(set(nums)):
         raise ValueError(f"Duplicate routing numbers: {nums}")
 

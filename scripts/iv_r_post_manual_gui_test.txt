@@ -1,0 +1,31 @@
+# Post-manual GUI validation script: Resistance + IV
+#
+# Notes:
+# - Script supports both A and mA units for current parameters.
+# - This script intentionally uses manual measure range = 0.02 V (20 mV)
+#   to verify manual range handling.
+
+initialize_data_file filename=IV_R_post_manual_gui_test.csv append=false
+add_note Starting post-manual IV/R validation
+
+# ------------------------------------------------------------------
+# Resistance checks (manual 20 mV range, then auto)
+# ------------------------------------------------------------------
+add_note R test 1 manual range 20mV
+measure_resistance current_ma=0.5 compliance=0.02 nplc=0.5 voltage_range=0.02 settle_time=0.02 repetitions=2
+
+add_note R test 2 auto range
+measure_resistance current_ma=0.5 compliance=2.0 voltage_range=auto nplc=0.5 settle_time=0.02 repetitions=2
+
+# ------------------------------------------------------------------
+# IV checks (current mode)
+# Uses start/min/max/step convention.
+# ramp_to_start=true keeps ramp behavior enabled in script path.
+# ------------------------------------------------------------------
+add_note IV test 1 manual measure range 20mV
+measure_iv_curve mode=current start_ma=0.0 min_ma=-0.01 max_ma=0.01 step_ma=0.00004 shape=start_max_min_start measure_range=0.02 compliance=0.02 nplc=0.01 auto_range=false settle_time=0 repetitions=1 keep_output=false ramp_to_start=true
+
+add_note IV test 2 auto measure range
+measure_iv_curve mode=current start_ma=0.0 min_ma=-0.01 max_ma=0.01 step_ma=0.00004 shape=start_min_max_start compliance=2.0 auto_range=true nplc=0.01 settle_time=0 repetitions=1 keep_output=false ramp_to_start=true
+
+add_note Post-manual IV/R validation finished

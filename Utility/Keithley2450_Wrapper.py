@@ -312,6 +312,68 @@ class Keithley2450Wrapper:
                     self._recover_comm_state()
                     continue
                 raise
+
+    def measure_resistance(self, nplc=1, resistance=1.05, auto_range=True, repetitions=1):
+        """
+        Measure resistance with software averaging.
+
+        Returns
+        -------
+        tuple
+            (average_resistance, std_resistance) in Ohms.
+        """
+        self._set_measure_timeout(nplc=nplc, repetitions=repetitions)
+        for attempt in range(2):
+            try:
+                if repetitions <= 1:
+                    if hasattr(self.instrument, "measure_resistance"):
+                        self.instrument.measure_resistance(nplc=nplc, resistance=resistance, auto_range=auto_range)
+                        reading = getattr(self.instrument, "resistance", None)
+                        if reading is None:
+                            reading = float(self.instrument.ask("READ?"))
+                        return (float(reading), 0.0)
+
+                    self.instrument.write("SENS:FUNC 'RES'")
+                    if auto_range:
+                        self.instrument.write("SENS:RES:RANG:AUTO ON")
+                    else:
+                        self.instrument.write(f"SENS:RES:RANG {resistance}")
+                    return (float(self.instrument.ask("READ?")), 0.0)
+
+                measurements = []
+                for _ in range(repetitions):
+                    if hasattr(self.instrument, "measure_resistance"):
+                        self.instrument.measure_resistance(nplc=nplc, resistance=resistance, auto_range=auto_range)
+                        reading = getattr(self.instrument, "resistance", None)
+                        if reading is None:
+                            reading = float(self.instrument.ask("READ?"))
+                    else:
+                        self.instrument.write("SENS:FUNC 'RES'")
+                        if auto_range:
+                            self.instrument.write("SENS:RES:RANG:AUTO ON")
+                        else:
+                            self.instrument.write(f"SENS:RES:RANG {resistance}")
+                        reading = float(self.instrument.ask("READ?"))
+                    measurements.append(float(reading))
+
+                avg_resistance = np.mean(measurements)
+                std_resistance = np.std(measurements, ddof=1) if len(measurements) > 1 else 0.0
+                return (avg_resistance, std_resistance)
+            except Exception as exc:
+                if attempt == 0 and self._is_recoverable_comm_error(exc):
+                    self._recover_comm_state()
+                    continue
+                raise
+
+    def set_source_current_amps(self, value):
+        """Set the underlying source current in amperes."""
+        self._source_current = value * 1000.0
+        self.instrument.source_current = value
+
+    def set_source_voltage_volts(self, value):
+        """Set the underlying source voltage in volts."""
+        self._source_voltage = value
+        self.instrument.source_voltage = value
     
     def voltage_filter_count(self, count):
         """

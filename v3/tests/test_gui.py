@@ -395,6 +395,53 @@ class TestResultsTabEvents:
         assert "Vent and Seal" in text
         assert "(2)" not in text
 
+    def test_iv_range_requires_integer_ordered_bounds(self, root):
+        from v3.gui.results_tab import ResultsTab
+        frame = ttk.Frame(root)
+        app = MagicMock()
+        app.parser = MagicMock()
+        app.validator = MagicMock()
+        app.script_filename = tk.StringVar(value="test.txt")
+        app.bus = InstrumentBus()
+        app.data_mgr = MagicMock()
+        app.data_mgr.get_results.return_value = []
+        tab = ResultsTab(frame, app)
+        tab.create_widgets()
+
+        tab.iv_range_start_var.set(3000)
+        tab.iv_range_end_var.set(2000)
+        assert tab._current_iv_range() is None
+
+        tab.iv_range_start_var.set(2000)
+        tab.iv_range_end_var.set(3000)
+        assert tab._current_iv_range() == (2000, 3000)
+
+    def test_iv_generic_rows_not_duplicated_across_channels(self, root):
+        from v3.gui.results_tab import ResultsTab
+        frame = ttk.Frame(root)
+        app = MagicMock()
+        app.parser = MagicMock()
+        app.validator = MagicMock()
+        app.script_filename = tk.StringVar(value="test.txt")
+        app.bus = InstrumentBus()
+        app.data_mgr = MagicMock()
+        app.data_mgr.get_results.return_value = [
+            {"Measurement_Type": "IV", "IV_Point": 1, "IV_Measured_Voltage": 0.1},
+            {"Measurement_Type": "IV", "IV_Point": 2, "IV_Measured_Voltage": 0.2},
+        ]
+        tab = ResultsTab(frame, app)
+        tab.create_widgets()
+
+        tab.x1_var.set("IV_Point")
+        tab.y1_var.set("IV_Measured_Voltage(V)")
+        for var in tab.channel_filter_vars_g1.values():
+            var.set(True)
+
+        tab.refresh_plots()
+        series = tab._last_rendered_graph_data[1]["series"]
+        assert len(series) == 1
+        assert series[0]["channel"] == "global"
+
 
 class TestLockInTabEvents:
     def test_x_y_r_update(self, root):

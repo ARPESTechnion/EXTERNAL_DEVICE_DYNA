@@ -19,7 +19,7 @@ from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 from typing import TYPE_CHECKING, Any, Callable
 
-from v3.core.constants import CSV_FIELDNAMES, DATA_KEY_TO_CSV, INST_LOCKIN, LOGICAL_CHANNELS
+from v3.core.constants import CSV_FIELDNAMES, DATA_KEY_TO_CSV, INST_LOCKIN, LOGICAL_CHANNELS, SWITCH_PIN_MAX
 from v3.core.script_parser import ALLOWED_KWARGS, LOOP_COMMANDS, MIN_POSITIONAL, VALID_COMMANDS
 from v3.core.ui_events import (
     W_DYNA_CHAMBER,
@@ -57,7 +57,7 @@ from v3.core.ui_events import (
     W_HALL_SOURCE_ENABLED,
 )
 from v3.gui.base_tab import BaseTab, make_led, set_led
-from v3.gui.components import StatusStrip, ValidatingEntry, make_float_validator
+from v3.gui.components import StatusStrip, ValidatingEntry, make_float_validator, make_int_validator
 from v3.gui.lockin_tab import R_LOCKIN_OPTIONS
 from v3.gui.theme import COLORS, FONTS, SPACING
 
@@ -103,6 +103,11 @@ class ResultsTab(BaseTab):
         self._plot_refresh_after_id: str | None = None
         self._plot_refresh_min_interval_s: float = 0.5
         self._last_plot_refresh_ts: float = 0.0
+        self.data_plot_range_start_var = tk.IntVar(value=1)
+        self.data_plot_range_end_var = tk.IntVar(value=1000)
+        # Backward-compatible aliases used by existing tests/helpers.
+        self.iv_range_start_var = self.data_plot_range_start_var
+        self.iv_range_end_var = self.data_plot_range_end_var
         self._csv_to_internal_key: dict[str, str] = {
             csv_key: internal_key for internal_key, csv_key in DATA_KEY_TO_CSV.items()
         }
@@ -430,6 +435,16 @@ class ResultsTab(BaseTab):
             command=self._on_link_x_axis_toggled,
         ).pack(side="left")
 
+        iv_row = ttk.LabelFrame(parent, text="Data Plot Range")
+        iv_row.pack(fill="x", padx=5, pady=(2, 4))
+        ttk.Label(iv_row, text="Start:").pack(side="left", padx=(6, 2), pady=4)
+        ValidatingEntry(iv_row, textvariable=self.data_plot_range_start_var, width=8, validator=make_int_validator()).pack(side="left", pady=4)
+        ttk.Label(iv_row, text="End:").pack(side="left", padx=(10, 2), pady=4)
+        ValidatingEntry(iv_row, textvariable=self.data_plot_range_end_var, width=8, validator=make_int_validator()).pack(side="left", pady=4)
+        ttk.Button(iv_row, text="Prev", width=6, command=lambda: self._shift_iv_range(-1)).pack(side="left", padx=(10, 2), pady=4)
+        ttk.Button(iv_row, text="Next", width=6, command=lambda: self._shift_iv_range(1)).pack(side="left", padx=2, pady=4)
+        ttk.Button(iv_row, text="All", width=6, command=self._reset_iv_range).pack(side="left", padx=(10, 2), pady=4)
+
         self._update_graph_color_buttons()
 
     def _on_graph_color_selected(self, graph_index: int, color_name: str) -> None:
@@ -545,13 +560,17 @@ class ResultsTab(BaseTab):
         self.results_helmholtz_ch_a = helm["ch_a"]
         self.results_helmholtz_ch_b = helm["ch_b"]
 
-        # Hall Bar
-        hall = _make_section(status_grid, "hall", "Hall Bar", [
+        # Hall Bar / K2450
+        hall = _make_section(status_grid, "hall", "Hall Bar - K2450", [
             ("voltage", "  V: N/A", "#006600"),
             ("field", "  B: N/A", "#006600"),
+            ("resistance", "  R: N/A", "#006600"),
+            ("current", "  I(R): N/A", "#006600"),
         ], 1, 0)
         self.results_hall_voltage = hall["voltage"]
         self.results_hall_field = hall["field"]
+        self.results_hall_resistance = hall["resistance"]
+        self.results_hall_current = hall["current"]
 
         # Lock-In
         lockin = _make_section(status_grid, "lockin", "Lock-In", [
@@ -597,6 +616,8 @@ class ResultsTab(BaseTab):
         # Hall bar
         self._bind_double_click(self.results_hall_voltage, self._open_hall_popup)
         self._bind_double_click(self.results_hall_field, self._open_hall_popup)
+        self._bind_double_click(self.results_hall_resistance, self._open_hall_popup)
+        self._bind_double_click(self.results_hall_current, self._open_hall_popup)
 
         # Switch
         self._bind_double_click(self.results_switch_status, self._open_switch_popup)
@@ -961,6 +982,45 @@ class ResultsTab(BaseTab):
         ttk.Button(bf, text="Enable Source", command=hall._on_enable_source).pack(side="left", padx=5, pady=2)
         ttk.Button(bf, text="Disable Source", command=hall._on_disable_source).pack(side="left", padx=5, pady=2)
 
+        aux = ttk.LabelFrame(parent, text="Resistance / IV")
+        aux.pack(fill="x", padx=2, pady=2)
+        ttk.Label(aux, text="R Current (mA):").grid(row=0, column=0, sticky="w", padx=5, pady=2)
+        ttk.Entry(aux, textvariable=hall.k2450_resistance_current_mA, width=10).grid(row=0, column=1, padx=5, pady=2)
+        ttk.Label(aux, text="R Compliance (V):").grid(row=0, column=2, sticky="w", padx=5, pady=2)
+        ttk.Entry(aux, textvariable=hall.k2450_resistance_compliance_v, width=10).grid(row=0, column=3, padx=5, pady=2)
+        ttk.Label(aux, text="R NPLC:").grid(row=1, column=0, sticky="w", padx=5, pady=2)
+        ttk.Entry(aux, textvariable=hall.k2450_resistance_nplc, width=10).grid(row=1, column=1, padx=5, pady=2)
+        ttk.Label(aux, text="R Settle (s):").grid(row=1, column=2, sticky="w", padx=5, pady=2)
+        ttk.Entry(aux, textvariable=hall.k2450_resistance_settle, width=10).grid(row=1, column=3, padx=5, pady=2)
+        ttk.Button(aux, text="Measure Resistance", command=hall._on_measure_resistance).grid(row=1, column=4, padx=5, pady=2)
+
+        ttk.Label(aux, text="IV Shape:").grid(row=2, column=0, sticky="w", padx=5, pady=2)
+        ttk.OptionMenu(
+            aux,
+            hall.k2450_iv_shape,
+            hall.k2450_iv_shape.get(),
+            "start_min_max_start",
+            "start_max_min_start",
+            "start_min_start",
+            "start_max_start",
+        ).grid(row=2, column=1, sticky="w", padx=5, pady=2)
+        ttk.Label(aux, text="Start:").grid(row=2, column=2, sticky="w", padx=5, pady=2)
+        ttk.Entry(aux, textvariable=hall.k2450_iv_start, width=10).grid(row=2, column=3, padx=5, pady=2)
+        ttk.Label(aux, text="Min:").grid(row=3, column=0, sticky="w", padx=5, pady=2)
+        ttk.Entry(aux, textvariable=hall.k2450_iv_min, width=10).grid(row=3, column=1, padx=5, pady=2)
+        ttk.Label(aux, text="Max:").grid(row=3, column=2, sticky="w", padx=5, pady=2)
+        ttk.Entry(aux, textvariable=hall.k2450_iv_max, width=10).grid(row=3, column=3, padx=5, pady=2)
+        ttk.Label(aux, text="Step:").grid(row=4, column=0, sticky="w", padx=5, pady=2)
+        ttk.Entry(aux, textvariable=hall.k2450_iv_step, width=10).grid(row=4, column=1, padx=5, pady=2)
+        ttk.Label(aux, text="IV Compliance:").grid(row=4, column=2, sticky="w", padx=5, pady=2)
+        ttk.Entry(aux, textvariable=hall.k2450_iv_compliance, width=10).grid(row=4, column=3, padx=5, pady=2)
+        ttk.Label(aux, text="IV NPLC:").grid(row=5, column=0, sticky="w", padx=5, pady=2)
+        ttk.Entry(aux, textvariable=hall.k2450_iv_nplc, width=10).grid(row=5, column=1, padx=5, pady=2)
+        ttk.Label(aux, text="IV Settle (s):").grid(row=5, column=2, sticky="w", padx=5, pady=2)
+        ttk.Entry(aux, textvariable=hall.k2450_iv_settle, width=10).grid(row=5, column=3, padx=5, pady=2)
+        ttk.Checkbutton(aux, text="Ramp to start", variable=hall.k2450_iv_ramp_to_start).grid(row=6, column=0, columnspan=2, sticky="w", padx=5, pady=2)
+        ttk.Button(aux, text="Measure IV Curve", command=hall._on_measure_iv_curve).grid(row=6, column=4, padx=5, pady=2)
+
     def _build_switch_popup(self, parent: ttk.Frame) -> None:
         switch = self.app.switch_tab
 
@@ -979,7 +1039,7 @@ class ResultsTab(BaseTab):
                 ttk.Spinbox(
                     cf,
                     from_=1,
-                    to=8,
+                    to=SWITCH_PIN_MAX,
                     textvariable=self.app.channel_configs[ch][pin],
                     width=5,
                 ).grid(row=row_idx, column=col_idx, padx=5, pady=2)
@@ -1027,9 +1087,7 @@ class ResultsTab(BaseTab):
             toolbar = NavigationToolbar2Tk(self.canvas, parent)
             toolbar.update()
             ttk.Button(toolbar, text="Autoscale", command=self._autoscale_all_graphs, width=10).pack(side="left", padx=(6, 0))
-            self._plots_grid_button = ttk.Button(toolbar, command=self._toggle_plots_grid, width=10)
-            self._plots_grid_button.pack(side="left", padx=(4, 0))
-            self._refresh_plot_grid_button_label()
+            pass  # grid button removed
         except Exception:
             pass
 
@@ -1040,7 +1098,7 @@ class ResultsTab(BaseTab):
         """Refresh both plots from the data manager results buffer."""
         if self.canvas is None:
             return
-        results = list(self.app.data_mgr.get_results())
+        results = self._apply_iv_range_filter(list(self.app.data_mgr.get_results()))
         if not results:
             self.ax1.clear()
             self.ax2.clear()
@@ -1114,9 +1172,14 @@ class ResultsTab(BaseTab):
 
             plotted_series = 0
             graph_series: list[dict[str, Any]] = []
-            render_channels = selected_channels if len(selected_channels) > 1 else [selected_channels[0]]
+            render_channels: list[str | None]
+            if len(selected_channels) > 1:
+                render_channels = list(selected_channels) + [None]
+            else:
+                render_channels = [selected_channels[0]]
             for channel in render_channels:
-                xs, ys, yerrs = self._collect_series_data(results, x_key, y_key, channel)
+                include_generic = not (len(selected_channels) > 1 and channel is not None)
+                xs, ys, yerrs = self._collect_series_data(results, x_key, y_key, channel, include_generic=include_generic)
                 if len(xs) < 1:
                     continue
 
@@ -1131,8 +1194,8 @@ class ResultsTab(BaseTab):
                     continue
 
                 plotted_series += 1
-                series_color = self._channel_colors.get(channel, color) if len(selected_channels) > 1 else color
-                label = f"Ch {channel.upper()}"
+                series_color = self._channel_colors.get(channel, color) if (len(selected_channels) > 1 and channel is not None) else color
+                label = f"Ch {channel.upper()}" if channel is not None else "Global"
                 yerr_plot = [math.nan if e is None else e for e in yerrs] if show_errorbars else None
 
                 if show_errorbars and yerr_plot and any(not math.isnan(v) for v in yerr_plot):
@@ -1167,7 +1230,7 @@ class ResultsTab(BaseTab):
 
                 graph_series.append(
                     {
-                        "channel": channel,
+                        "channel": "global" if channel is None else channel,
                         "x": list(xs),
                         "y": list(ys),
                         "yerr": list(yerrs),
@@ -1199,6 +1262,46 @@ class ResultsTab(BaseTab):
         self.fig.tight_layout(pad=3.0)
         self.canvas.draw_idle()
         self._last_plot_refresh_ts = time.time()
+
+    def _reset_iv_range(self) -> None:
+        results_count = len(self.app.data_mgr.get_results())
+        self.data_plot_range_start_var.set(1)
+        self.data_plot_range_end_var.set(max(1, results_count))
+        self._schedule_plot_refresh(force=True)
+
+    def _current_iv_range(self) -> tuple[int, int] | None:
+        try:
+            start = int(self.data_plot_range_start_var.get())
+            end = int(self.data_plot_range_end_var.get())
+        except Exception:
+            return None
+        if start > end:
+            return None
+        return start, end
+
+    def _shift_iv_range(self, direction: int) -> None:
+        bounds = self._current_iv_range()
+        if bounds is None:
+            return
+        start, end = bounds
+        span = max(1, end - start + 1)
+        start = max(1, start + (span * int(direction)))
+        end = start + span - 1
+        self.data_plot_range_start_var.set(start)
+        self.data_plot_range_end_var.set(end)
+        self._schedule_plot_refresh(force=True)
+
+    def _apply_iv_range_filter(self, results: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        bounds = self._current_iv_range()
+        if bounds is None:
+            return results
+
+        start, end = bounds
+        filtered: list[dict[str, Any]] = []
+        for idx, row in enumerate(results, start=1):
+            if start <= idx <= end:
+                filtered.append(row)
+        return filtered
 
     def _normalize_smoothing_window(self, window_var: tk.IntVar) -> int:
         raw = int(window_var.get()) if window_var.get() else 5
@@ -1289,7 +1392,15 @@ class ResultsTab(BaseTab):
             return y_key.replace("(deg)", "_Error(deg)")
         return f"{y_key}_Error"
 
-    def _collect_series_data(self, results: list[dict[str, Any]], x_key: str, y_key: str, channel: str) -> tuple[list[float], list[float], list[float | None]]:
+    def _collect_series_data(
+        self,
+        results: list[dict[str, Any]],
+        x_key: str,
+        y_key: str,
+        channel: str | None,
+        *,
+        include_generic: bool,
+    ) -> tuple[list[float], list[float], list[float | None]]:
         xs: list[float] = []
         ys: list[float] = []
         yerrs: list[float | None] = []
@@ -1297,7 +1408,12 @@ class ResultsTab(BaseTab):
 
         for row in results:
             row_channel = self._extract_row_channel(row)
-            if row_channel is not None and row_channel != channel:
+            if channel is None:
+                if row_channel is not None:
+                    continue
+            elif row_channel is None and not include_generic:
+                continue
+            elif row_channel is not None and row_channel != channel:
                 continue
 
             x_val = self._row_value_for_channel(row, x_key, channel)
@@ -1321,10 +1437,19 @@ class ResultsTab(BaseTab):
         err_key = self._error_key_for_y_key(y_key)
         if err_key is None:
             return False
-        for ch in channels:
+        candidates: list[str | None] = list(channels)
+        if len(channels) > 1:
+            candidates.append(None)
+        for ch in candidates:
+            include_generic = not (len(channels) > 1 and ch is not None)
             for row in results:
                 row_channel = self._extract_row_channel(row)
-                if row_channel is not None and row_channel != ch:
+                if ch is None:
+                    if row_channel is not None:
+                        continue
+                elif row_channel is None and not include_generic:
+                    continue
+                elif row_channel is not None and row_channel != ch:
                     continue
                 err_val = self._row_value_for_channel(row, err_key, ch)
                 if self._to_numeric(err_val) is not None:
@@ -1375,7 +1500,7 @@ class ResultsTab(BaseTab):
     def _refresh_plot_grid_button_label(self) -> None:
         if self._plots_grid_button is None or not self._plots_grid_button.winfo_exists():
             return
-        self._plots_grid_button.configure(text=("Grid On" if self._plots_grid_enabled else "Grid Off"))
+        self._plots_grid_button.configure(text=("Grid Off" if self._plots_grid_enabled else "Grid On"))
 
     def _toggle_plots_grid(self) -> None:
         if self.canvas is None:
@@ -1522,9 +1647,12 @@ class ResultsTab(BaseTab):
                     return channel
         return None
 
-    def _row_value_for_channel(self, row: dict[str, Any], key: str, channel: str) -> Any:
+    def _row_value_for_channel(self, row: dict[str, Any], key: str, channel: str | None) -> Any:
         # Preferred generic keys
         if key in row:
+            return row.get(key)
+
+        if channel is None:
             return row.get(key)
 
         # Backward-compatible mapping for legacy channel-suffixed lock-in keys
@@ -2116,6 +2244,54 @@ class ResultsTab(BaseTab):
         if lockin_hint is not None:
             details.extend(["", lockin_hint])
 
+        k2450_hints: dict[str, list[str]] = {
+            "measure_resistance": [
+                "Parameters:",
+                "  current      (A, required)  — DC source current",
+                "  current_ma   (mA, optional) — same as current, mA-friendly",
+                "  compliance   (V, default 10) — max voltage limit",
+                "  nplc         (cycles, default 1) — integration time; 1 NPLC ≈ 16.7 ms at 60 Hz",
+                "  settle_time  (s, default 0)  — delay after sourcing before measuring",
+                "  repetitions  (integer ≥ 1, default 1) — averages that many readings",
+                "  voltage_range (V or 'auto', default 'auto') — measurement voltage range",
+                "  Auto usage: set voltage_range=auto (or omit voltage_range)",
+            ],
+            "measure_iv_curve": [
+                "Parameters:",
+                "  mode         ('current' or 'voltage', required)",
+                "  Preferred syntax: start + min + max + step",
+                "  shape        (required) — sweep pattern:",
+                "               start_min_max_start  : start → min → max → start",
+                "               start_max_min_start  : start → max → min → start",
+                "               start_min_start      : start → min → start",
+                "               start_max_start      : start → max → start",
+                "               single               : start → stop (alias: →)",
+                "               return               : start → stop → start (alias: loop / bidirectional)",
+                "  start        (A or V, required) — first setpoint",
+                "  start_ma     (mA, optional current-mode alias)",
+                "  min/max      (A or V, preferred with start/step)",
+                "  min_ma/max_ma (mA, optional current-mode aliases)",
+                "  stop         (A or V, optional fallback) — sweep limit when min/max are omitted",
+                "  step         (A or V, required, non-zero) — step size",
+                "  step_ma      (mA, optional current-mode alias)",
+                "  compliance   (V for current mode, A for voltage mode; default auto)",
+                "  nplc         (cycles, default 1) — integration time",
+                "  settle_time  (s, default 0) — delay at each setpoint before measuring",
+                "  repetitions  (integer ≥ 1, default 1) — averages per point",
+                "  source_range  (A or V; optional)",
+                "  measure_range (A or V; optional)",
+                "  Auto usage (important): for IV, do NOT write source_range=auto or measure_range=auto.",
+                "                         Leave source_range/measure_range out of the command to use Auto.",
+                "  auto_range   (true/false, default true) — keep true for Auto measurement range",
+                "  ramp_to_start (true/false, default true) — after sweep, step source",
+                "                back to start value using the same step size (safe ramp)",
+                "  keep_output   (true/false, default false) — leave source enabled after sweep",
+            ],
+        }
+        k2450_hint_lines = k2450_hints.get(name)
+        if k2450_hint_lines is not None:
+            details.extend([""] + k2450_hint_lines)
+
         if name == "run_saved_script":
             details.extend(["", "Use full directory + file name (absolute path)."])
 
@@ -2207,6 +2383,19 @@ class ResultsTab(BaseTab):
                 "continuous_measure_hall_field",
                 "continuous_measure_hall_field nplc=1 filter_count=5",
                 "continuous_measure_hall_field current=1.0 compliance_v=2 tbm=0.2",
+            ],
+            "measure_resistance": [
+                "measure_resistance current=1e-3",
+                "measure_resistance current_ma=0.5 voltage_range=0.02 compliance=0.02",
+                "measure_resistance current=1e-3 voltage_range=auto",
+                "measure_resistance current=5e-4 nplc=5 repetitions=3",
+                "measure_resistance current=1e-3 compliance=5 voltage_range=20V settle_time=0.05",
+            ],
+            "measure_iv_curve": [
+                "measure_iv_curve mode=current start_ma=0 min_ma=-1 max_ma=1 step_ma=0.1 shape=start_min_max_start auto_range=true ramp_to_start=true",
+                "measure_iv_curve mode=current shape=start_max_start start=0 stop=1e-3 step=1e-4 compliance=5",
+                "measure_iv_curve mode=current shape=single start=0 stop=1e-3 step=1e-4 ramp_to_start=false",
+                "measure_iv_curve mode=voltage shape=start_max_start start=0 stop=0.5 step=0.05 measure_range=0.02 auto_range=false",
             ],
             "measure_lockin": [
                 "measure_lockin",
@@ -2468,7 +2657,26 @@ class ResultsTab(BaseTab):
 
         # --- New data point → auto-refresh plot ---
         elif widget_id == W_RESULTS_NEW_POINT:
+            self._refresh_hall_sample_status_from_results()
             self._schedule_plot_refresh()
+
+    def _refresh_hall_sample_status_from_results(self) -> None:
+        rows = self.app.data_mgr.get_results()
+        for row in reversed(rows):
+            mtype = str(row.get("Measurement_Type", "")).strip().lower()
+            if mtype not in {"resistance", "iv"}:
+                continue
+
+            resistance = self._to_numeric(row.get("Sample_Resistance"))
+            if resistance is not None:
+                self.results_hall_resistance.configure(text=f"  R: {resistance:.4e} Ohm")
+
+            source_current = self._to_numeric(row.get("IV_Source_Current"))
+            measured_current = self._to_numeric(row.get("IV_Measured_Current"))
+            current = source_current if source_current is not None else measured_current
+            if current is not None:
+                self.results_hall_current.configure(text=f"  I(R): {current:.4e} mA")
+            return
 
     def on_instrument_connected(self, name: str) -> None:
         if name in self.conn_leds:

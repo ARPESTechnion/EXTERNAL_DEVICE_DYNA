@@ -63,6 +63,18 @@ class TestScriptParser(unittest.TestCase):
         self.assertEqual(cmds[0].kwargs["current"], "0.001")
         self.assertEqual(cmds[0].kwargs["avg"], "20")
 
+    def test_parse_resistance_command(self):
+        cmds = self.parser.parse("measure_resistance current=1e-3 nplc=1\n")
+        self.assertEqual(len(cmds), 1)
+        self.assertEqual(cmds[0].name, "measure_resistance")
+        self.assertEqual(cmds[0].kwargs["nplc"], "1")
+
+    def test_parse_iv_curve_command(self):
+        cmds = self.parser.parse("measure_iv_curve mode=current shape=single start=0 stop=1 step=0.1\n")
+        self.assertEqual(len(cmds), 1)
+        self.assertEqual(cmds[0].name, "measure_iv_curve")
+        self.assertEqual(cmds[0].kwargs["mode"], "current")
+
     def test_parse_mixed_args_kwargs(self):
         cmds = self.parser.parse("full_measure a hall_current=1.0\n")
         self.assertEqual(cmds[0].args, ["a"])
@@ -188,6 +200,29 @@ class TestScriptValidator(unittest.TestCase):
         cmds = self.parser.parse("test\nauto_gain\nauto_phase\n")
         errors = self.validator.validate(cmds)
         self.assertEqual(len(errors), 0)
+
+    def test_valid_k2450_commands(self):
+        cmds = self.parser.parse(
+            "measure_resistance current=1e-3 nplc=1\n"
+            "measure_iv_curve mode=current shape=single start=0 stop=1 step=0.1\n"
+        )
+        errors = self.validator.validate(cmds, {"keithley2450"})
+        self.assertEqual(len(errors), 0)
+
+    def test_invalid_iv_mode(self):
+        cmds = self.parser.parse("measure_iv_curve mode=banana start=0 stop=1 step=0.1\n")
+        errors = self.validator.validate(cmds, {"keithley2450"})
+        self.assertTrue(any("mode" in error.message for error in errors))
+
+    def test_invalid_iv_shape(self):
+        cmds = self.parser.parse("measure_iv_curve mode=current shape=zigzag start=0 stop=1 step=0.1\n")
+        errors = self.validator.validate(cmds, {"keithley2450"})
+        self.assertTrue(any("shape" in error.message for error in errors))
+
+    def test_resistance_requires_current(self):
+        cmds = self.parser.parse("measure_resistance nplc=1\n")
+        errors = self.validator.validate(cmds, {"keithley2450"})
+        self.assertTrue(any("requires 'current'" in error.message for error in errors))
 
     def test_unknown_command(self):
         cmds = self.parser.parse("nonexistent_command\n")

@@ -462,14 +462,64 @@ class DataManager:
                     self._data_file.flush()
                     self._session_rows_written += 1
 
-            # Append to in-memory buffer (deque is bounded; oldest auto-dropped)
-            self._results.append(data_point)
+            # Append to in-memory buffer (deque is bounded; oldest auto-dropped).
+            # Keep Measurement_Type in memory so GUI filters/status can target
+            # specific measurement families (IV, Resistance, etc.).
+            stored_point = dict(data_point)
+            stored_point["Measurement_Type"] = measurement_type
+            self._results.append(stored_point)
 
             self._current_note = ""
             return True
         except Exception:
             logger.exception("Error writing data row")
             return False
+
+    def write_rows(
+        self,
+        data_points: list[dict[str, Any]],
+        measurement_type: str = "Full",
+    ) -> int:
+        """Write multiple data rows with a single file flush.
+
+        Returns the number of rows written successfully.
+        """
+        if not data_points:
+            return 0
+
+        if self._csv_writer is None:
+            if self.initialize_file() is None:
+                return 0
+
+        try:
+            rows: list[dict[str, Any]] = []
+            for idx, data_point in enumerate(data_points):
+                row: dict[str, Any] = {csv_col: np.nan for csv_col in CSV_FIELDNAMES}
+                for internal_key, csv_col in DATA_KEY_TO_CSV.items():
+                    if internal_key in data_point:
+                        row[csv_col] = data_point[internal_key]
+
+                row["Measurement_Type"] = measurement_type
+                row["Notes"] = self._current_note if idx == 0 else ""
+                rows.append(row)
+
+            with self._csv_lock:
+                if self._csv_writer is not None and self._data_file is not None:
+                    self._write_hall_metadata_row_if_needed_unlocked(measurement_type)
+                    self._csv_writer.writerows(rows)
+                    self._data_file.flush()
+                    self._session_rows_written += len(rows)
+
+            for data_point in data_points:
+                stored_point = dict(data_point)
+                stored_point["Measurement_Type"] = measurement_type
+                self._results.append(stored_point)
+
+            self._current_note = ""
+            return len(rows)
+        except Exception:
+            logger.exception("Error writing data rows")
+            return 0
 
     # ==================================================================
     # Results buffer access  (plotting)

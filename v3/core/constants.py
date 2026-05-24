@@ -14,7 +14,7 @@ from __future__ import annotations
 KEITHLEY2600_ADDRESS = "GPIB0::26::INSTR"
 KEITHLEY2450_ADDRESS = "GPIB0::18::INSTR"
 LOCKIN_ADDRESS = "GPIB0::8::INSTR"
-SWITCH_BACKEND = "my_switch"  # "my_switch" | "keithley7001"
+SWITCH_BACKEND = "my_switch"  # "my_switch" | "keithley7001" | "keithley2001"
 SWITCH_ADDRESS_MY = "USB0::0x0957::0x0507::MY56482243::INSTR"
 SWITCH_ADDRESS_7001 = "GPIB0::7::INSTR"
 # Backward-compatible alias used in older code paths.
@@ -41,8 +41,11 @@ ALL_INSTRUMENTS = (
     INST_DYNA,
 )
 
+# Switch matrix routing/label capacity by backend.
+SWITCH_PIN_MAX = 10 if str(SWITCH_BACKEND).strip().lower() in {"keithley7001", "keithley2001"} else 8
+
 # Logical switch channels supported by the app/script DSL.
-LOGICAL_CHANNELS = tuple("abcdefgh")
+LOGICAL_CHANNELS = tuple("abcdefghij") if SWITCH_PIN_MAX >= 10 else tuple("abcdefgh")
 MIN_SWITCH_CONFIGS = 2
 MAX_SWITCH_CONFIGS = len(LOGICAL_CHANNELS)
 
@@ -114,6 +117,11 @@ CSV_FIELDNAMES: list[str] = [
     "Time_Constant(s)",
     "Sample_Resistance(Ohm)",
     "Sample_Resistance_Error(Ohm)",
+    "IV_Point",
+    "IV_Source_Current(mA)",
+    "IV_Source_Voltage(V)",
+    "IV_Measured_Voltage(V)",
+    "IV_Measured_Current(mA)",
     "Measurement_Type",
     "Notes",
 ]
@@ -149,6 +157,11 @@ DATA_KEY_TO_CSV: dict[str, str] = {
     "LockIn_Time_Constant":     "Time_Constant(s)",
     "Sample_Resistance":        "Sample_Resistance(Ohm)",
     "Sample_Resistance_Error":  "Sample_Resistance_Error(Ohm)",
+    "IV_Point":                 "IV_Point",
+    "IV_Source_Current":        "IV_Source_Current(mA)",
+    "IV_Source_Voltage":        "IV_Source_Voltage(V)",
+    "IV_Measured_Voltage":      "IV_Measured_Voltage(V)",
+    "IV_Measured_Current":      "IV_Measured_Current(mA)",
 }
 
 # Auto-log CSV columns
@@ -170,6 +183,6 @@ AUTO_LOG_FIELDNAMES: list[str] = [
 UI_TICK_INTERVAL_MS = 100           # main update_ui heartbeat
 UI_EVENT_QUEUE_CAPACITY = 5_000
 COMMAND_QUEUE_CAPACITY = 100
-MAX_RESULTS_POINTS = 5_000         # deque maxlen for results_data
+MAX_RESULTS_POINTS = 100_000       # deque maxlen for results_data
 MAX_PLOT_POINTS = 10_000
 AUTO_LOG_QUEUE_CAPACITY = 200

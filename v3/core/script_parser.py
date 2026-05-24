@@ -18,7 +18,7 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass, field
 
-from v3.core.constants import LOGICAL_CHANNELS
+from v3.core.constants import LOGICAL_CHANNELS, SWITCH_PIN_MAX
 
 logger = logging.getLogger(__name__)
 
@@ -103,6 +103,8 @@ VALID_COMMANDS = frozenset({
     "run_saved_script",
     "measure_hall_field",
     "continuous_measure_hall_field",
+    "measure_resistance",
+    "measure_iv_curve",
     "enable_hall_output",
     "disable_hall_output",
     "measure_lockin",
@@ -139,6 +141,8 @@ INSTRUMENT_REQUIREMENTS: dict[str, list[str]] = {
     "wait_for": [],  # depends on event type
     "measure_hall_field": ["hall"],
     "continuous_measure_hall_field": ["hall"],
+    "measure_resistance": ["hall"],
+    "measure_iv_curve": ["hall"],
     "enable_hall_output": ["hall"],
     "disable_hall_output": ["hall"],
     "measure_lockin": ["lockin"],
@@ -197,6 +201,14 @@ ALLOWED_KWARGS: dict[str, set[str]] = {
     },
     "continuous_measure_hall_field": {
         "current", "nplc", "compliance_v", "voltage_range", "filter_count", "tbm",
+    },
+    "measure_resistance": {
+        "current", "current_ma", "compliance", "nplc", "voltage_range", "settle_time", "repetitions",
+    },
+    "measure_iv_curve": {
+        "mode", "shape", "start", "start_ma", "min", "min_ma", "max", "max_ma", "iv_min", "iv_max", "stop", "stop_ma", "step", "step_ma", "source_range", "measure_range",
+        "compliance", "nplc", "auto_range", "settle_time", "repetitions",
+        "keep_output", "ramp_to_start", "reset_to_zero",
     },
     "enable_hall_output": {
         "current", "compliance_v",
@@ -663,10 +675,13 @@ class ScriptValidator:
                             message=f"'configure_channel' pin argument {idx + 1} ('{token}') must be an integer",
                         ))
                         return
-                    if pin < 1 or pin > 8:
+                    if pin < 1 or pin > SWITCH_PIN_MAX:
                         errors.append(ValidationError(
                             line_number=cmd.line_number,
-                            message=f"'configure_channel' pin argument {idx + 1} must be in range 1-8",
+                            message=(
+                                f"'configure_channel' pin argument {idx + 1} "
+                                f"must be in range 1-{SWITCH_PIN_MAX}"
+                            ),
                         ))
                     pins.append(pin)
                 if len(set(pins)) != len(pins):
@@ -692,6 +707,12 @@ class ScriptValidator:
 
         elif cmd.name == "continuous_measure_lockin":
             self._validate_lockin_measure_kwargs(cmd, errors, continuous=True)
+
+        elif cmd.name == "measure_iv_curve":
+            self._validate_iv_measure_kwargs(cmd, errors)
+
+        elif cmd.name == "measure_resistance":
+            self._validate_resistance_measure_kwargs(cmd, errors)
 
         elif cmd.name == "scan_helmholtz_field" and len(cmd.args) > 4:
             errors.append(ValidationError(
@@ -725,6 +746,135 @@ class ScriptValidator:
                     errors.append(ValidationError(
                         line_number=cmd.line_number,
                         message=f"'{cmd.name} {key}' must be a boolean token (true/false)",
+                    ))
+
+    def _validate_resistance_measure_kwargs(
+        self,
+        cmd: ParsedCommand,
+        errors: list[ValidationError],
+    ) -> None:
+        if "current" not in cmd.kwargs and "current_ma" not in cmd.kwargs:
+            errors.append(ValidationError(
+                line_number=cmd.line_number,
+                message="'measure_resistance' requires 'current' (A) or 'current_ma' (mA)",
+            ))
+
+        vr_token = cmd.kwargs.get("voltage_range")
+        if vr_token is not None and not self._is_valid_voltage_range_token(vr_token):
+            errors.append(ValidationError(
+                line_number=cmd.line_number,
+                message=(
+                    "'measure_resistance voltage_range' must be 'auto' "
+                    "or a numeric value with optional V/mV suffix"
+                ),
+            ))
+
+        if "repetitions" in cmd.kwargs:
+            token = cmd.kwargs["repetitions"].strip().lower()
+            try:
+                repetitions = int(float(token))
+            except Exception:
+                errors.append(ValidationError(
+                    line_number=cmd.line_number,
+                    message="'measure_resistance repetitions' must be an integer",
+                ))
+            else:
+                if repetitions < 1:
+                    errors.append(ValidationError(
+                        line_number=cmd.line_number,
+                        message="'measure_resistance repetitions' must be >= 1",
+                    ))
+
+    def _validate_iv_measure_kwargs(
+        self,
+        cmd: ParsedCommand,
+        errors: list[ValidationError],
+    ) -> None:
+        has_start = "start" in cmd.kwargs or "start_ma" in cmd.kwargs
+        has_step = "step" in cmd.kwargs or "step_ma" in cmd.kwargs
+        has_min = "min" in cmd.kwargs or "min_ma" in cmd.kwargs or "iv_min" in cmd.kwargs
+        has_max = "max" in cmd.kwargs or "max_ma" in cmd.kwargs or "iv_max" in cmd.kwargs
+        has_stop = "stop" in cmd.kwargs or "stop_ma" in cmd.kwargs
+
+        if not has_start:
+            errors.append(ValidationError(
+                line_number=cmd.line_number,
+                message="'measure_iv_curve' requires 'start' or 'start_ma'",
+            ))
+        if not has_step:
+            errors.append(ValidationError(
+                line_number=cmd.line_number,
+                message="'measure_iv_curve' requires 'step' or 'step_ma'",
+            ))
+        if (has_min ^ has_max):
+            errors.append(ValidationError(
+                line_number=cmd.line_number,
+                message="'measure_iv_curve' min/max syntax requires both min and max",
+            ))
+        if not has_stop and not (has_min and has_max):
+            errors.append(ValidationError(
+                line_number=cmd.line_number,
+                message="'measure_iv_curve' requires start,min,max,step (preferred) or start,stop,step",
+            ))
+
+        mode = cmd.kwargs.get("mode")
+        if mode is not None:
+            normalized = mode.strip().lower()
+            if normalized not in {"current", "voltage", "source_current", "source_voltage"}:
+                errors.append(ValidationError(
+                    line_number=cmd.line_number,
+                    message="'measure_iv_curve mode' must be 'current' or 'voltage'",
+                ))
+
+        shape = cmd.kwargs.get("shape")
+        if shape is not None:
+            normalized_shape = shape.strip().lower()
+            if normalized_shape not in {
+                "start_min_max_start",
+                "start_max_min_start",
+                "start_min_start",
+                "start_max_start",
+                "single",
+                "return",
+                "loop",
+                "bidirectional",
+                "start->min->max->start",
+                "start->max->min->start",
+                "start->min->start",
+                "start->max->start",
+            }:
+                errors.append(ValidationError(
+                    line_number=cmd.line_number,
+                    message=(
+                        "'measure_iv_curve shape' must be one of: "
+                        "start_min_max_start, start_max_min_start, start_min_start, start_max_start"
+                    ),
+                ))
+
+        for key in ("auto_range", "keep_output", "ramp_to_start", "reset_to_zero"):
+            if key not in cmd.kwargs:
+                continue
+            token = cmd.kwargs[key].strip().lower()
+            if token not in {"true", "false", "1", "0", "yes", "no", "on", "off"}:
+                errors.append(ValidationError(
+                    line_number=cmd.line_number,
+                    message=f"'measure_iv_curve {key}' must be a boolean token (true/false)",
+                ))
+
+        if "repetitions" in cmd.kwargs:
+            token = cmd.kwargs["repetitions"].strip().lower()
+            try:
+                repetitions = int(float(token))
+            except Exception:
+                errors.append(ValidationError(
+                    line_number=cmd.line_number,
+                    message="'measure_iv_curve repetitions' must be an integer",
+                ))
+            else:
+                if repetitions < 1:
+                    errors.append(ValidationError(
+                        line_number=cmd.line_number,
+                        message="'measure_iv_curve repetitions' must be >= 1",
                     ))
 
 

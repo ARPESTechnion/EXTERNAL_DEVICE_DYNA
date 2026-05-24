@@ -9,6 +9,7 @@ calibration.  Displays live Hall voltage and field readouts.
 from __future__ import annotations
 
 import threading
+import time
 import tkinter as tk
 from tkinter import ttk
 from typing import TYPE_CHECKING, Any
@@ -49,6 +50,7 @@ class HallTab(BaseTab):
         self._source_enabled = False
         self._source_led_after_id: str | None = None
         self._updating_preset = False
+        self._k2450_aux_worker: threading.Thread | None = None
 
     def create_widgets(self) -> None:
         self._conn_header = ConnectionHeader(
@@ -74,8 +76,13 @@ class HallTab(BaseTab):
     # Settings
     # ------------------------------------------------------------------
     def _build_settings(self, parent: ttk.Frame) -> None:
-        sf = ttk.LabelFrame(parent, text="Measurement Settings")
-        sf.pack(fill="x", padx=5, pady=5)
+        settings_row = ttk.Frame(parent)
+        settings_row.pack(fill="x", padx=5, pady=5)
+        settings_row.columnconfigure(0, weight=1)
+        settings_row.columnconfigure(1, weight=1)
+
+        sf = ttk.LabelFrame(settings_row, text="Hall Measurment Setings")
+        sf.grid(row=0, column=0, sticky="nsew", padx=(0, 5))
 
         self.k2450_current = tk.DoubleVar(value=2.0)       # mA
         self.k2450_nplc = tk.IntVar(value=5)
@@ -87,6 +94,26 @@ class HallTab(BaseTab):
         self.k2450_hall_v2gauss = tk.DoubleVar(value=10000.0 / 0.215)
         self.k2450_hall_bar = tk.StringVar(value="Wire Hall Bar 1")
         self.k2450_hall_v_per_g = tk.StringVar(value="")
+        self.k2450_resistance_current_mA = tk.DoubleVar(value=1.0)
+        self.k2450_resistance_compliance_v = tk.DoubleVar(value=10.0)
+        self.k2450_resistance_nplc = tk.DoubleVar(value=1.0)
+        self.k2450_resistance_voltage_range = tk.StringVar(value="auto")
+        self.k2450_resistance_settle = tk.DoubleVar(value=0.0)
+        self.k2450_resistance_repetitions = tk.IntVar(value=1)
+        self.k2450_iv_mode = tk.StringVar(value="current")
+        self.k2450_iv_shape = tk.StringVar(value="start_min_max_start")
+        self.k2450_iv_start = tk.DoubleVar(value=0.0)
+        self.k2450_iv_min = tk.DoubleVar(value=-1.0)
+        self.k2450_iv_max = tk.DoubleVar(value=1.0)
+        self.k2450_iv_step = tk.DoubleVar(value=0.1)
+        self.k2450_iv_source_range = tk.StringVar(value="auto")
+        self.k2450_iv_measure_range = tk.StringVar(value="auto")
+        self.k2450_iv_compliance = tk.DoubleVar(value=0.1)
+        self.k2450_iv_nplc = tk.DoubleVar(value=1.0)
+        self.k2450_iv_settle = tk.DoubleVar(value=0.0)
+        self.k2450_iv_repetitions = tk.IntVar(value=1)
+        self.k2450_iv_ramp_to_start = tk.BooleanVar(value=True)
+        self.k2450_iv_env_interval = tk.DoubleVar(value=0.0)
 
         ttk.Label(sf, text="Hall Bar Preset:").grid(row=0, column=0, sticky="w", padx=5, pady=2)
         preset_values = [
@@ -133,6 +160,77 @@ class HallTab(BaseTab):
             sf, self.k2450_voltage_range, "auto",
             "auto", "0.02", "0.2", "2", "20", "200",
         ).grid(row=row, column=1, padx=5, sticky="w")
+
+        aux = ttk.LabelFrame(settings_row, text="Resistance / IV")
+        aux.grid(row=0, column=1, sticky="nsew", padx=(5, 0))
+        aux.columnconfigure(1, weight=1)
+
+        ttk.Label(aux, text="R Current (mA):").grid(row=0, column=0, sticky="w", padx=5, pady=2)
+        ValidatingEntry(aux, textvariable=self.k2450_resistance_current_mA, width=8, validator=make_float_validator(1e-6, 105.0)).grid(row=0, column=1, sticky="w", padx=5, pady=2)
+        ttk.Label(aux, text="R Compliance (V):").grid(row=0, column=2, sticky="w", padx=(10, 2), pady=2)
+        ValidatingEntry(aux, textvariable=self.k2450_resistance_compliance_v, width=8, validator=make_float_validator(0.0, 210.0)).grid(row=0, column=3, sticky="w", padx=5, pady=2)
+        ttk.Label(aux, text="R NPLC:").grid(row=0, column=4, sticky="w", padx=(10, 2), pady=2)
+        ValidatingEntry(aux, textvariable=self.k2450_resistance_nplc, width=8, validator=make_float_validator(0.01, 20.0)).grid(row=0, column=5, sticky="w", padx=5, pady=2)
+
+        ttk.Label(aux, text="R V-range:").grid(row=1, column=0, sticky="w", padx=5, pady=2)
+        ttk.OptionMenu(aux, self.k2450_resistance_voltage_range, "auto", "auto", "0.02", "0.2", "2", "20", "200").grid(row=1, column=1, sticky="w", padx=5, pady=2)
+        ttk.Label(aux, text="R Settle (s):").grid(row=1, column=2, sticky="w", padx=(10, 2), pady=2)
+        ValidatingEntry(aux, textvariable=self.k2450_resistance_settle, width=8, validator=make_float_validator(0.0, 60.0)).grid(row=1, column=3, sticky="w", padx=5, pady=2)
+        ttk.Label(aux, text="R Reps:").grid(row=1, column=4, sticky="w", padx=(10, 2), pady=2)
+        ValidatingEntry(aux, textvariable=self.k2450_resistance_repetitions, width=8, validator=make_float_validator(1.0, 1000.0)).grid(row=1, column=5, sticky="w", padx=5, pady=2)
+
+        ttk.Label(aux, text="IV Mode:").grid(row=2, column=0, sticky="w", padx=5, pady=2)
+        ttk.OptionMenu(aux, self.k2450_iv_mode, "current", "current", "voltage").grid(row=2, column=1, sticky="w", padx=5, pady=2)
+        ttk.Label(aux, text="Shape:").grid(row=2, column=2, sticky="w", padx=(10, 2), pady=2)
+        ttk.OptionMenu(
+            aux,
+            self.k2450_iv_shape,
+            "start_min_max_start",
+            "start_min_max_start",
+            "start_max_min_start",
+            "start_min_start",
+            "start_max_start",
+        ).grid(row=2, column=3, sticky="w", padx=5, pady=2)
+        ttk.Label(aux, text="Start (mA/V):").grid(row=2, column=4, sticky="w", padx=(10, 2), pady=2)
+        ValidatingEntry(aux, textvariable=self.k2450_iv_start, width=8, validator=make_float_validator(-1e6, 1e6)).grid(row=2, column=5, sticky="w", padx=5, pady=2)
+
+        ttk.Label(aux, text="Min (mA/V):").grid(row=3, column=0, sticky="w", padx=5, pady=2)
+        ValidatingEntry(aux, textvariable=self.k2450_iv_min, width=8, validator=make_float_validator(-1e6, 1e6)).grid(row=3, column=1, sticky="w", padx=5, pady=2)
+        ttk.Label(aux, text="Max (mA/V):").grid(row=3, column=2, sticky="w", padx=(10, 2), pady=2)
+        ValidatingEntry(aux, textvariable=self.k2450_iv_max, width=8, validator=make_float_validator(-1e6, 1e6)).grid(row=3, column=3, sticky="w", padx=5, pady=2)
+        ttk.Label(aux, text="Step (mA/V):").grid(row=3, column=4, sticky="w", padx=(10, 2), pady=2)
+        ValidatingEntry(aux, textvariable=self.k2450_iv_step, width=8, validator=make_float_validator(1e-12, 1e6)).grid(row=3, column=5, sticky="w", padx=5, pady=2)
+
+        ttk.Label(aux, text="Compliance:").grid(row=4, column=0, sticky="w", padx=5, pady=2)
+        ValidatingEntry(aux, textvariable=self.k2450_iv_compliance, width=8, validator=make_float_validator(0.0, 210.0)).grid(row=4, column=1, sticky="w", padx=5, pady=2)
+        ttk.Label(aux, text="NPLC:").grid(row=4, column=2, sticky="w", padx=(10, 2), pady=2)
+        ValidatingEntry(aux, textvariable=self.k2450_iv_nplc, width=8, validator=make_float_validator(0.01, 20.0)).grid(row=4, column=3, sticky="w", padx=5, pady=2)
+        ttk.Label(aux, text="Settle (s):").grid(row=4, column=4, sticky="w", padx=(10, 2), pady=2)
+        ValidatingEntry(aux, textvariable=self.k2450_iv_settle, width=8, validator=make_float_validator(0.0, 60.0)).grid(row=4, column=5, sticky="w", padx=5, pady=2)
+
+        ttk.Label(aux, text="Reps:").grid(row=5, column=0, sticky="w", padx=5, pady=2)
+        ValidatingEntry(aux, textvariable=self.k2450_iv_repetitions, width=8, validator=make_float_validator(1.0, 1000.0)).grid(row=5, column=1, sticky="w", padx=5, pady=2)
+        ttk.Label(aux, text="Source Range:").grid(row=5, column=2, sticky="w", padx=(10, 2), pady=2)
+        ttk.OptionMenu(aux, self.k2450_iv_source_range, "auto", "auto", "0.02", "0.2", "2", "20", "200").grid(row=5, column=3, sticky="w", padx=5, pady=2)
+        ttk.Label(aux, text="Measure Range:").grid(row=5, column=4, sticky="w", padx=(10, 2), pady=2)
+        ttk.OptionMenu(aux, self.k2450_iv_measure_range, "auto", "auto", "0.02", "0.2", "2", "20", "200").grid(row=5, column=5, sticky="w", padx=5, pady=2)
+
+        ramp_row = ttk.Frame(aux)
+        ramp_row.grid(row=6, column=0, columnspan=6, sticky="w", padx=5, pady=2)
+        ttk.Checkbutton(ramp_row, text="Ramp", variable=self.k2450_iv_ramp_to_start).pack(side="left")
+        ttk.Label(ramp_row, text="Env sample interval (s):").pack(side="left", padx=(20, 2))
+        ValidatingEntry(ramp_row, textvariable=self.k2450_iv_env_interval, width=7, validator=make_float_validator(0.0, 3600.0)).pack(side="left")
+        self.k2450_aux_result = ttk.Label(aux, text="R / IV: ---", width=44)
+        self.k2450_aux_result.grid(row=7, column=0, columnspan=6, sticky="w", padx=(5, 5), pady=2)
+
+        action_row = ttk.Frame(aux)
+        action_row.grid(row=8, column=0, columnspan=6, sticky="w", padx=5, pady=(4, 4))
+        resistance_btn = ttk.Button(action_row, text="Measure Resistance", command=self._on_measure_resistance)
+        resistance_btn.pack(side="left", padx=(0, 6))
+        self.register_measure_button(resistance_btn)
+        iv_btn = ttk.Button(action_row, text="Measure IV Curve", command=self._on_measure_iv_curve)
+        iv_btn.pack(side="left")
+        self.register_measure_button(iv_btn)
 
         self._apply_hall_bar_preset(self.k2450_hall_bar.get())
         self.k2450_hall_v2gauss.trace_add("write", self._on_manual_v2gauss_changed)
@@ -181,6 +279,37 @@ class HallTab(BaseTab):
             anchor="w",
         )
         self.result_label.pack(fill="x", anchor="w", padx=5, pady=5)
+
+        aux_row = ttk.Frame(rd)
+        aux_row.pack(fill="x", anchor="w", padx=5, pady=(0, 5))
+        self.resistance_display_label = tk.Label(
+            aux_row,
+            text="Resistance: ---",
+            font=FONTS["mono_small"],
+            fg=COLORS["fg_primary"],
+            bg=COLORS["bg_input"],
+            relief="solid",
+            borderwidth=1,
+            padx=8,
+            pady=3,
+            anchor="w",
+        )
+        self.resistance_display_label.pack(side="left", fill="x", expand=True)
+        self.resistance_current_display_label = tk.Label(
+            aux_row,
+            text="R current: ---",
+            font=FONTS["mono_small"],
+            fg=COLORS["fg_primary"],
+            bg=COLORS["bg_input"],
+            relief="solid",
+            borderwidth=1,
+            padx=8,
+            pady=3,
+            anchor="w",
+        )
+        self.resistance_current_display_label.pack(side="left", fill="x", expand=True, padx=(6, 0))
+        self.resistance_display_label.bind("<Double-Button-1>", lambda _e: self._open_iv_resistance_popup())
+        self.resistance_current_display_label.bind("<Double-Button-1>", lambda _e: self._open_iv_resistance_popup())
 
     # ------------------------------------------------------------------
     # Buttons
@@ -389,6 +518,72 @@ class HallTab(BaseTab):
         )
         self.status_text.pack(fill="x", padx=5, pady=2)
 
+    def _open_iv_resistance_popup(self) -> None:
+        popup = tk.Toplevel(self.app.root)
+        popup.title("K2450 IV / Resistance Control")
+        popup.transient(self.app.root)
+        popup.attributes("-topmost", True)
+
+        body = ttk.Frame(popup, padding=10)
+        body.pack(fill="both", expand=True)
+
+        # --- Resistance ---
+        rf = ttk.LabelFrame(body, text="Resistance")
+        rf.pack(fill="x", padx=2, pady=2)
+        ttk.Label(rf, text="Current (mA):").grid(row=0, column=0, sticky="w", padx=5, pady=2)
+        ttk.Entry(rf, textvariable=self.k2450_resistance_current_mA, width=10).grid(row=0, column=1, padx=5, pady=2)
+        ttk.Label(rf, text="Compliance (V):").grid(row=0, column=2, sticky="w", padx=5, pady=2)
+        ttk.Entry(rf, textvariable=self.k2450_resistance_compliance_v, width=10).grid(row=0, column=3, padx=5, pady=2)
+        ttk.Label(rf, text="NPLC:").grid(row=1, column=0, sticky="w", padx=5, pady=2)
+        ttk.Entry(rf, textvariable=self.k2450_resistance_nplc, width=10).grid(row=1, column=1, padx=5, pady=2)
+        ttk.Label(rf, text="Settle (s):").grid(row=1, column=2, sticky="w", padx=5, pady=2)
+        ttk.Entry(rf, textvariable=self.k2450_resistance_settle, width=10).grid(row=1, column=3, padx=5, pady=2)
+        ttk.Button(rf, text="Measure Resistance", command=self._on_measure_resistance).grid(row=2, column=0, columnspan=4, pady=4)
+
+        # --- IV Curve ---
+        ivf = ttk.LabelFrame(body, text="IV Curve")
+        ivf.pack(fill="x", padx=2, pady=6)
+        ttk.Label(ivf, text="Shape:").grid(row=0, column=0, sticky="w", padx=5, pady=2)
+        ttk.OptionMenu(
+            ivf,
+            self.k2450_iv_shape,
+            self.k2450_iv_shape.get(),
+            "start_min_max_start",
+            "start_max_min_start",
+            "start_min_start",
+            "start_max_start",
+        ).grid(row=0, column=1, sticky="w", padx=5, pady=2)
+        ttk.Label(ivf, text="Mode:").grid(row=0, column=2, sticky="w", padx=5, pady=2)
+        ttk.OptionMenu(ivf, self.k2450_iv_mode, self.k2450_iv_mode.get(), "current", "voltage").grid(row=0, column=3, padx=5, pady=2)
+
+        ttk.Label(ivf, text="Start (mA/V):").grid(row=1, column=0, sticky="w", padx=5, pady=2)
+        ttk.Entry(ivf, textvariable=self.k2450_iv_start, width=10).grid(row=1, column=1, padx=5, pady=2)
+        ttk.Label(ivf, text="Min (mA/V):").grid(row=1, column=2, sticky="w", padx=5, pady=2)
+        ttk.Entry(ivf, textvariable=self.k2450_iv_min, width=10).grid(row=1, column=3, padx=5, pady=2)
+
+        ttk.Label(ivf, text="Max (mA/V):").grid(row=2, column=0, sticky="w", padx=5, pady=2)
+        ttk.Entry(ivf, textvariable=self.k2450_iv_max, width=10).grid(row=2, column=1, padx=5, pady=2)
+        ttk.Label(ivf, text="Step (mA/V):").grid(row=2, column=2, sticky="w", padx=5, pady=2)
+        ttk.Entry(ivf, textvariable=self.k2450_iv_step, width=10).grid(row=2, column=3, padx=5, pady=2)
+
+        ttk.Label(ivf, text="Compliance:").grid(row=3, column=0, sticky="w", padx=5, pady=2)
+        ttk.Entry(ivf, textvariable=self.k2450_iv_compliance, width=10).grid(row=3, column=1, padx=5, pady=2)
+        ttk.Label(ivf, text="NPLC:").grid(row=3, column=2, sticky="w", padx=5, pady=2)
+        ttk.Entry(ivf, textvariable=self.k2450_iv_nplc, width=10).grid(row=3, column=3, padx=5, pady=2)
+
+        ttk.Label(ivf, text="Settle (s):").grid(row=4, column=0, sticky="w", padx=5, pady=2)
+        ttk.Entry(ivf, textvariable=self.k2450_iv_settle, width=10).grid(row=4, column=1, padx=5, pady=2)
+        ttk.Label(ivf, text="Repetitions:").grid(row=4, column=2, sticky="w", padx=5, pady=2)
+        ttk.Entry(ivf, textvariable=self.k2450_iv_repetitions, width=10).grid(row=4, column=3, padx=5, pady=2)
+
+        ttk.Checkbutton(ivf, text="Ramp", variable=self.k2450_iv_ramp_to_start).grid(row=5, column=0, columnspan=2, sticky="w", padx=5, pady=2)
+        ttk.Label(ivf, text="Env sample interval (s):").grid(row=5, column=2, sticky="w", padx=5, pady=2)
+        ttk.Entry(ivf, textvariable=self.k2450_iv_env_interval, width=10).grid(row=5, column=3, padx=5, pady=2)
+        ttk.Button(ivf, text="Measure IV Curve", command=self._on_measure_iv_curve).grid(row=6, column=0, columnspan=4, pady=4)
+
+        ttk.Button(body, text="Close", command=popup.destroy).pack(anchor="e", pady=(8, 0))
+        self._center_toplevel(popup, width=580, height=510)
+
     def _append_status(self, message: str, *, is_error: bool = False) -> None:
         prefix = "Error" if is_error else "Info"
         self.status_text.configure(state="normal")
@@ -467,6 +662,39 @@ class HallTab(BaseTab):
         t = threading.Thread(target=self._measure_worker, daemon=True, name="hall-measure")
         t.start()
 
+    def _on_measure_resistance(self) -> None:
+        try:
+            if float(self.k2450_resistance_current_mA.get()) <= 0.0:
+                raise ValueError("Resistance current must be > 0 mA")
+        except Exception as exc:
+            self._append_status(str(exc), is_error=True)
+            self.app.ui_bus.post_log(f"Resistance measure error: {exc}")
+            return
+        if self._measuring:
+            self.app.ui_bus.post_log("K2450 measurement already in progress.")
+            return
+        self._measuring = True
+        self._set_measure_buttons_enabled(False)
+        t = threading.Thread(target=self._measure_resistance_worker, daemon=True, name="hall-resistance-measure")
+        t.start()
+
+    def _on_measure_iv_curve(self) -> None:
+        try:
+            step = float(self.k2450_iv_step.get())
+            if abs(step) < 1e-15:
+                raise ValueError("IV step must be non-zero")
+        except Exception as exc:
+            self._append_status(str(exc), is_error=True)
+            self.app.ui_bus.post_log(f"IV measure error: {exc}")
+            return
+        if self._measuring:
+            self.app.ui_bus.post_log("K2450 measurement already in progress.")
+            return
+        self._measuring = True
+        self._set_measure_buttons_enabled(False)
+        t = threading.Thread(target=self._measure_iv_worker, daemon=True, name="hall-iv-measure")
+        t.start()
+
     def _measure_worker(self) -> None:
         try:
             from v3.core.measurements import measure_hall
@@ -515,6 +743,151 @@ class HallTab(BaseTab):
             self.app.ui_bus.post_log(f"Hall measure error: {exc}")
         finally:
             try:
+                self.app.root.after(0, self._measure_done)
+            except Exception:
+                self._measuring = False
+
+    def _measure_resistance_worker(self) -> None:
+        try:
+            from v3.core.measurements import measure_resistance
+            ctx = self.app.make_context()
+            self.app.ui_bus.post(W_LED_HALL, True)
+            self.app.root.after(0, lambda: set_led(self.source_led, True))
+
+            voltage_range_raw = str(self.k2450_resistance_voltage_range.get())
+            auto_range = voltage_range_raw.lower() == "auto"
+            voltage_range = None if auto_range else float(voltage_range_raw)
+            current_a = float(self.k2450_resistance_current_mA.get()) / 1000.0
+            result = measure_resistance(
+                ctx,
+                current=current_a,
+                compliance=float(self.k2450_resistance_compliance_v.get()),
+                nplc=float(self.k2450_resistance_nplc.get()),
+                voltage_range=voltage_range,
+                auto_range=auto_range,
+                settle_time=float(self.k2450_resistance_settle.get()),
+                repetitions=int(self.k2450_resistance_repetitions.get()),
+            )
+            ctx.data_mgr.write_row(result, measurement_type="Resistance")
+            self.app.ui_bus.post(W_RESULTS_NEW_POINT, True)
+
+            resistance = float(result.get("Sample_Resistance", 0.0))
+            resistance_error = abs(float(result.get("Sample_Resistance_Error", 0.0)))
+            measured_v = float(result.get("IV_Measured_Voltage", 0.0))
+
+            def _apply() -> None:
+                self.k2450_aux_result.configure(text=f"R: {resistance:.6e} +/- {resistance_error:.2e} Ohm (V={measured_v:.3e})")
+                self.resistance_display_label.configure(text=f"Resistance: {resistance:.6e} +/- {resistance_error:.2e} Ohm")
+                self.resistance_current_display_label.configure(text=f"R current: {current_a * 1000.0:.3f} mA")
+                self._append_status(f"Measured resistance: {resistance:.6e} Ohm")
+                self.app.ui_bus.post_log(f"K2450 resistance: {resistance:.6e} Ohm")
+
+            self.app.root.after(0, _apply)
+        except Exception as exc:
+            def _show_error() -> None:
+                self._append_status(f"Resistance measurement failed: {exc}", is_error=True)
+                self.app.ui_bus.post_log(f"Resistance measure error: {exc}")
+
+            self.app.root.after(0, _show_error)
+        finally:
+            try:
+                self.app.ui_bus.post(W_LED_HALL, False)
+                _src = self._source_enabled
+                self.app.root.after(0, lambda: set_led(self.source_led, _src))
+                self.app.root.after(0, self._measure_done)
+            except Exception:
+                self._measuring = False
+
+    def _measure_iv_worker(self) -> None:
+        try:
+            from v3.core.measurements import measure_iv_curve
+            ctx = self.app.make_context()
+            self.app.ui_bus.post(W_LED_HALL, True)
+            self.app.root.after(0, lambda: set_led(self.source_led, True))
+            t0 = time.perf_counter()
+
+            source_range_raw = str(self.k2450_iv_source_range.get())
+            measure_range_raw = str(self.k2450_iv_measure_range.get())
+            source_range = None if source_range_raw.lower() == "auto" else float(source_range_raw)
+            measure_range = None if measure_range_raw.lower() == "auto" else float(measure_range_raw)
+            iv_auto_range = measure_range is None
+
+            iv_mode = str(self.k2450_iv_mode.get())
+            _ma_to_a = 1e-3 if iv_mode.strip().lower() in {"current", "source_current", "i"} else 1.0
+            ramp_enabled = bool(self.k2450_iv_ramp_to_start.get())
+
+            result = measure_iv_curve(
+                ctx,
+                mode=iv_mode,
+                shape=str(self.k2450_iv_shape.get()),
+                start=float(self.k2450_iv_start.get()) * _ma_to_a,
+                iv_min=float(self.k2450_iv_min.get()) * _ma_to_a,
+                iv_max=float(self.k2450_iv_max.get()) * _ma_to_a,
+                step=float(self.k2450_iv_step.get()) * _ma_to_a,
+                source_range=source_range,
+                measure_range=measure_range,
+                compliance=float(self.k2450_iv_compliance.get()),
+                nplc=float(self.k2450_iv_nplc.get()),
+                auto_range=iv_auto_range,
+                settle_time=float(self.k2450_iv_settle.get()),
+                repetitions=int(self.k2450_iv_repetitions.get()),
+                keep_output=False,
+                reset_to_zero=ramp_enabled,
+                ramp_to_start=ramp_enabled,
+                env_sample_interval=float(self.k2450_iv_env_interval.get()),
+            )
+
+            wrote = ctx.data_mgr.write_rows(result.get("points", []), measurement_type="IV")
+            if wrote > 0:
+                self.app.ui_bus.post(W_RESULTS_NEW_POINT, True)
+
+            elapsed_s = max(0.0, time.perf_counter() - t0)
+            cleanup = result.get("cleanup", {}) if isinstance(result, dict) else {}
+            ramp_requested = bool(cleanup.get("requested_ramp_to_start"))
+            zero_requested = bool(cleanup.get("requested_reset_to_zero"))
+
+            if ramp_requested:
+                pre_ramp_status = "done" if cleanup.get("ramped_to_start") else "not needed"
+            else:
+                pre_ramp_status = "off"
+
+            if zero_requested:
+                post_ramp_status = "done" if cleanup.get("reset_to_zero") else "failed"
+            else:
+                post_ramp_status = "off"
+
+            output_status = "disabled" if cleanup.get("source_disabled") else "left enabled"
+            ramp_mode = "ON" if ramp_requested else "OFF"
+
+            cleanup_msg = (
+                f"IV cleanup (Ramp {ramp_mode}): "
+                f"pre-ramp->start={pre_ramp_status}; "
+                f"post-ramp->zero={post_ramp_status}; "
+                f"output={output_status}"
+            )
+
+            def _apply() -> None:
+                self.k2450_aux_result.configure(text=f"IV: {result.get('point_count', 0)} points")
+                self._append_status(
+                    f"Recorded IV curve with {result.get('point_count', 0)} points in {elapsed_s:.2f} s"
+                )
+                self._append_status(cleanup_msg)
+                self.app.ui_bus.post_log(f"K2450 IV curve recorded: {result.get('point_count', 0)} points")
+                self.app.ui_bus.post_log(f"K2450 {cleanup_msg}")
+
+            self.app.root.after(0, _apply)
+        except Exception as exc:
+            exc_text = str(exc)
+            def _show_error() -> None:
+                self._append_status(f"IV measurement failed: {exc_text}", is_error=True)
+                self.app.ui_bus.post_log(f"IV measure error: {exc_text}")
+
+            self.app.root.after(0, _show_error)
+        finally:
+            try:
+                self.app.ui_bus.post(W_LED_HALL, False)
+                _src = self._source_enabled
+                self.app.root.after(0, lambda: set_led(self.source_led, _src))
                 self.app.root.after(0, self._measure_done)
             except Exception:
                 self._measuring = False

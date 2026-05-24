@@ -69,7 +69,6 @@ class HelmholtzTab(BaseTab):
         self._detached_line_a = None
         self._detached_line_b = None
         self._grid_enabled: bool = True
-        self._grid_buttons: list[ttk.Button] = []
 
     def create_widgets(self) -> None:
         # --- Connection header ---
@@ -356,30 +355,6 @@ class HelmholtzTab(BaseTab):
 
     def _add_toolbar_buttons(self, toolbar: tk.Widget, autoscale_cmd) -> None:
         ttk.Button(toolbar, text="Autoscale", command=autoscale_cmd, width=10).pack(side="left", padx=(6, 0))
-        grid_btn = ttk.Button(toolbar, text="Grid On", command=self._toggle_grid, width=10)
-        grid_btn.pack(side="left", padx=(4, 0))
-        self._grid_buttons.append(grid_btn)
-        self._refresh_grid_button_labels()
-
-    def _refresh_grid_button_labels(self) -> None:
-        text = "Grid On" if self._grid_enabled else "Grid Off"
-        active_buttons: list[ttk.Button] = []
-        for btn in self._grid_buttons:
-            if btn.winfo_exists():
-                btn.configure(text=text)
-                active_buttons.append(btn)
-        self._grid_buttons = active_buttons
-
-    def _toggle_grid(self) -> None:
-        self._grid_enabled = not self._grid_enabled
-        for ax in (self.ax, self._detached_ax):
-            if ax is not None:
-                ax.grid(self._grid_enabled, which="both", linestyle="--", linewidth=0.6, alpha=0.35)
-        if self.canvas is not None:
-            self.canvas.draw_idle()
-        if self._detached_canvas is not None:
-            self._detached_canvas.draw_idle()
-        self._refresh_grid_button_labels()
 
     @staticmethod
     def _autoscale_plot(ax, canvas) -> None:

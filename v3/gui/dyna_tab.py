@@ -82,7 +82,7 @@ class DynaTab(BaseTab):
         self._detached_line_field = None
         self._grid_enabled: bool = True
         self._grid_buttons: list[ttk.Button] = []
-        self._xlink_guard: bool = False
+        self._plot_update_guard: bool = False
 
     def create_widgets(self) -> None:
         self._conn_header = ConnectionHeader(
@@ -320,11 +320,6 @@ class DynaTab(BaseTab):
         toolbar = NavigationToolbar2Tk(self.canvas, parent, pack_toolbar=False)
         toolbar.pack(side="top", fill="x")
         toolbar.update()
-        self._add_toolbar_buttons(
-            toolbar,
-            lambda: self._autoscale_axes(self.ax_temp, self.ax_field, self.canvas),
-        )
-        self._install_x_link_callbacks(self.ax_temp, self.ax_field, self.canvas)
 
         controls = ttk.Frame(parent)
         controls.pack(fill="x", padx=5, pady=(6, 0))
@@ -390,16 +385,7 @@ class DynaTab(BaseTab):
         self._detached_canvas.get_tk_widget().pack(fill="both", expand=True)
         detached_toolbar = NavigationToolbar2Tk(self._detached_canvas, frame)
         detached_toolbar.update()
-        self._add_toolbar_buttons(
-            detached_toolbar,
-            lambda: self._autoscale_axes(
-                self._detached_ax_temp,
-                self._detached_ax_field,
-                self._detached_canvas,
-            ),
-        )
         self._detached_plot_window = win
-        self._install_x_link_callbacks(self._detached_ax_temp, self._detached_ax_field, self._detached_canvas)
         win.bind("<Configure>", self._on_detached_window_resize)
         win.protocol("WM_DELETE_WINDOW", self._close_detached_plot_window)
         self.update_plot()
@@ -448,8 +434,8 @@ class DynaTab(BaseTab):
                     self._detached_canvas,
                 )
 
-    @staticmethod
     def _update_plot_components(
+        self,
         t_data,
         temp_data,
         field_data,
@@ -459,35 +445,23 @@ class DynaTab(BaseTab):
         line_field,
         canvas,
     ) -> None:
-        line_temp.set_data(t_data, temp_data)
-        line_field.set_data(t_data, field_data)
-        for ax in (ax_temp, ax_field):
-            ax.relim()
-            ax.autoscale_view()
-        canvas.draw_idle()
-
-    def _add_toolbar_buttons(self, toolbar: tk.Widget, autoscale_cmd) -> None:
-        ttk.Button(toolbar, text="Autoscale", command=autoscale_cmd, width=10).pack(side="left", padx=(6, 0))
-        grid_btn = ttk.Button(toolbar, text="Grid On", command=self._toggle_grid, width=10)
-        grid_btn.pack(side="left", padx=(4, 0))
-        self._grid_buttons.append(grid_btn)
-        self._refresh_grid_button_labels()
-
-    def _install_x_link_callbacks(self, upper_ax, lower_ax, canvas) -> None:
-        if upper_ax is None or lower_ax is None or canvas is None:
-            return
-        upper_ax.callbacks.connect("xlim_changed", lambda _ax: self._sync_x_limits(upper_ax, lower_ax, canvas))
-        lower_ax.callbacks.connect("xlim_changed", lambda _ax: self._sync_x_limits(lower_ax, upper_ax, canvas))
-
-    def _sync_x_limits(self, source_ax, target_ax, canvas) -> None:
-        if source_ax is None or target_ax is None or canvas is None or self._xlink_guard:
-            return
+        self._plot_update_guard = True
         try:
-            self._xlink_guard = True
-            target_ax.set_xlim(source_ax.get_xlim())
+            line_temp.set_data(t_data, temp_data)
+            line_field.set_data(t_data, field_data)
+            for ax in (ax_temp, ax_field):
+                ax.relim()
+                ax.autoscale_view()
             canvas.draw_idle()
         finally:
-            self._xlink_guard = False
+            self._plot_update_guard = False
+
+    def _has_live_plot_data(self) -> bool:
+        """Return True when app plot buffers are concrete sequences (not test mocks)."""
+        t = getattr(self.app, "dyna_time_data", None)
+        temp = getattr(self.app, "dyna_temp_data", None)
+        field = getattr(self.app, "dyna_field_data", None)
+        return isinstance(t, list) and isinstance(temp, list) and isinstance(field, list)
 
     def _apply_grid_to_axes(self, *axes) -> None:
         for ax in axes:
@@ -513,17 +487,6 @@ class DynaTab(BaseTab):
             self._detached_canvas.draw_idle()
         self._refresh_grid_button_labels()
 
-    @staticmethod
-    def _autoscale_axes(ax_temp, ax_field, canvas) -> None:
-        if canvas is None or ax_temp is None or ax_field is None:
-            return
-        for ax in (ax_temp, ax_field):
-            ax.set_autoscalex_on(True)
-            ax.set_autoscaley_on(True)
-            ax.relim()
-            ax.autoscale_view()
-        canvas.draw_idle()
-
     # ------------------------------------------------------------------
     # Event handling
     # ------------------------------------------------------------------
@@ -531,9 +494,13 @@ class DynaTab(BaseTab):
         if widget_id == W_DYNA_TEMP:
             self._temp_value = float(value) if value is not None else None
             self._render_temp_display()
+            if self._has_live_plot_data():
+                self.update_plot()
         elif widget_id == W_DYNA_FIELD:
             self._field_value = float(value) if value is not None else None
             self._render_field_display()
+            if self._has_live_plot_data():
+                self.update_plot()
         elif widget_id == W_DYNA_CHAMBER:
             try:
                 self._chamber_value = int(value) if value is not None else None
@@ -551,6 +518,7 @@ class DynaTab(BaseTab):
             self._render_chamber_display()
         elif widget_id == W_DYNA_LOG_MESSAGE:
             self._append_log(str(value))
+            self.update_plot()
         elif widget_id == W_DYNA_CONNECTED:
             if self._conn_header:
                 self._conn_header.set_connected(bool(value))

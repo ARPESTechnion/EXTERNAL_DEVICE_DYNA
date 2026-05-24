@@ -22,6 +22,8 @@ from v3.core.measurements import (
     configure_channel,
     disable_hall_output,
     enable_hall_output,
+    measure_iv_curve,
+    measure_resistance,
     measure_lockin_continuous,
     lockin_auto_gain,
     lockin_auto_phase,
@@ -44,6 +46,7 @@ from v3.core.ui_events import (
     W_DYNA_SETPOINT,
     W_HALL_RESULT,
     W_HELMHOLTZ_SETPOINT,
+    W_LED_HALL,
     W_LOCKIN_CHANNEL,
     W_LED_LOCKIN,
     W_LOCKIN_OUTPUT_VOLTAGE,
@@ -113,6 +116,36 @@ def _parse_voltage_range(raw: str | float | int | None, *, default_raw: str = "a
     if text.endswith("v"):
         return float(text[:-1]), False
     return float(text), False
+
+
+def _parse_source_value(raw: str | float | int | None, *, mode: str, default: float | None = None) -> float | None:
+    if raw is None:
+        return default
+    text = str(raw).strip().lower()
+    if text == "":
+        return default
+
+    if mode == "current":
+        if text.endswith("ma"):
+            return float(text[:-2]) * 1e-3
+        if text.endswith("ua"):
+            return float(text[:-2]) * 1e-6
+        if text.endswith("a"):
+            return float(text[:-1])
+        return float(text)
+
+    if text.endswith("mv"):
+        return float(text[:-2]) * 1e-3
+    if text.endswith("v"):
+        return float(text[:-1])
+    return float(text)
+
+
+def _kw_with_unit_suffix(cmd: ParsedCommand, key: str, milli_key: str) -> str | None:
+    milli_val = cmd.get_str(milli_key, None)
+    if milli_val is not None:
+        return f"{milli_val}mA"
+    return cmd.get_str(key, None)
 
 
 def _normalize_wait_events(tokens: list[str]) -> list[str]:
@@ -635,7 +668,7 @@ def _dispatch(
 
         elif name == "measure_hall_field":
             current_mA = cmd.get_float("current", app.hall_tab.k2450_current.get())
-            nplc = cmd.get_float("nplc", app.hall_tab.k2450_nplc.get())
+            nplc = cmd.get_float("nplc", app.hall_tab.k2450_iv_nplc.get())
             compliance_v = cmd.get_float("compliance_v", app.hall_tab.k2450_compliance_v.get())
             voltage_range_raw = cmd.get_str("voltage_range", app.hall_tab.k2450_voltage_range.get())
             voltage_range, auto_range = _parse_voltage_range(
@@ -659,6 +692,108 @@ def _dispatch(
             _post_hall_result_events(ctx, app, result)
             ctx.ui_bus.post_log("Hall measurement recorded")
             ctx.ui_bus.post(W_RESULTS_NEW_POINT, True)
+
+        elif name == "measure_resistance":
+            current_default_a = float(app.hall_tab.k2450_resistance_current_mA.get()) / 1000.0
+            current = _parse_source_value(
+                _kw_with_unit_suffix(cmd, "current", "current_ma"),
+                mode="current",
+                default=current_default_a,
+            )
+            if current is None:
+                raise ValueError("measure_resistance requires current")
+            nplc = cmd.get_float("nplc", app.hall_tab.k2450_resistance_nplc.get())
+            compliance = cmd.get_float("compliance", app.hall_tab.k2450_resistance_compliance_v.get())
+            voltage_range_raw = cmd.get_str("voltage_range", app.hall_tab.k2450_resistance_voltage_range.get())
+            voltage_range, auto_range = _parse_voltage_range(
+                voltage_range_raw,
+                default_raw=str(app.hall_tab.k2450_resistance_voltage_range.get()),
+            )
+            settle_time = cmd.get_float("settle_time", app.hall_tab.k2450_resistance_settle.get())
+            repetitions = cmd.get_int("repetitions", app.hall_tab.k2450_resistance_repetitions.get())
+
+            ctx.ui_bus.post(W_LED_HALL, True)
+            try:
+                result = measure_resistance(
+                    ctx,
+                    current=float(current),
+                    compliance=float(compliance),
+                    nplc=nplc,
+                    voltage_range=voltage_range,
+                    auto_range=auto_range,
+                    settle_time=float(settle_time),
+                    repetitions=repetitions,
+                )
+            finally:
+                ctx.ui_bus.post(W_LED_HALL, False)
+            ctx.data_mgr.write_row(result, measurement_type="Resistance")
+            ctx.ui_bus.post_log("Resistance measurement recorded")
+            ctx.ui_bus.post(W_RESULTS_NEW_POINT, True)
+
+        elif name == "measure_iv_curve":
+            mode = cmd.get_str("mode", "current")
+            mode_norm = str(mode).strip().lower()
+            source_mode = "current" if mode_norm in {"current", "source_current", "i"} else "voltage"
+
+            start = _parse_source_value(_kw_with_unit_suffix(cmd, "start", "start_ma"), mode=source_mode)
+            step = _parse_source_value(_kw_with_unit_suffix(cmd, "step", "step_ma"), mode=source_mode)
+            iv_min = _parse_source_value(
+                _kw_with_unit_suffix(cmd, "min", "min_ma") or cmd.get_str("iv_min", None),
+                mode=source_mode,
+            )
+            iv_max = _parse_source_value(
+                _kw_with_unit_suffix(cmd, "max", "max_ma") or cmd.get_str("iv_max", None),
+                mode=source_mode,
+            )
+            stop = _parse_source_value(_kw_with_unit_suffix(cmd, "stop", "stop_ma"), mode=source_mode)
+
+            shape = cmd.get_str("shape", "start_min_max_start" if (iv_min is not None and iv_max is not None) else "start_max_start")
+            if start is None or step is None:
+                raise ValueError("measure_iv_curve requires start and step")
+            if (iv_min is None) ^ (iv_max is None):
+                raise ValueError("measure_iv_curve with min/max syntax requires both min and max")
+            if iv_min is None and iv_max is None and stop is None:
+                raise ValueError("measure_iv_curve requires start,min,max,step (preferred) or start,stop,step")
+
+            source_range = cmd.get_float("source_range")
+            measure_range = cmd.get_float("measure_range")
+            compliance = cmd.get_float("compliance")
+            nplc = cmd.get_float("nplc", app.hall_tab.k2450_nplc.get())
+            auto_range = cmd.get_bool("auto_range", True)
+            settle_time = cmd.get_float("settle_time", 0.0)
+            repetitions = cmd.get_int("repetitions", 1)
+            keep_output = cmd.get_bool("keep_output", False)
+            ramp_to_start = cmd.get_bool("ramp_to_start", True)
+            reset_to_zero = cmd.get_bool("reset_to_zero", ramp_to_start)
+
+            ctx.ui_bus.post(W_LED_HALL, True)
+            try:
+                result = measure_iv_curve(
+                    ctx,
+                    mode=mode,
+                    shape=shape,
+                    start=float(start),
+                    stop=None if stop is None else float(stop),
+                    step=float(step),
+                    iv_min=None if iv_min is None else float(iv_min),
+                    iv_max=None if iv_max is None else float(iv_max),
+                    source_range=source_range,
+                    measure_range=measure_range,
+                    compliance=compliance,
+                    nplc=nplc,
+                    auto_range=auto_range,
+                    settle_time=settle_time,
+                    repetitions=repetitions,
+                    keep_output=keep_output,
+                    ramp_to_start=ramp_to_start,
+                    reset_to_zero=reset_to_zero,
+                )
+            finally:
+                ctx.ui_bus.post(W_LED_HALL, False)
+            wrote = ctx.data_mgr.write_rows(result["points"], measurement_type="IV")
+            if wrote > 0:
+                ctx.ui_bus.post(W_RESULTS_NEW_POINT, True)
+            ctx.ui_bus.post_log(f"IV curve recorded ({result['point_count']} points)")
 
         elif name == "continuous_measure_hall_field":
             current_mA = cmd.get_float("current", app.hall_tab.k2450_current.get())

@@ -1,7 +1,7 @@
 """
 v3.gui.switch_tab  —  Switch matrix control tab.
 
-Provides channel configuration (I+, V+, V−, I− for channels a-h),
+Provides channel configuration (I+, V+, V−, I− for channels a-j),
 open/close controls, connection status, and device photo annotation.
 """
 
@@ -14,7 +14,7 @@ from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 from typing import TYPE_CHECKING, Any
 
-from v3.core.constants import INST_SWITCH, LOGICAL_CHANNELS
+from v3.core.constants import INST_SWITCH, LOGICAL_CHANNELS, SWITCH_PIN_MAX
 from v3.core.ui_events import (
     W_LED_SWITCH,
     W_INSTRUMENT_ERROR,
@@ -119,7 +119,7 @@ class SwitchTab(BaseTab):
             ttk.Label(frame, text=ch.upper()).grid(row=row_idx, column=0, padx=5, pady=2)
             for col_idx, pin in enumerate(["I+", "V+", "V-", "I-"], start=1):
                 var = self.app.channel_configs[ch][pin]
-                ttk.Spinbox(frame, from_=1, to=8, textvariable=var, width=5).grid(
+                ttk.Spinbox(frame, from_=1, to=SWITCH_PIN_MAX, textvariable=var, width=5).grid(
                     row=row_idx, column=col_idx, padx=5, pady=2
                 )
 
@@ -457,7 +457,7 @@ class SwitchTab(BaseTab):
 
     def _parse_config_line(self, line: str) -> tuple[str, dict[str, int]] | None:
         pattern = (
-            r"^\s*([A-Ha-h])\s*:\s*I\+\s*=\s*(\d+)\s*,\s*"
+            r"^\s*([A-Za-z])\s*:\s*I\+\s*=\s*(\d+)\s*,\s*"
             r"V\+\s*=\s*(\d+)\s*,\s*V-\s*=\s*(\d+)\s*,\s*I-\s*=\s*(\d+)\s*$"
         )
         match = re.match(pattern, line)
@@ -465,9 +465,11 @@ class SwitchTab(BaseTab):
             return None
 
         channel = match.group(1).lower()
+        if channel not in LOGICAL_CHANNELS:
+            return None
         ip, vp, vm, im = (int(match.group(i)) for i in range(2, 6))
         for pin in (ip, vp, vm, im):
-            if pin < 1 or pin > 8:
+            if pin < 1 or pin > SWITCH_PIN_MAX:
                 raise ValueError(f"Pin number out of range in line: {line}")
 
         return channel, {"I+": ip, "V+": vp, "V-": vm, "I-": im}
@@ -682,11 +684,11 @@ class SwitchTab(BaseTab):
         size_spinbox.grid(row=1, column=1, sticky="ew", padx=2, pady=2)
         size_spinbox.bind("<FocusOut>", lambda e: self._redraw_photo_canvas())
 
-        # Label buttons (1-8)
+        # Label buttons (1-N, based on switch backend)
         label_btn_frame = ttk.Frame(label_ctrl_frame)
         label_btn_frame.grid(row=2, column=0, columnspan=2, sticky="ew", pady=5)
         ttk.Label(label_btn_frame, text="Place Label:").pack(side="left", padx=2)
-        for num in range(1, 9):
+        for num in range(1, SWITCH_PIN_MAX + 1):
             btn = ttk.Button(
                 label_btn_frame, text=str(num), width=3,
                 command=lambda n=num: self._prepare_label_placement(n),

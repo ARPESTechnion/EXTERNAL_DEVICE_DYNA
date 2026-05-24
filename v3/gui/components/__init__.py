@@ -3,7 +3,7 @@
 from .control_group import ControlGroup
 from .notification_toast import NotificationToast
 from .status_strip import StatusStrip
-from .validating_entry import ValidatingEntry, make_float_validator
+from .validating_entry import ValidatingEntry, make_float_validator, make_int_validator
 
 __all__ = [
     "ControlGroup",
@@ -11,4 +11,5 @@ __all__ = [
     "StatusStrip",
     "ValidatingEntry",
     "make_float_validator",
+    "make_int_validator",
 ]
