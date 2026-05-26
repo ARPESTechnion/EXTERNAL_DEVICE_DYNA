@@ -1,0 +1,9 @@
+## Resistance cooldown
+initialize_data_file append=false directory=Quamcore filename=wafer18_CTR_BOTTOM_CD_R
+
+sweep_dyna_temp 300 1.8 10 gap_time=0
+  close_channel a
+  measure_resistance compliance=0.001 current_ma=0.00001
+  close_channel b
+  measure_resistance compliance=0.001 current_ma=0.00001
+open_all_channels

@@ -251,6 +251,16 @@ class Keithley2450Wrapper:
         compliance_voltage : float
             Compliance voltage in V
         """
+        # K2450 can reject compliance updates with error 5077 if a previous
+        # measurement left VOLT sense on the 20 mV range. Prime a safe range
+        # before changing source limits so all caller paths are protected.
+        try:
+            self.instrument.write(":SENS:FUNC 'VOLT'")
+            self.instrument.write(":SENS:VOLT:RANG 21")
+            self.instrument.write(":SENS:VOLT:RANG:AUTO ON")
+        except Exception:
+            # Keep behavior resilient across firmware/adapter variants.
+            pass
         self.instrument.apply_current(
             current_range=current_range,
             compliance_voltage=compliance_voltage
