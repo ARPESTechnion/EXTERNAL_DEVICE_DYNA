@@ -24,8 +24,8 @@ from v3.gui.app import main
 #  True  -> mock instruments (no hardware needed)
 #  False -> real instruments
 # ===========================================================
-#Use_MockUp = True
-Use_MockUp = False
+Use_MockUp = True
+#Use_MockUp = False
 
 
 def _resolve_mockup_flag() -> bool:

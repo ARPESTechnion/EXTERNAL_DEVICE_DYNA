@@ -737,24 +737,26 @@ class MeasureApp:
                 logger.exception("LockIn cleanup failed")
 
     def _connect_switch(self) -> bool:
+        if self.USE_MOCKUP:
+            # Keep mock-mode behavior aligned to the Keithley7001 switch model.
+            from Utility.Keithley7001 import MockKeithley7001 as SwitchDriver
+
+            inst = SwitchDriver()
+            inst.connect()
+            inst.open_all()
+            self.bus.connect(INST_SWITCH, inst)
+            return True
+
         backend = str(SWITCH_BACKEND).strip().lower()
 
         if backend == "keithley7001":
-            if self.USE_MOCKUP:
-                from Utility.Keithley7001 import MockKeithley7001 as SwitchDriver
-                inst = SwitchDriver()
-            else:
-                from Utility.Keithley7001 import Keithley7001 as SwitchDriver  # type: ignore[assignment]
-                inst = SwitchDriver(resource_name=SWITCH_ADDRESS_7001)
+            from Utility.Keithley7001 import Keithley7001 as SwitchDriver  # type: ignore[assignment]
+            inst = SwitchDriver(resource_name=SWITCH_ADDRESS_7001)
         elif backend in {"my_switch", "legacy"}:
-            if self.USE_MOCKUP:
-                from Utility.MySwitch import MockSwitch as SwitchDriver
-            else:
-                from Utility.MySwitch import MySwitch as SwitchDriver  # type: ignore[assignment]
+            from Utility.MySwitch import MySwitch as SwitchDriver  # type: ignore[assignment]
             inst = SwitchDriver()
-            if not self.USE_MOCKUP:
-                # Keep backward compatibility with older single-address constant.
-                inst.address = SWITCH_ADDRESS_MY or SWITCH_ADDRESS
+            # Keep backward compatibility with older single-address constant.
+            inst.address = SWITCH_ADDRESS_MY or SWITCH_ADDRESS
         else:
             raise ValueError(
                 f"Unsupported switch backend '{SWITCH_BACKEND}'. "
