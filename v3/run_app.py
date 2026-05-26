@@ -19,7 +19,6 @@ if __package__ in (None, ""):
 
 from v3.gui.app import main
 
-
 # ===========================================================
 #  Easy startup toggle  (remember to SAVE the file!)
 #  True  -> mock instruments (no hardware needed)
