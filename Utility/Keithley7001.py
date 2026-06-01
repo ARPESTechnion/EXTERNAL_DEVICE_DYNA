@@ -8,19 +8,19 @@ import pyvisa
 class _Keithley7001Base:
     """Shared behavior for real and mock Keithley 7001 switch drivers."""
 
-    def __init__(self, relay_settle_s: float = 1.0) -> None:
+    def __init__(self, relay_settle_s: float = 1.0, max_columns: int = 10) -> None:
         self.name = "Keithley7001"
         self.data: list[str] = []
         self.IsConnected = False
         # UI status code in v3 matches by column-number strings.
         self.closed_channels: set[str] = set()
         self._relay_settle_s = max(0.0, float(relay_settle_s))
+        self._max_columns = max(1, int(max_columns))
 
-    @staticmethod
-    def _validate_column(column: int) -> int:
+    def _validate_column(self, column: int) -> int:
         value = int(column)
-        if value < 1 or value > 8:
-            raise ValueError(f"Routing number {value} out of range (1-8)")
+        if value < 1 or value > self._max_columns:
+            raise ValueError(f"Routing number {value} out of range (1-{self._max_columns})")
         return value
 
     @staticmethod
@@ -63,8 +63,9 @@ class Keithley7001(_Keithley7001Base):
         timeout: int = 5000,
         debug: bool = False,
         relay_settle_s: float = 1.0,
+        max_columns: int = 10,
     ) -> None:
-        super().__init__(relay_settle_s=relay_settle_s)
+        super().__init__(relay_settle_s=relay_settle_s, max_columns=max_columns)
         self.address = resource_name
         self.timeout = int(timeout)
         self.debug = bool(debug)
@@ -140,8 +141,8 @@ class Keithley7001(_Keithley7001Base):
 class MockKeithley7001(_Keithley7001Base):
     """Mock Keithley 7001 driver used in mockup mode and tests."""
 
-    def __init__(self, relay_settle_s: float = 0.0) -> None:
-        super().__init__(relay_settle_s=relay_settle_s)
+    def __init__(self, relay_settle_s: float = 0.0, max_columns: int = 10) -> None:
+        super().__init__(relay_settle_s=relay_settle_s, max_columns=max_columns)
         self.name = "MockKeithley7001"
         self.address = "MOCK::KEITHLEY7001::INSTR"
         self.switch = None

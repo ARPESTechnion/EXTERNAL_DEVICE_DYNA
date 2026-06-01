@@ -16,6 +16,7 @@ The DSL is line-oriented:
 from __future__ import annotations
 
 import logging
+import re
 from dataclasses import dataclass, field
 
 from v3.core.constants import LOGICAL_CHANNELS, SWITCH_PIN_MAX
@@ -88,6 +89,7 @@ LOOP_COMMANDS = frozenset({
     "scan_ppms_field_and_fix_hall",
     "time_sweep",
     "for_loop",
+    "repeat",
 })
 
 MAX_LOOP_NESTING = 5
@@ -125,6 +127,7 @@ VALID_COMMANDS = frozenset({
     "open_all_channels",
     "close_channel",
     "configure_channel",
+    "set",
 }) | LOOP_COMMANDS
 
 # Commands that require specific instruments
@@ -190,6 +193,8 @@ MIN_POSITIONAL: dict[str, int] = {
     "wait_for": 2,            # event(s) + additional_time
     "time_sweep": 2,          # sweep_time_s time_gap_s
     "for_loop": 1,            # iterations
+    "repeat": 1,              # iterations (alias of for_loop)
+    "set": 2,                 # name expression
 }
 
 
@@ -271,6 +276,12 @@ class ScriptParser:
                     i += 1
                     continue
 
+                if stripped.lower() == "end":
+                    i += 1
+                    if parent_indent is None:
+                        continue
+                    break
+
                 indent = len(line) - len(line.lstrip())
                 if parent_indent is not None and indent <= parent_indent:
                     break
@@ -296,6 +307,36 @@ class ScriptParser:
         args: list[str] = []
         kwargs: dict[str, str] = {}
         has_multiple_commands = False
+
+        if name == "set":
+            remainder = stripped[len(parts[0]):].strip() if parts else ""
+            var_name = ""
+            expr = ""
+            if "=" in remainder:
+                left, right = remainder.split("=", 1)
+                var_name = left.strip()
+                expr = right.strip()
+            else:
+                set_parts = remainder.split(None, 1)
+                if set_parts:
+                    var_name = set_parts[0].strip()
+                if len(set_parts) > 1:
+                    expr = set_parts[1].strip()
+
+            if var_name:
+                args.append(var_name)
+            if expr:
+                args.append(expr)
+
+            return ParsedCommand(
+                name=name,
+                args=args,
+                kwargs={},
+                line_number=line_number,
+                raw=stripped,
+                indent=indent,
+                has_multiple_commands=False,
+            )
 
         for part in parts[1:]:
             if "=" in part:
@@ -452,6 +493,12 @@ class ScriptValidator:
             # Command-specific enumerated options
             self._validate_choice_args(cmd, errors)
 
+            if cmd.name == "set":
+                self._validate_set_command(cmd, errors)
+
+            if cmd.name in {"for_loop", "repeat"}:
+                self._validate_loop_iterations_expr(cmd, errors)
+
         return errors
 
     def _validate_numeric_args(
@@ -478,7 +525,6 @@ class ScriptValidator:
             "set_ppms_field_and_fix_hall": [0, 1],
             "scan_ppms_field_and_fix_hall": [0, 1, 2, 3],
             "time_sweep": [0, 1],
-            "for_loop": [0],
         }
 
         positions = numeric_commands.get(cmd.name, [])
@@ -502,6 +548,61 @@ class ScriptValidator:
                     line_number=cmd.line_number,
                     message=f"'close_channel' argument 1 must be channel name ({_CHANNEL_LIST_TEXT})",
                 ))
+
+    def _validate_set_command(
+        self,
+        cmd: ParsedCommand,
+        errors: list[ValidationError],
+    ) -> None:
+        if not cmd.args:
+            errors.append(ValidationError(
+                line_number=cmd.line_number,
+                message="'set' requires a constant name",
+            ))
+            return
+
+        name = str(cmd.args[0]).strip()
+        if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", name):
+            errors.append(ValidationError(
+                line_number=cmd.line_number,
+                message="'set' constant name must match [A-Za-z_][A-Za-z0-9_]*",
+            ))
+
+    def _validate_loop_iterations_expr(
+        self,
+        cmd: ParsedCommand,
+        errors: list[ValidationError],
+    ) -> None:
+        if not cmd.args:
+            return
+        token = str(cmd.args[0]).strip()
+        # Allow constants ($name), arithmetic expressions, and plain numeric literals.
+        if "$" in token:
+            return
+        try:
+            float(token)
+            return
+        except ValueError:
+            pass
+        if re.fullmatch(r"[0-9eE+\-*/().\s]+", token):
+            return
+        errors.append(ValidationError(
+            line_number=cmd.line_number,
+            message=(
+                f"'{cmd.name}' argument 1 ('{token}') must be numeric or use $constant expressions"
+            ),
+        ))
+
+    def _is_numeric_or_expr(self, token: str) -> bool:
+        value = str(token).strip()
+        if "$" in value:
+            return True
+        try:
+            float(value)
+            return True
+        except ValueError:
+            pass
+        return bool(re.fullmatch(r"[0-9eE+\-*/().\s]+", value))
 
     def _validate_unknown_kwargs(
         self,
@@ -538,9 +639,7 @@ class ScriptValidator:
             ))
             return
 
-        try:
-            float(cmd.args[-1])
-        except ValueError:
+        if not self._is_numeric_or_expr(cmd.args[-1]):
             errors.append(ValidationError(
                 line_number=cmd.line_number,
                 message="'wait_for' last argument must be a numeric duration (seconds)",

@@ -1,0 +1,25 @@
+# Instrument-connected smoke test
+# Requires: switch + Keithley2450 hall + lock-in connected.
+# Purpose: quick end-to-end sanity check with low-stress settings.
+
+initialize_data_file filename=test_instruments_smoke_connected.csv
+add_note Starting connected-instruments smoke test
+
+# Route channel a and perform one Hall + one Lock-In measurement.
+close_channel a
+
+enable_hall_output current=1e-3 compliance_v=1.0
+wait_for no_event 0.1
+
+measure_hall_field current=1e-3 nplc=1 compliance_v=1.0 filter_count=3 tbm=0.05
+measure_resistance current=1e-3 compliance=1.0 nplc=1 repetitions=1 settle_time=0.02
+measure_iv_curve mode=current shape=single start=0 stop=2e-4 step=1e-4 compliance=1.0 nplc=1 repetitions=1 auto_range=true
+
+measure_lockin what=X,Y,R avg=3 sample_delay=0.05 use_autorange=true use_autophase=true
+full_measure a hall_excitation=keep hall_nplc=1 hall_compliance=1.0 lockin_avg=3 lockin_sample_delay=0.05
+
+disable_hall_output
+open_all_channels
+
+add_note Connected-instruments smoke test completed
+test

@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import logging
 import math
+import re
 import threading
 import time
 from pathlib import Path
@@ -97,6 +98,57 @@ def _parse_bool(value: str | bool | None, default: bool = False) -> bool:
     if isinstance(value, bool):
         return value
     return str(value).strip().lower() in {"1", "true", "yes", "on"}
+
+
+_VAR_PATTERN = re.compile(r"\$([A-Za-z_][A-Za-z0-9_]*)")
+_SAFE_EXPR_PATTERN = re.compile(r"^[0-9eE+\-*/().\s]+$")
+
+
+def _eval_const_expr(expr: str, constants: dict[str, float]) -> float:
+    expanded = _VAR_PATTERN.sub(
+        lambda m: str(constants[m.group(1)]) if m.group(1) in constants else m.group(0),
+        str(expr).strip(),
+    )
+    if _VAR_PATTERN.search(expanded):
+        missing = sorted(set(m.group(1) for m in _VAR_PATTERN.finditer(expanded)))
+        raise ValueError(f"Undefined constant(s): {', '.join(missing)}")
+    if not _SAFE_EXPR_PATTERN.fullmatch(expanded):
+        raise ValueError(f"Unsupported expression syntax: {expr}")
+    return float(eval(expanded, {"__builtins__": {}}, {}))
+
+
+def _substitute_vars(text: str, constants: dict[str, float]) -> str:
+    original = str(text)
+
+    def _replace(match: re.Match[str]) -> str:
+        key = match.group(1)
+        if key not in constants:
+            raise ValueError(f"Undefined constant: ${key}")
+        return str(constants[key])
+
+    replaced = _VAR_PATTERN.sub(_replace, original)
+    candidate = replaced.strip()
+    if candidate and _SAFE_EXPR_PATTERN.fullmatch(candidate):
+        try:
+            return str(float(eval(candidate, {"__builtins__": {}}, {})))
+        except Exception:
+            return replaced
+    return replaced
+
+
+def _substitute_command_constants(cmd: ParsedCommand, constants: dict[str, float]) -> ParsedCommand:
+    if not constants:
+        return cmd
+    return ParsedCommand(
+        name=cmd.name,
+        args=[_substitute_vars(a, constants) for a in cmd.args],
+        kwargs={k: _substitute_vars(v, constants) for k, v in cmd.kwargs.items()},
+        line_number=cmd.line_number,
+        raw=cmd.raw,
+        indent=cmd.indent,
+        children=cmd.children,
+        has_multiple_commands=cmd.has_multiple_commands,
+    )
 
 
 def _seconds_to_tau_index(seconds: float) -> int:
@@ -570,6 +622,7 @@ def run_commands(
     app : MeasureApp
         GUI app reference for tab-level settings access.
     """
+    engine.script_constants = {}
     total = len(commands)
     for i, cmd in enumerate(commands, start=1):
         engine.check_stop()
@@ -586,7 +639,14 @@ def _dispatch(
     app: "MeasureApp",
 ) -> None:
     """Dispatch a single command."""
+    constants = getattr(engine, "script_constants", None)
+    if constants is None:
+        constants = {}
+        engine.script_constants = constants
+
     name = cmd.name
+    if name != "set":
+        cmd = _substitute_command_constants(cmd, constants)
     args = cmd.args
 
     try:
@@ -595,10 +655,18 @@ def _dispatch(
             instruments = ", ".join(disconnected)
             raise RuntimeError(f"required instrument(s) disconnected: {instruments}")
 
+        if name == "set":
+            if len(args) < 2:
+                raise ValueError("set requires: SET <name> = <expression>")
+            var_name = str(args[0]).strip()
+            expr = str(args[1]).strip()
+            constants[var_name] = _eval_const_expr(expr, constants)
+            ctx.ui_bus.post_log(f"Constant set: {var_name}={constants[var_name]}")
+
         # ==============================================================
         # PPMS commands
         # ==============================================================
-        if name == "set_dyna_field":
+        elif name == "set_dyna_field":
             field_oe = _round_to(float(args[0]), _DYNA_FIELD_RES_OE)
             rate = _round_to(float(args[1]), _DYNA_FIELD_RES_OE)
             approach = args[2] if len(args) > 2 else "linear"
@@ -1460,12 +1528,25 @@ def _run_loop(
             if time_gap_s > 0:
                 engine.interruptible_sleep(time_gap_s)
 
-    elif name == "for_loop":
+    elif name in {"for_loop", "repeat"}:
         iterations = max(0, int(float(args[0])))
-        for _ in range(iterations):
+        constants = getattr(engine, "script_constants", None)
+        previous_loop_index = None
+        has_previous_loop_index = False
+        if isinstance(constants, dict):
+            has_previous_loop_index = "loop_index" in constants
+            previous_loop_index = constants.get("loop_index")
+        for i in range(iterations):
             engine.check_stop()
             engine.check_pause()
+            if isinstance(constants, dict):
+                constants["loop_index"] = float(i)
             _run_children(engine, ctx, cmd.children, app, parent_line=cmd.line_number)
+        if isinstance(constants, dict):
+            if has_previous_loop_index:
+                constants["loop_index"] = float(previous_loop_index)
+            else:
+                constants.pop("loop_index", None)
 
 
 def _run_children(

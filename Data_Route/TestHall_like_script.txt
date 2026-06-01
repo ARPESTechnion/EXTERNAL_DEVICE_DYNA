@@ -11,5 +11,5 @@ scan_dyna_field -10000 10000 1000 50 linear
   measure_lockin avg=15 use_autorange=false use_autophase=false
   close_channel d
   measure_lockin avg=15 use_autorange=false use_autophase=false
-
+End
 set_dyna_field 0 50 linear

@@ -1,0 +1,3 @@
+enable_hall_output compliance_v=1 current=2e-3
+wait_for no_event 10
+disable_hall_output

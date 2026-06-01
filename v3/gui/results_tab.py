@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import csv
 import math
+import re
 import time
 import tkinter as tk
 from pathlib import Path
@@ -57,6 +58,7 @@ from v3.core.ui_events import (
     W_HALL_SOURCE_ENABLED,
 )
 from v3.gui.base_tab import BaseTab, make_led, set_led
+from v3.gui.command_docs import COMMAND_DOCS
 from v3.gui.components import StatusStrip, ValidatingEntry, make_float_validator, make_int_validator
 from v3.gui.lockin_tab import R_LOCKIN_OPTIONS
 from v3.gui.theme import COLORS, FONTS, SPACING
@@ -162,6 +164,474 @@ class ResultsTab(BaseTab):
         self._command_preview: tk.Text | None = None
         self._control_popups: dict[str, tk.Toplevel] = {}
         self._lockin_popup_output_led: tk.Label | None = None
+        self._script_notebook: ttk.Notebook | None = None
+        self._script_tabs: list[dict[str, Any]] = []
+        self._running_tab_index: int | None = None
+        self._script_context_menu: tk.Menu | None = None
+        self._script_plus_frame: ttk.Frame | None = None
+        self._hover_script_tab_index: int | None = None
+
+    @property
+    def script_text(self) -> tk.Text:
+        if not self._script_tabs:
+            raise RuntimeError("Script editor tabs are not initialized")
+        idx = self._active_script_tab_index()
+        return self._script_tabs[idx]["text"]
+
+    def _active_script_tab_index(self) -> int:
+        if not self._script_tabs:
+            return 0
+        if self._script_notebook is None:
+            return 0
+        try:
+            selected = self._script_notebook.select()
+            return int(self._script_notebook.index(selected))
+        except Exception:
+            return 0
+
+    def _running_or_active_script_text(self) -> tk.Text:
+        idx = self._running_tab_index
+        if isinstance(idx, int) and 0 <= idx < len(self._script_tabs):
+            return self._script_tabs[idx]["text"]
+        return self.script_text
+
+    def _bind_script_editor_shortcuts(self, text_widget: tk.Text) -> None:
+        text_widget.bind("<<Modified>>", self._on_script_modified)
+        text_widget.bind("<Control-z>", self._on_script_undo)
+        text_widget.bind("<Control-Z>", self._on_script_undo)
+        text_widget.bind("<Control-y>", self._on_script_redo)
+        text_widget.bind("<Control-Y>", self._on_script_redo)
+        text_widget.bind("<Control-Shift-z>", self._on_script_redo)
+        text_widget.bind("<Control-Shift-Z>", self._on_script_redo)
+        text_widget.bind("<Control-a>", self._on_script_select_all)
+        text_widget.bind("<Control-A>", self._on_script_select_all)
+        text_widget.bind("<Control-s>", self._on_script_save)
+        text_widget.bind("<Control-S>", self._on_script_save)
+        text_widget.bind("<Control-Shift-s>", self._on_script_save_as)
+        text_widget.bind("<Control-Shift-S>", self._on_script_save_as)
+        text_widget.bind("<Control-o>", self._on_script_load)
+        text_widget.bind("<Control-O>", self._on_script_load)
+        text_widget.bind("<Control-Return>", self._on_script_run)
+        text_widget.bind("<Control-KP_Enter>", self._on_script_run)
+        text_widget.bind("<Control-/>", lambda _e, w=text_widget: self._toggle_comment(w))
+        text_widget.bind("<Control-slash>", lambda _e, w=text_widget: self._toggle_comment(w))
+        text_widget.bind("<Return>", self._on_script_return)
+        text_widget.bind("<Button-3>", lambda e, w=text_widget: self._show_editor_context_menu(e, w))
+        text_widget.bind("<KeyRelease>", lambda _e, w=text_widget: self._refresh_editor_visuals(w))
+        text_widget.bind("<MouseWheel>", lambda _e, w=text_widget: self._update_line_numbers(w))
+        text_widget.bind("<Configure>", lambda _e, w=text_widget: self._update_line_numbers(w))
+
+    def _tab_display_name(self, idx: int) -> str:
+        tab = self._script_tabs[idx]
+        base = str(tab.get("filename") or tab.get("label") or f"Tab {idx + 1}")
+        if tab.get("dirty"):
+            base = "*" + base
+        if tab.get("running"):
+            base = "[▶ Running] " + base
+        if idx > 0 and self._hover_script_tab_index == idx:
+            base = f"{base}   x"
+        return base
+
+    def _refresh_script_tab_titles(self) -> None:
+        if self._script_notebook is None:
+            return
+        for idx in range(len(self._script_tabs)):
+            self._script_notebook.tab(idx, text=self._tab_display_name(idx))
+
+    def _plus_tab_index(self) -> int | None:
+        if self._script_notebook is None or self._script_plus_frame is None:
+            return None
+        try:
+            return int(self._script_notebook.index(self._script_plus_frame))
+        except Exception:
+            return None
+
+    def _ensure_plus_tab(self) -> None:
+        if self._script_notebook is None:
+            return
+        if self._script_plus_frame is None:
+            self._script_plus_frame = ttk.Frame(self._script_notebook)
+        try:
+            self._script_notebook.forget(self._script_plus_frame)
+        except Exception:
+            pass
+        self._script_notebook.add(self._script_plus_frame, text="  +  ")
+
+    def _close_script_tab_by_index(self, idx: int) -> bool:
+        if self._script_notebook is None or len(self._script_tabs) <= 1:
+            return False
+        if idx <= 0 or idx >= len(self._script_tabs):
+            return False
+        tab = self._script_tabs[idx]
+        if tab.get("running"):
+            self.app.ui_bus.post_log("Cannot close a running script tab.")
+            return False
+        if tab.get("dirty"):
+            keep = messagebox.askyesno(
+                "Unsaved Script",
+                "This tab has unsaved changes. Close without saving?",
+            )
+            if not keep:
+                return False
+        self._script_notebook.forget(idx)
+        self._script_tabs.pop(idx)
+        if self._running_tab_index is not None:
+            if self._running_tab_index == idx:
+                self._running_tab_index = None
+            elif self._running_tab_index > idx:
+                self._running_tab_index -= 1
+        self._ensure_plus_tab()
+        self._sync_app_script_state_from_active_tab()
+        return True
+
+    def _on_script_notebook_click(self, event: tk.Event) -> str | None:
+        if self._script_notebook is None:
+            return None
+        try:
+            tab_index = int(self._script_notebook.index(f"@{event.x},{event.y}"))
+        except Exception:
+            return None
+
+        plus_idx = self._plus_tab_index()
+        if plus_idx is not None and tab_index == plus_idx:
+            self._on_new_script_tab()
+            return "break"
+
+        if tab_index <= 0 or tab_index >= len(self._script_tabs):
+            return None
+        try:
+            x, _y, w, _h = self._script_notebook.bbox(tab_index)
+        except Exception:
+            return None
+        if self._hover_script_tab_index == tab_index and event.x >= x + w - 18:
+            if self._close_script_tab_by_index(tab_index):
+                return "break"
+        return None
+
+    def _on_script_notebook_motion(self, event: tk.Event) -> None:
+        if self._script_notebook is None:
+            return
+        try:
+            tab_index = int(self._script_notebook.index(f"@{event.x},{event.y}"))
+        except Exception:
+            tab_index = None
+
+        plus_idx = self._plus_tab_index()
+        new_hover = tab_index
+        if (
+            new_hover is None
+            or new_hover <= 0
+            or new_hover >= len(self._script_tabs)
+            or (plus_idx is not None and new_hover == plus_idx)
+        ):
+            new_hover = None
+
+        if new_hover != self._hover_script_tab_index:
+            self._hover_script_tab_index = new_hover
+            self._refresh_script_tab_titles()
+
+    def _on_script_notebook_leave(self, _event: tk.Event) -> None:
+        if self._hover_script_tab_index is not None:
+            self._hover_script_tab_index = None
+            self._refresh_script_tab_titles()
+
+    def _update_script_tab_title(self, idx: int) -> None:
+        if self._script_notebook is None or idx < 0 or idx >= len(self._script_tabs):
+            return
+        self._script_notebook.tab(idx, text=self._tab_display_name(idx))
+
+    def _sync_app_script_state_from_active_tab(self) -> None:
+        if not self._script_tabs:
+            return
+        idx = self._active_script_tab_index()
+        if idx >= len(self._script_tabs):
+            idx = max(0, len(self._script_tabs) - 1)
+            if self._script_notebook is not None:
+                try:
+                    self._script_notebook.select(idx)
+                except Exception:
+                    pass
+        tab = self._script_tabs[idx]
+        self.app.script_filename.set(str(tab.get("filename") or "script.txt"))
+        self.app.script_file_path = tab.get("path")
+        self.app.script_dirty = bool(tab.get("dirty", False))
+
+    def _on_script_tab_changed(self, _event: tk.Event | None = None) -> None:
+        if self._script_notebook is not None and self._script_plus_frame is not None:
+            selected = self._script_notebook.select()
+            if selected == str(self._script_plus_frame):
+                self._on_new_script_tab()
+                return
+        self._sync_app_script_state_from_active_tab()
+        self._refresh_editor_visuals(self.script_text)
+
+    def _add_script_tab(self, label: str = "Main") -> int:
+        if self._script_notebook is None:
+            raise RuntimeError("Script notebook is not initialized")
+
+        frame = ttk.Frame(self._script_notebook)
+        frame.rowconfigure(0, weight=1)
+        frame.columnconfigure(1, weight=1)
+
+        lineno_widget = tk.Text(
+            frame,
+            width=5,
+            padx=2,
+            pady=0,
+            takefocus=0,
+            state="disabled",
+            wrap="none",
+            font=FONTS["mono"],
+            foreground="#6b7280",
+            background="#eef2f7",
+            relief="flat",
+            borderwidth=0,
+            highlightthickness=0,
+        )
+        lineno_widget.grid(row=0, column=0, sticky="ns")
+
+        text_widget = tk.Text(
+            frame,
+            height=14,
+            width=58,
+            font=FONTS["mono"],
+            foreground=COLORS["fg_primary"],
+            background=COLORS["bg_input"],
+            insertbackground=COLORS["fg_primary"],
+            undo=True,
+            wrap="none",
+            padx=2,
+            pady=0,
+            borderwidth=0,
+            highlightthickness=0,
+        )
+        ysb = ttk.Scrollbar(frame, orient="vertical")
+        xsb = ttk.Scrollbar(frame, orient="horizontal", command=text_widget.xview)
+
+        def _on_text_scroll(first: str, last: str) -> None:
+            ysb.set(first, last)
+            try:
+                lineno_widget.yview_moveto(first)
+            except Exception:
+                pass
+
+        def _on_scrollbar(*args: str) -> None:
+            text_widget.yview(*args)
+            lineno_widget.yview(*args)
+
+        ysb.configure(command=_on_scrollbar)
+        text_widget.configure(yscrollcommand=_on_text_scroll, xscrollcommand=xsb.set)
+        text_widget.grid(row=0, column=1, sticky="nsew")
+        ysb.grid(row=0, column=2, sticky="ns")
+        xsb.grid(row=1, column=1, sticky="ew")
+
+        self._bind_script_editor_shortcuts(text_widget)
+        text_widget.edit_modified(False)
+        text_widget.tag_configure("current_line", background="#fff2a8")
+        text_widget.tag_configure("loop_body_line", background="#ffd0d0")
+        # High-contrast syntax colors for quick visual scanning while scripting.
+        text_widget.tag_configure("sx_command", foreground="#0057D9")
+        text_widget.tag_configure("sx_kw", foreground="#C2185B")
+        text_widget.tag_configure("sx_comment", foreground="#1B5E20")
+        text_widget.tag_configure("sx_const", foreground="#EF6C00")
+        text_widget.tag_configure("sx_num", foreground="#6A1B9A")
+
+        data = {
+            "frame": frame,
+            "text": text_widget,
+            "lineno": lineno_widget,
+            "label": label,
+            "filename": f"{label}.txt" if label != "Main" else "script.txt",
+            "path": None,
+            "dirty": False,
+            "running": False,
+        }
+        self._script_tabs.append(data)
+        idx = len(self._script_tabs) - 1
+        self._script_notebook.add(frame, text=self._tab_display_name(idx))
+        self._ensure_plus_tab()
+        self._refresh_editor_visuals(text_widget)
+        return idx
+
+    def _on_new_script_tab(self) -> None:
+        if self._script_notebook is None:
+            return
+        label = f"Script {len(self._script_tabs) + 1}"
+        idx = self._add_script_tab(label=label)
+        self._script_notebook.select(idx)
+        self._ensure_plus_tab()
+        self._sync_app_script_state_from_active_tab()
+
+    def _on_close_script_tab(self) -> None:
+        idx = self._active_script_tab_index()
+        self._close_script_tab_by_index(idx)
+
+    def _tab_index_for_text(self, text_widget: tk.Text) -> int | None:
+        for idx, tab in enumerate(self._script_tabs):
+            if tab.get("text") is text_widget:
+                return idx
+        return None
+
+    def _update_line_numbers(self, text_widget: tk.Text) -> None:
+        idx = self._tab_index_for_text(text_widget)
+        if idx is None:
+            return
+        lineno_widget = self._script_tabs[idx].get("lineno")
+        if lineno_widget is None:
+            return
+        try:
+            total_lines = int(text_widget.index("end-1c").split(".")[0])
+        except Exception:
+            total_lines = 1
+        total_lines = max(total_lines, 1)
+        width = max(2, len(str(total_lines)))
+        content = "\n".join(f"{i:>{width}}" for i in range(1, total_lines + 1))
+        lineno_widget.configure(state="normal")
+        lineno_widget.delete("1.0", "end")
+        lineno_widget.insert("1.0", content)
+        lineno_widget.configure(state="disabled")
+
+    def _apply_syntax_highlighting(self, text_widget: tk.Text) -> None:
+        text_widget.tag_remove("sx_command", "1.0", "end")
+        text_widget.tag_remove("sx_kw", "1.0", "end")
+        text_widget.tag_remove("sx_comment", "1.0", "end")
+        text_widget.tag_remove("sx_const", "1.0", "end")
+        text_widget.tag_remove("sx_num", "1.0", "end")
+
+        try:
+            last_line = int(text_widget.index("end-1c").split(".")[0])
+        except Exception:
+            return
+
+        kw_pattern = re.compile(r"\b([A-Za-z_][A-Za-z0-9_]*)=")
+        const_pattern = re.compile(r"\$[A-Za-z_][A-Za-z0-9_]*")
+        num_pattern = re.compile(r"(?<![A-Za-z_])[-+]?\d*\.?\d+(?:[eE][-+]?\d+)?")
+
+        for line_no in range(1, last_line + 1):
+            text = text_widget.get(f"{line_no}.0", f"{line_no}.end")
+            if not text:
+                continue
+
+            hash_idx = text.find("#")
+            code_part = text if hash_idx < 0 else text[:hash_idx]
+            if hash_idx >= 0:
+                text_widget.tag_add("sx_comment", f"{line_no}.{hash_idx}", f"{line_no}.end")
+
+            stripped = code_part.strip()
+            if stripped:
+                token = stripped.split()[0].lower()
+                if token in VALID_COMMANDS or token in {"set", "end"}:
+                    lead_ws = len(code_part) - len(code_part.lstrip())
+                    token_len = len(stripped.split()[0])
+                    text_widget.tag_add(
+                        "sx_command",
+                        f"{line_no}.{lead_ws}",
+                        f"{line_no}.{lead_ws + token_len}",
+                    )
+
+            for m in kw_pattern.finditer(code_part):
+                text_widget.tag_add("sx_kw", f"{line_no}.{m.start(1)}", f"{line_no}.{m.end(1)}")
+            for m in const_pattern.finditer(code_part):
+                text_widget.tag_add("sx_const", f"{line_no}.{m.start()}", f"{line_no}.{m.end()}")
+            for m in num_pattern.finditer(code_part):
+                text_widget.tag_add("sx_num", f"{line_no}.{m.start()}", f"{line_no}.{m.end()}")
+
+    def _refresh_editor_visuals(self, text_widget: tk.Text) -> None:
+        self._update_line_numbers(text_widget)
+        self._apply_syntax_highlighting(text_widget)
+
+    def _comment_lines(self, text_widget: tk.Text, uncomment: bool = False) -> None:
+        try:
+            start = text_widget.index("sel.first")
+            end = text_widget.index("sel.last")
+        except tk.TclError:
+            cursor = text_widget.index("insert")
+            start = f"{cursor.split('.')[0]}.0"
+            end = f"{cursor.split('.')[0]}.end"
+
+        start_line = int(start.split(".")[0])
+        end_line = int(end.split(".")[0])
+
+        for line_no in range(start_line, end_line + 1):
+            line_start = f"{line_no}.0"
+            line_end = f"{line_no}.end"
+            line_text = text_widget.get(line_start, line_end)
+            stripped = line_text.lstrip()
+            if not stripped:
+                continue
+            indent_len = len(line_text) - len(stripped)
+            marker_pos = f"{line_no}.{indent_len}"
+
+            if uncomment:
+                if stripped.startswith("# "):
+                    text_widget.delete(marker_pos, f"{line_no}.{indent_len + 2}")
+                elif stripped.startswith("#"):
+                    text_widget.delete(marker_pos, f"{line_no}.{indent_len + 1}")
+            else:
+                text_widget.insert(marker_pos, "# ")
+
+    def _toggle_comment(self, text_widget: tk.Text) -> str:
+        try:
+            start = text_widget.index("sel.first")
+            end = text_widget.index("sel.last")
+        except tk.TclError:
+            cursor = text_widget.index("insert")
+            start = f"{cursor.split('.')[0]}.0"
+            end = f"{cursor.split('.')[0]}.end"
+
+        start_line = int(start.split(".")[0])
+        end_line = int(end.split(".")[0])
+        non_empty: list[str] = []
+        for line_no in range(start_line, end_line + 1):
+            text = text_widget.get(f"{line_no}.0", f"{line_no}.end")
+            if text.strip():
+                non_empty.append(text)
+        should_uncomment = bool(non_empty) and all(t.lstrip().startswith("#") for t in non_empty)
+        self._comment_lines(text_widget, uncomment=should_uncomment)
+        self._refresh_editor_visuals(text_widget)
+        return "break"
+
+    def _on_script_return(self, event: tk.Event) -> str:
+        text_widget = event.widget
+        if not isinstance(text_widget, tk.Text):
+            return "break"
+        line_text = text_widget.get("insert linestart", "insert")
+        indent = re.match(r"\s*", line_text).group(0)
+        stripped = line_text.strip()
+        token = stripped.split()[0].lower() if stripped else ""
+        if token in LOOP_COMMANDS or token == "repeat":
+            indent += "    "
+        text_widget.insert("insert", "\n" + indent)
+        return "break"
+
+    def _show_editor_context_menu(self, event: tk.Event, text_widget: tk.Text) -> str:
+        if self._script_context_menu is not None:
+            try:
+                self._script_context_menu.destroy()
+            except Exception:
+                pass
+
+        menu = tk.Menu(text_widget, tearoff=0)
+        self._script_context_menu = menu
+        menu.add_command(label="Cut", command=lambda: text_widget.event_generate("<<Cut>>"))
+        menu.add_command(label="Copy", command=lambda: text_widget.event_generate("<<Copy>>"))
+        menu.add_command(label="Paste", command=lambda: text_widget.event_generate("<<Paste>>"))
+        menu.add_separator()
+        menu.add_command(
+            label="Comment",
+            command=lambda w=text_widget: (self._comment_lines(w, uncomment=False), self._refresh_editor_visuals(w)),
+        )
+        menu.add_command(
+            label="Uncomment",
+            command=lambda w=text_widget: (self._comment_lines(w, uncomment=True), self._refresh_editor_visuals(w)),
+        )
+        menu.add_separator()
+        menu.add_command(label="Select All", command=lambda: self._on_script_select_all())
+        menu.add_separator()
+        menu.add_command(label="Undo", command=lambda: self._on_script_undo())
+        menu.add_command(label="Redo", command=lambda: self._on_script_redo())
+        menu.tk_popup(event.x_root, event.y_root)
+        return "break"
 
     def _blink_switch_led(self, duration_ms: int = 500) -> None:
         set_led(self.activity_leds["switch"], True)
@@ -1810,40 +2280,18 @@ class ResultsTab(BaseTab):
         editor_frame.rowconfigure(0, weight=1)
         editor_frame.columnconfigure(0, weight=1)
 
-        self.script_text = tk.Text(
-            editor_frame, height=14, width=58, font=FONTS["mono"],
-            foreground=COLORS["fg_primary"], background=COLORS["bg_input"],
-            insertbackground=COLORS["fg_primary"],
-            undo=True, wrap="none",
-        )
-        ysb = ttk.Scrollbar(editor_frame, orient="vertical", command=self.script_text.yview)
-        xsb = ttk.Scrollbar(editor_frame, orient="horizontal", command=self.script_text.xview)
-        self.script_text.configure(yscrollcommand=ysb.set, xscrollcommand=xsb.set)
-        self.script_text.grid(row=0, column=0, sticky="nsew")
-        ysb.grid(row=0, column=1, sticky="ns")
-        xsb.grid(row=1, column=0, sticky="ew")
-        self.script_text.bind("<<Modified>>", self._on_script_modified)
-        self.script_text.bind("<Control-z>", self._on_script_undo)
-        self.script_text.bind("<Control-Z>", self._on_script_undo)
-        self.script_text.bind("<Control-y>", self._on_script_redo)
-        self.script_text.bind("<Control-Y>", self._on_script_redo)
-        self.script_text.bind("<Control-Shift-z>", self._on_script_redo)
-        self.script_text.bind("<Control-Shift-Z>", self._on_script_redo)
-        self.script_text.bind("<Control-a>", self._on_script_select_all)
-        self.script_text.bind("<Control-A>", self._on_script_select_all)
-        self.script_text.bind("<Control-s>", self._on_script_save)
-        self.script_text.bind("<Control-S>", self._on_script_save)
-        self.script_text.bind("<Control-Shift-s>", self._on_script_save_as)
-        self.script_text.bind("<Control-Shift-S>", self._on_script_save_as)
-        self.script_text.bind("<Control-o>", self._on_script_load)
-        self.script_text.bind("<Control-O>", self._on_script_load)
-        self.script_text.bind("<Control-Return>", self._on_script_run)
-        self.script_text.bind("<Control-KP_Enter>", self._on_script_run)
-        self.script_text.edit_modified(False)
-
-        # Line highlight tags
-        self.script_text.tag_configure("current_line", background="#fff2a8")
-        self.script_text.tag_configure("loop_body_line", background="#ffd0d0")
+        self._script_notebook = ttk.Notebook(editor_frame)
+        self._script_notebook.grid(row=0, column=0, sticky="nsew")
+        self._script_notebook.bind("<<NotebookTabChanged>>", self._on_script_tab_changed)
+        self._script_notebook.bind("<Button-1>", self._on_script_notebook_click, add="+")
+        self._script_notebook.bind("<Motion>", self._on_script_notebook_motion, add="+")
+        self._script_notebook.bind("<Leave>", self._on_script_notebook_leave, add="+")
+        self._script_tabs.clear()
+        self._script_plus_frame = None
+        main_idx = self._add_script_tab(label="Main")
+        self._script_notebook.select(main_idx)
+        self._ensure_plus_tab()
+        self._sync_app_script_state_from_active_tab()
 
         self._on_session_header_settings_changed()
         self._refresh_data_filename_display()
@@ -1897,44 +2345,48 @@ class ResultsTab(BaseTab):
         if line_num <= 0:
             return 0
 
-        last_line = int(self.script_text.index("end-1c").split(".")[0])
+        text_widget = self._running_or_active_script_text()
+
+        last_line = int(text_widget.index("end-1c").split(".")[0])
         if last_line <= 0:
             return 0
 
         target = max(1, min(int(line_num), last_line))
-        text = self.script_text.get(f"{target}.0", f"{target}.end")
+        text = text_widget.get(f"{target}.0", f"{target}.end")
         if text.strip():
             return target
 
         for probe in range(target + 1, last_line + 1):
-            if self.script_text.get(f"{probe}.0", f"{probe}.end").strip():
+            if text_widget.get(f"{probe}.0", f"{probe}.end").strip():
                 return probe
 
         for probe in range(target - 1, 0, -1):
-            if self.script_text.get(f"{probe}.0", f"{probe}.end").strip():
+            if text_widget.get(f"{probe}.0", f"{probe}.end").strip():
                 return probe
 
         return 0
 
     def highlight_line(self, line_num: int, loop_level: int = 0, parent_line: int = 0) -> None:
         """Highlight script line(s), keeping loop parent and child visible together."""
-        self.script_text.tag_remove("current_line", "1.0", "end")
-        self.script_text.tag_remove("loop_body_line", "1.0", "end")
+        text_widget = self._running_or_active_script_text()
+        text_widget.tag_remove("current_line", "1.0", "end")
+        text_widget.tag_remove("loop_body_line", "1.0", "end")
         target_line = self._nearest_nonempty_line(line_num)
         parent_target = self._nearest_nonempty_line(parent_line) if parent_line > 0 else 0
         if target_line > 0:
             if loop_level > 0 and parent_target > 0:
-                self.script_text.tag_add("current_line", f"{parent_target}.0", f"{parent_target}.end")
-                self.script_text.tag_add("loop_body_line", f"{target_line}.0", f"{target_line}.end")
+                text_widget.tag_add("current_line", f"{parent_target}.0", f"{parent_target}.end")
+                text_widget.tag_add("loop_body_line", f"{target_line}.0", f"{target_line}.end")
             else:
                 tag_name = "loop_body_line" if loop_level > 0 else "current_line"
-                self.script_text.tag_add(tag_name, f"{target_line}.0", f"{target_line}.end")
-            self.script_text.see(f"{target_line}.0")
+                text_widget.tag_add(tag_name, f"{target_line}.0", f"{target_line}.end")
+            text_widget.see(f"{target_line}.0")
 
     def clear_highlights(self) -> None:
         """Remove all line highlights."""
-        self.script_text.tag_remove("current_line", "1.0", "end")
-        self.script_text.tag_remove("loop_body_line", "1.0", "end")
+        text_widget = self._running_or_active_script_text()
+        text_widget.tag_remove("current_line", "1.0", "end")
+        text_widget.tag_remove("loop_body_line", "1.0", "end")
 
     def _on_script_undo(self, _event: tk.Event | None = None) -> str:
         """Undo in script editor via Ctrl+Z."""
@@ -1983,16 +2435,16 @@ class ResultsTab(BaseTab):
     # Script command helper popup
     # ------------------------------------------------------------------
     def _command_category(self, name: str) -> str:
-        if name in {"test", "run_saved_script", "initialize_data_file", "add_note"}:
+        if name in {"test", "run_saved_script", "initialize_data_file", "add_note", "set"}:
             return "General"
-        if name in {"wait_for", "time_sweep", "for_loop"}:
+        if name in {"wait_for", "time_sweep", "for_loop", "repeat"}:
             return "Timing"
         if name.startswith("set_dyna") or name.startswith("scan_dyna") or name.startswith("sweep_dyna"):
             return "PPMS"
         if name.startswith("set_helmholtz") or name.startswith("scan_helmholtz") or name.startswith("sweep_helmholtz"):
             return "Helmholtz"
-        if "hall" in name:
-            return "Hall"
+        if name in {"full_measure", "continuous_full_measure", "measure_iv_curve", "measure_resistance"} or "hall" in name:
+            return "Hall/K2450"
         if "lockin" in name or name in {"auto_gain", "auto_phase", "auto_reserve"}:
             return "Lock-In"
         if "channel" in name or "switch" in name:
@@ -2121,6 +2573,10 @@ class ResultsTab(BaseTab):
         right.columnconfigure(0, weight=1)
 
         self._command_tree = ttk.Treeview(left, show="tree", selectmode="browse")
+        self._command_tree.tag_configure(
+            "category",
+            font=(FONTS.get("default_family", "TkDefaultFont"), 10, "bold"),
+        )
         tree_ysb = ttk.Scrollbar(left, orient="vertical", command=self._command_tree.yview)
         tree_xsb = ttk.Scrollbar(left, orient="horizontal", command=self._command_tree.xview)
         self._command_tree.configure(yscrollcommand=tree_ysb.set, xscrollcommand=tree_xsb.set)
@@ -2134,6 +2590,15 @@ class ResultsTab(BaseTab):
         self._command_preview.configure(yscrollcommand=preview_scroll.set)
         self._command_preview.grid(row=1, column=0, sticky="nsew")
         preview_scroll.grid(row=1, column=1, sticky="ns")
+
+        legend = ttk.Frame(right)
+        legend.grid(row=2, column=0, sticky="ew", pady=(8, 0))
+        ttk.Label(legend, text="Highlight legend:").pack(side="left", padx=(0, 8))
+        tk.Label(legend, text="CMD", fg="#0057D9").pack(side="left", padx=2)
+        tk.Label(legend, text="KW", fg="#C2185B").pack(side="left", padx=2)
+        tk.Label(legend, text="$VAR", fg="#EF6C00").pack(side="left", padx=2)
+        tk.Label(legend, text="NUM", fg="#6A1B9A").pack(side="left", padx=2)
+        tk.Label(legend, text="#COMMENT", fg="#1B5E20").pack(side="left", padx=2)
 
         button_row = ttk.Frame(popup, padding=8)
         button_row.pack(fill="x")
@@ -2162,6 +2627,25 @@ class ResultsTab(BaseTab):
         self._command_tree.delete(*self._command_tree.get_children())
         self._command_item_to_name = {}
 
+        hall_order = [
+            "enable_hall_output",
+            "disable_hall_output",
+            "measure_hall_field",
+            "continuous_measure_hall_field",
+            "measure_resistance",
+            "measure_iv_curve",
+            "set_ppms_field_and_fix_hall",
+            "scan_ppms_field_and_fix_hall",
+            "full_measure",
+            "continuous_full_measure",
+        ]
+        hall_rank = {name: idx for idx, name in enumerate(hall_order)}
+
+        def _category_sort_key(category: str, cmd_name: str) -> tuple[int, str]:
+            if category == "Hall/K2450":
+                return (hall_rank.get(cmd_name, len(hall_order)), cmd_name)
+            return (10_000, cmd_name)
+
         categories: dict[str, list[str]] = {}
         for name in sorted(str(cmd) for cmd in VALID_COMMANDS):
             if query and query not in name.lower():
@@ -2170,7 +2654,8 @@ class ResultsTab(BaseTab):
 
         first_command_item: str | None = None
         for category in sorted(categories):
-            cat_item = self._command_tree.insert("", "end", text=category, open=True)
+            categories[category].sort(key=lambda n: _category_sort_key(category, n))
+            cat_item = self._command_tree.insert("", "end", text=category, open=True, tags=("category",))
             for name in categories[category]:
                 marker = " [loop]" if name in LOOP_COMMANDS else ""
                 item_id = self._command_tree.insert(cat_item, "end", text=f"{name}{marker}")
@@ -2207,278 +2692,69 @@ class ResultsTab(BaseTab):
         if name is None:
             self._set_command_preview("Select a command to preview usage.")
             return
-        kwargs = sorted(ALLOWED_KWARGS.get(name, set()))
-        sample = self._command_snippet(name)
 
-        details = [f"Command: {name}", "", f"Usage: {self._command_usage(name)}"]
-        if kwargs:
-            details.extend(["", "Allowed kwargs:", ", ".join(kwargs)])
+        doc = COMMAND_DOCS.get(name)
+        lines: list[str] = []
 
-        approach_hints: dict[str, str] = {
-            "set_dyna_field": "Approach options: linear, no_overshoot, oscillate",
-            "scan_dyna_field": "Approach options: linear, no_overshoot, oscillate",
-            "set_dyna_temp": "Approach options: fast_settle (or fast), no_overshoot",
-            "scan_dyna_temp": "Approach options: fast_settle (or fast), no_overshoot",
-            "sweep_dyna_field": "Approach: fixed to linear for sweep commands",
-            "sweep_dyna_temp": "Approach: fixed to fast_settle for sweep commands",
-        }
-        hint = approach_hints.get(name)
-        if hint is not None:
-            details.extend(["", hint])
+        lines.append(name)
+        lines.append("─" * max(len(name), 40))
 
-        lockin_setting_hints: dict[str, str] = {
-            "set_lockin_time_constant": (
-                "Allowed values (s): 10e-6, 30e-6, 100e-6, 300e-6, 1e-3, 3e-3, 10e-3, 30e-3, "
-                "100e-3, 300e-3, 1, 3, 10, 30, 100, 300, 1000, 3000"
-            ),
-            "set_lockin_sensitivity": (
-                "Allowed index values: 0..26. Mapping: "
-                "0=2nV, 1=5nV, 2=10nV, 3=20nV, 4=50nV, 5=100nV, 6=200nV, 7=500nV, "
-                "8=1uV, 9=2uV, 10=5uV, 11=10uV, 12=20uV, 13=50uV, 14=100uV, 15=200uV, 16=500uV, "
-                "17=1mV, 18=2mV, 19=5mV, 20=10mV, 21=20mV, 22=50mV, 23=100mV, 24=200mV, 25=500mV, 26=1V"
-            ),
-            "set_lockin_filter": "Allowed filter values: 6, 12, 18, 24 dB/oct",
-            "set_lockin_current": "Setting current to 0 turns lock-in output off.",
-        }
-        lockin_hint = lockin_setting_hints.get(name)
-        if lockin_hint is not None:
-            details.extend(["", lockin_hint])
+        if doc:
+            lines.append(doc["description"])
+            lines.append("")
 
-        k2450_hints: dict[str, list[str]] = {
-            "measure_resistance": [
-                "Parameters:",
-                "  current      (A, required)  — DC source current",
-                "  current_ma   (mA, optional) — same as current, mA-friendly",
-                "  compliance   (V, default 10) — max voltage limit",
-                "  nplc         (cycles, default 1) — integration time; 1 NPLC ≈ 16.7 ms at 60 Hz",
-                "  settle_time  (s, default 0)  — delay after sourcing before measuring",
-                "  repetitions  (integer ≥ 1, default 1) — averages that many readings",
-                "  voltage_range (V or 'auto', default 'auto') — measurement voltage range",
-                "  Auto usage: set voltage_range=auto (or omit voltage_range)",
-            ],
-            "measure_iv_curve": [
-                "Parameters:",
-                "  mode         ('current' or 'voltage', required)",
-                "  Preferred syntax: start + min + max + step",
-                "  shape        (required) — sweep pattern:",
-                "               start_min_max_start  : start → min → max → start",
-                "               start_max_min_start  : start → max → min → start",
-                "               start_min_start      : start → min → start",
-                "               start_max_start      : start → max → start",
-                "               single               : start → stop (alias: →)",
-                "               return               : start → stop → start (alias: loop / bidirectional)",
-                "  start        (A or V, required) — first setpoint",
-                "  start_ma     (mA, optional current-mode alias)",
-                "  min/max      (A or V, preferred with start/step)",
-                "  min_ma/max_ma (mA, optional current-mode aliases)",
-                "  stop         (A or V, optional fallback) — sweep limit when min/max are omitted",
-                "  step         (A or V, required, non-zero) — step size",
-                "  step_ma      (mA, optional current-mode alias)",
-                "  compliance   (V for current mode, A for voltage mode; default auto)",
-                "  nplc         (cycles, default 1) — integration time",
-                "  settle_time  (s, default 0) — delay at each setpoint before measuring",
-                "  repetitions  (integer ≥ 1, default 1) — averages per point",
-                "  source_range      (mode-aware optional):",
-                "                    current mode -> source current range (A, supports mA/uA suffix)",
-                "                    voltage mode -> source voltage range (V, supports mV suffix)",
-                "  source_range_ma   (optional alias in current mode)",
-                "  measure_range     (mode-aware optional):",
-                "                    current mode -> measure voltage range (V, supports mV suffix)",
-                "                    voltage mode -> measure current range (A, supports mA/uA suffix)",
-                "  measure_range_ma  (optional alias in voltage mode)",
-                "  Auto usage: omit source_range/measure_range (or set them to auto)",
-                "  auto_range   (true/false, default true) — keep true for Auto measurement range",
-                "  ramp_to_start (true/false, default true) — after sweep, step source",
-                "                back to start value using the same step size (safe ramp)",
-                "  keep_output   (true/false, default false) — leave source enabled after sweep",
-            ],
-        }
-        k2450_hint_lines = k2450_hints.get(name)
-        if k2450_hint_lines is not None:
-            details.extend([""] + k2450_hint_lines)
+            pos_args: list[dict] = doc.get("positional", [])
+            if pos_args:
+                lines.append("Positional arguments:")
+                for i, p in enumerate(pos_args, 1):
+                    units_part = f"  [{p['units']}]" if p["units"] else ""
+                    rng_part = f"  {p['range']}" if p["range"] else ""
+                    lines.append(f"  {i}. {p['name']} ({p['type']}){units_part}{rng_part}")
+                    if p["meaning"]:
+                        lines.append(f"       {p['meaning']}")
+                lines.append("")
 
-        if name == "run_saved_script":
-            details.extend(["", "Use full directory + file name (absolute path)."])
+            kw_args: list[dict] = doc.get("kwargs", [])
+            if kw_args:
+                # measure column widths
+                nw = max(len(k["name"]) for k in kw_args)
+                tw = max(len(k["type"]) for k in kw_args)
+                dw = max(len(k["default"]) for k in kw_args)
+                lines.append("Keyword arguments:")
+                lines.append(
+                    f"  {'name':<{nw}}  {'type':<{tw}}  {'default':<{dw}}  allowed / range"
+                )
+                lines.append(f"  {'-'*nw}  {'-'*tw}  {'-'*dw}  {'-'*20}")
+                for k in kw_args:
+                    allowed_lines = k["allowed"].split("\n")
+                    first_line = allowed_lines[0]
+                    lines.append(
+                        f"  {k['name']:<{nw}}  {k['type']:<{tw}}  {k['default']:<{dw}}  {first_line}"
+                    )
+                    for extra in allowed_lines[1:]:
+                        lines.append(f"  {'':<{nw}}  {'':<{tw}}  {'':<{dw}}  {extra}")
+                    if k["meaning"]:
+                        lines.append(f"       → {k['meaning']}")
+                lines.append("")
 
-        if name == "wait_for":
-            details.extend(
-                [
-                    "",
-                    "Wait events:",
-                    "temp, field, helmholtz, all, no_event",
-                    "Aliases:",
-                    "temp_stable->temp, field_stable->field, dyna_ready->field, helmholtz_field/helmholtz_stable->helmholtz",
-                ]
-            )
+            example: str = doc.get("example", "")
+            if example:
+                lines.append("Example:")
+                for ex_line in example.splitlines():
+                    lines.append(f"  {ex_line}")
+                lines.append("")
+        else:
+            # Fallback for commands not yet in COMMAND_DOCS
+            kwargs = sorted(ALLOWED_KWARGS.get(name, set()))
+            lines.append(self._command_usage(name))
+            if kwargs:
+                lines.append("")
+                lines.append("Kwargs: " + ", ".join(kwargs))
+            lines.append("")
 
-        # Keep 1-3 examples per command, copied from Commands.txt for consistency.
-        examples_from_docs: dict[str, list[str]] = {
-            "test": [
-                "test",
-            ],
-            "initialize_data_file": [
-                "initialize_data_file",
-                "initialize_data_file filename=custom_data.csv",
-                "initialize_data_file directory=/tmp filename=test.csv",
-            ],
-            "add_note": [
-                "add_note Sample appears normal",
-                "add_note Stable at 250K",
-            ],
-            "run_saved_script": [
-                "run_saved_script subscript.txt",
-            ],
-            "wait_for": [
-                "wait_for temp 5",
-                "wait_for temp field 5",
-                "wait_for all 5",
-            ],
-            "time_sweep": [
-                "time_sweep 60 1",
-                "time_sweep 300 0.5",
-            ],
-            "for_loop": [
-                "for_loop 10",
-            ],
-            "set_dyna_temp": [
-                "set_dyna_temp 300 5 no_overshoot",
-            ],
-            "scan_dyna_temp": [
-                "scan_dyna_temp 300 400 20 5 no_overshoot",
-            ],
-            "sweep_dyna_temp": [
-                "sweep_dyna_temp 300 350 5 gap_time=3",
-                "sweep_dyna_temp 200 400 10 gap_time=0",
-            ],
-            "set_dyna_field": [
-                "set_dyna_field 1000 10 no_overshoot",
-            ],
-            "scan_dyna_field": [
-                "scan_dyna_field 0 2000 200 20 no_overshoot",
-            ],
-            "sweep_dyna_field": [
-                "sweep_dyna_field 0 2000 20 gap_time=5",
-                "sweep_dyna_field -1000 1000 50 gap_time=0",
-            ],
-            "set_helmholtz_field": [
-                "set_helmholtz_field 100 5.0",
-            ],
-            "scan_helmholtz_field": [
-                "scan_helmholtz_field 0 500 50 5 linear",
-            ],
-            "sweep_helmholtz_field": [
-                "sweep_helmholtz_field 0 500 5 gap_time=2",
-                "sweep_helmholtz_field -300 300 10 gap_time=0",
-            ],
-            "set_ppms_field_and_fix_hall": [
-                "set_ppms_field_and_fix_hall 1000 100.5",
-                "set_ppms_field_and_fix_hall 1000 100.5 max_current_change=1.2",
-            ],
-            "scan_ppms_field_and_fix_hall": [
-                "scan_ppms_field_and_fix_hall 0 2000 200 100 rate=10.0",
-                "scan_ppms_field_and_fix_hall 0 2000 200 100 rate=20",
-                "scan_ppms_field_and_fix_hall -2000 2000 200 100 rate=10 max_current_change=1.5",
-            ],
-            "measure_hall_field": [
-                "measure_hall_field",
-                "measure_hall_field current=1.5",
-                "measure_hall_field current=1.5 nplc=10 voltage_range=10V",
-            ],
-            "continuous_measure_hall_field": [
-                "continuous_measure_hall_field",
-                "continuous_measure_hall_field nplc=1 filter_count=5",
-                "continuous_measure_hall_field current=1.0 compliance_v=2 tbm=0.2",
-            ],
-            "measure_resistance": [
-                "measure_resistance current=1e-3",
-                "measure_resistance current_ma=0.5 voltage_range=0.02 compliance=0.02",
-                "measure_resistance current=1e-3 voltage_range=auto",
-                "measure_resistance current=5e-4 nplc=5 repetitions=3",
-                "measure_resistance current=1e-3 compliance=5 voltage_range=20V settle_time=0.05",
-            ],
-            "measure_iv_curve": [
-                "measure_iv_curve mode=current start_ma=0 min_ma=-1 max_ma=1 step_ma=0.1 shape=start_min_max_start auto_range=true ramp_to_start=true",
-                "measure_iv_curve mode=current start_ma=0 min_ma=-1 max_ma=1 step_ma=0.1 source_range_ma=10 measure_range=0.2",
-                "measure_iv_curve mode=current shape=start_max_start start=0 stop=1e-3 step=1e-4 compliance=5",
-                "measure_iv_curve mode=current shape=single start=0 stop=1e-3 step=1e-4 source_range=1mA ramp_to_start=false",
-                "measure_iv_curve mode=voltage shape=start_max_start start=0 stop=0.5 step=0.05 measure_range_ma=10 auto_range=false",
-            ],
-            "measure_lockin": [
-                "measure_lockin",
-                "measure_lockin current=1e-6",
-                "measure_lockin what=X,Y,R avg=20 sample_delay=0.1",
-            ],
-            "continuous_measure_lockin": [
-                "continuous_measure_lockin avg=10 sample_delay=0.02",
-            ],
-            "set_lockin_time_constant": [
-                "set_lockin_time_constant 0.3",
-                "set_lockin_time_constant 1.0",
-                "set_lockin_time_constant 3.0",
-            ],
-            "set_lockin_sensitivity": [
-                "set_lockin_sensitivity 10",
-                "set_lockin_sensitivity 17",
-                "set_lockin_sensitivity 26",
-            ],
-            "set_lockin_filter": [
-                "set_lockin_filter 6",
-                "set_lockin_filter 12",
-                "set_lockin_filter 24",
-            ],
-            "set_lockin_frequency": [
-                "set_lockin_frequency 1234.5",
-                "set_lockin_frequency 668.4",
-                "set_lockin_frequency 500.0",
-            ],
-            "set_lockin_current": [
-                "set_lockin_current 3e-3",
-                "set_lockin_current 5e-6 series_resistance=10000",
-            ],
-            "full_measure": [
-                "full_measure a",
-                "full_measure c",
-                "full_measure a time_between=0.1",
-                "full_measure a hall_excitation=keep",
-            ],
-            "continuous_full_measure": [
-                "continuous_full_measure",
-                "continuous_full_measure lockin_use_autorange=true",
-                "continuous_full_measure time_between=0.1 hall_nplc=5 lockin_avg=20",
-            ],
-            "configure_channel": [
-                "configure_channel a 5 6 7 8",
-                "configure_channel b 1 2 3 4",
-            ],
-            "enable_hall_output": [
-                "enable_hall_output current=1.0 compliance_v=2.0",
-            ],
-            "disable_hall_output": [
-                "disable_hall_output",
-            ],
-        }
-
-        min_pos = int(MIN_POSITIONAL.get(name, 0))
-        # Requested behavior:
-        # - 0-input commands: do not show examples
-        # - 1-input commands: show exactly one example
-        # - otherwise: show up to three examples
-        force_examples_for_zero_input = {
-            "test",
-            "initialize_data_file",
-            "add_note",
-            "measure_hall_field",
-            "continuous_measure_hall_field",
-            "enable_hall_output",
-            "disable_hall_output",
-        }
-        max_examples = 0 if (min_pos == 0 and name not in force_examples_for_zero_input) else (1 if min_pos == 1 else 3)
-        example_lines = examples_from_docs.get(name, [])
-        if example_lines and max_examples > 0:
-            details.extend(["", "Examples (from Commands.txt):", *example_lines[:max_examples]])
-
-        details.extend(["", "Quick insert sample:", sample])
-        self._set_command_preview("\n".join(details))
+        lines.append("Quick insert sample:")
+        lines.append("  " + self._command_snippet(name).replace("\n", "\n  "))
+        self._set_command_preview("\n".join(lines))
 
     def _insert_selected_command(self) -> None:
         name = self._selected_command_name()
@@ -2522,7 +2798,16 @@ class ResultsTab(BaseTab):
                 self.pause_button.configure(text="Unpause")
             else:
                 self.pause_button.configure(text="Pause")
+            if state_text == "running" and self._running_tab_index is None:
+                idx = self._active_script_tab_index()
+                self._running_tab_index = idx
+                self._script_tabs[idx]["running"] = True
+                self._update_script_tab_title(idx)
             if state_text in {"idle", "error"}:
+                if self._running_tab_index is not None and 0 <= self._running_tab_index < len(self._script_tabs):
+                    self._script_tabs[self._running_tab_index]["running"] = False
+                    self._update_script_tab_title(self._running_tab_index)
+                self._running_tab_index = None
                 self.clear_highlights()
         elif widget_id == W_SCRIPT_LINE:
             if isinstance(value, tuple):
@@ -2787,11 +3072,16 @@ class ResultsTab(BaseTab):
     def _on_run_script(self) -> None:
         if not self.prompt_save_script_if_needed("before running"):
             return
+        active_idx = self._active_script_tab_index()
         script = self.script_text.get("1.0", "end").strip()
         if not script:
             self.app.ui_bus.post_log("No script to run.")
             return
         self.app.run_script(script)
+        if self.app.engine.is_running and 0 <= active_idx < len(self._script_tabs):
+            self._running_tab_index = active_idx
+            self._script_tabs[active_idx]["running"] = True
+            self._update_script_tab_title(active_idx)
 
     def _on_pause_script(self) -> None:
         self.app.pause_script()
@@ -2800,6 +3090,10 @@ class ResultsTab(BaseTab):
         self.app.abort_script()
         self.clear_highlights()
         self.pause_button.configure(text="Pause")
+        if self._running_tab_index is not None and 0 <= self._running_tab_index < len(self._script_tabs):
+            self._script_tabs[self._running_tab_index]["running"] = False
+            self._update_script_tab_title(self._running_tab_index)
+        self._running_tab_index = None
 
     def _on_load_script(self) -> None:
         if not self.prompt_save_script_if_needed("before loading another script"):
@@ -2816,30 +3110,38 @@ class ResultsTab(BaseTab):
                 self.script_text.insert("1.0", text)
                 self.script_text.edit_modified(False)
                 self._suspend_modified_event = False
-                self.app.script_filename.set(Path(path).name)
-                self.app.script_file_path = str(path)
-                self.app.script_dirty = False
+                idx = self._active_script_tab_index()
+                self._script_tabs[idx]["filename"] = Path(path).name
+                self._script_tabs[idx]["path"] = str(path)
+                self._script_tabs[idx]["dirty"] = False
+                self._update_script_tab_title(idx)
+                self._sync_app_script_state_from_active_tab()
                 self.app.ui_bus.post_log(f"Loaded: {path}")
             except Exception as exc:
                 self._suspend_modified_event = False
                 self.app.ui_bus.post_log(f"Load error: {exc}")
 
     def _on_save_script(self, force_prompt: bool = False) -> None:
-        path = None if force_prompt else self.app.script_file_path
+        idx = self._active_script_tab_index()
+        tab_path = self._script_tabs[idx].get("path")
+        tab_filename = str(self._script_tabs[idx].get("filename") or "script.txt")
+        path = None if force_prompt else tab_path
         if not path:
             path = filedialog.asksaveasfilename(
                 defaultextension=".txt",
-                initialfile=self.app.script_filename.get(),
+                initialfile=tab_filename,
                 filetypes=[("Text files", "*.txt"), ("All files", "*.*")],
             )
         if path:
             try:
                 text = self.script_text.get("1.0", "end").strip()
                 Path(path).write_text(text, encoding="utf-8")
-                self.app.script_filename.set(Path(path).name)
-                self.app.script_file_path = str(path)
-                self.app.script_dirty = False
+                self._script_tabs[idx]["filename"] = Path(path).name
+                self._script_tabs[idx]["path"] = str(path)
+                self._script_tabs[idx]["dirty"] = False
                 self.script_text.edit_modified(False)
+                self._update_script_tab_title(idx)
+                self._sync_app_script_state_from_active_tab()
                 self.app.ui_bus.post_log(f"Saved: {path}")
             except Exception as exc:
                 self.app.ui_bus.post_log(f"Save error: {exc}")
@@ -2929,15 +3231,26 @@ class ResultsTab(BaseTab):
             self.app.ui_bus.post_log(f"Change data file error: {exc}")
 
     def _on_script_modified(self, _event: tk.Event | None = None) -> None:
+        text_widget = _event.widget if (_event is not None and isinstance(_event.widget, tk.Text)) else self.script_text
         if self._suspend_modified_event:
-            self.script_text.edit_modified(False)
+            text_widget.edit_modified(False)
             return
-        if self.script_text.edit_modified():
-            self.app.script_dirty = True
-            self.script_text.edit_modified(False)
+        if text_widget.edit_modified():
+            idx = self._tab_index_for_text(text_widget)
+            if idx is None:
+                idx = self._active_script_tab_index()
+            self._script_tabs[idx]["dirty"] = True
+            self._update_script_tab_title(idx)
+            if idx == self._active_script_tab_index():
+                self._sync_app_script_state_from_active_tab()
+            text_widget.edit_modified(False)
+            self._refresh_editor_visuals(text_widget)
 
     def has_unsaved_script_changes(self) -> bool:
-        return bool(getattr(self.app, "script_dirty", False))
+        if not self._script_tabs:
+            return False
+        idx = self._active_script_tab_index()
+        return bool(self._script_tabs[idx].get("dirty", False))
 
     def _ask_unsaved_script_action(self, message: str) -> str:
         """Show unsaved-script dialog and return one of: save, save_as, no, cancel."""
