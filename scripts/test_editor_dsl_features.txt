@@ -1,0 +1,36 @@
+# Test script for new editor + DSL features
+# Safe defaults: uses only general/timing commands (no instrument dependency).
+
+initialize_data_file filename=test_editor_dsl_features.csv
+add_note Starting DSL/editor feature smoke test
+
+SET repeats = 3
+SET base_wait = 0.10
+SET extra_wait = 0.05
+
+# for_loop + $loop_index + arithmetic in kwargs
+for_loop $repeats
+    add_note for_loop iteration $loop_index
+    wait_for no_event $base_wait+($loop_index*$extra_wait)
+END
+
+# REPEAT alias + END terminator + blank lines inside loop body
+repeat 2
+
+    add_note repeat block iteration $loop_index
+    wait_for no_event 0.10
+END
+
+# nested loops with constants
+SET outer = 2
+SET inner = 2
+for_loop $outer
+    add_note outer index $loop_index
+    for_loop $inner
+        add_note inner index $loop_index
+        wait_for no_event 0.05
+    END
+END
+
+add_note DSL/editor feature smoke test completed
+test

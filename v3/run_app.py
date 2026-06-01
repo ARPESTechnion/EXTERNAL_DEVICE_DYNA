@@ -3,7 +3,7 @@ Simple launcher for the v3 GUI.
 
 Two ways to choose mock vs real mode:
 
-  1. Edit Use_MockUp below and SAVE this file, then run it.
+  1. Edit Use_MockUp below and SAVE this file, then rbrun it.
   2. Use a command-line flag (overrides the line below):
          python v3/run_app.py --mockup
          python v3/run_app.py --real
