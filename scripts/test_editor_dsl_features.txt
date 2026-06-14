@@ -4,9 +4,9 @@
 initialize_data_file filename=test_editor_dsl_features.csv
 add_note Starting DSL/editor feature smoke test
 
-SET repeats = 3
-SET base_wait = 0.10
-SET extra_wait = 0.05
+SET repeats = 5
+SET base_wait = 0.5
+SET extra_wait = 0.1
 
 # for_loop + $loop_index + arithmetic in kwargs
 for_loop $repeats
@@ -18,7 +18,7 @@ END
 repeat 2
 
     add_note repeat block iteration $loop_index
-    wait_for no_event 0.10
+    wait_for no_event 10
 END
 
 # nested loops with constants
@@ -28,7 +28,7 @@ for_loop $outer
     add_note outer index $loop_index
     for_loop $inner
         add_note inner index $loop_index
-        wait_for no_event 0.05
+        wait_for no_event 0.5
     END
 END
 

@@ -1186,6 +1186,12 @@ class MeasureApp:
         if self._shutting_down:
             return
 
+        try:
+            if not self._confirm_close_while_script_running():
+                return
+        except Exception:
+            logger.exception("Running-script close confirmation failed")
+
         if hasattr(self, "results_tab"):
             try:
                 if not self.results_tab.prompt_save_script_if_needed("before exiting"):
@@ -1326,6 +1332,18 @@ class MeasureApp:
             "Do you want to close anyway?"
         )
         return bool(messagebox.askyesno("Helmholtz Current Warning", msg, icon="warning"))
+
+    def _confirm_close_while_script_running(self) -> bool:
+        """Warn before close if a script/measurement is currently active."""
+        if not self.engine.is_running:
+            return True
+
+        msg = (
+            "A measurement script is currently running.\n\n"
+            "Closing now will stop the running script.\n"
+            "Are you sure you want to close the app?"
+        )
+        return bool(messagebox.askyesno("Measurement Running", msg, icon="warning"))
 
     # ==================================================================
     # Helpers
