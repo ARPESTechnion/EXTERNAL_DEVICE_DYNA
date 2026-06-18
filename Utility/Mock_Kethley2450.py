@@ -23,6 +23,8 @@ class MockKeithley2450:
         self._auto_range = True
         self._voltage_filter_count = 10
         self._wires = 2
+        self._terminals = 'REAR'
+        self._remote_sense = True
         self._load_resistance_ohm = 1200.0
 
     @property
@@ -217,6 +219,16 @@ class MockKeithley2450:
 
     def voltage_filter_count(self, count):
         self._voltage_filter_count = count
+
+    def configure_terminals_and_sense(self, terminals='REAR', remote_sense=True):
+        terminal = str(terminals).strip().upper()
+        if terminal not in {'REAR', 'FRONT'}:
+            terminal = 'REAR'
+        self._terminals = terminal
+        self._remote_sense = bool(remote_sense)
+
+    def get_terminals(self):
+        return self._terminals
 
     def write(self, command):
         """Simulate writing a command to the instrument."""

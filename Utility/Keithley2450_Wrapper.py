@@ -146,6 +146,20 @@ class Keithley2450Wrapper:
         else:
             self.instrument.write(":SENS:VOLT:RSEN OFF")
             self.instrument.write(":SENS:CURR:RSEN OFF")
+
+    def get_terminals(self):
+        """Read currently active terminals from instrument."""
+        raw = None
+        if hasattr(self.instrument, "get_terminals"):
+            raw = self.instrument.get_terminals()
+        if raw is None:
+            raw = self.instrument.ask("ROUT:TERM?")
+        text = str(raw).strip().upper().replace('"', "")
+        if "FRONT" in text:
+            return "FRONT"
+        if "REAR" in text:
+            return "REAR"
+        return text or "UNKNOWN"
         
     @property
     def source_current(self):

@@ -672,6 +672,21 @@ class MeasureApp:
             except Exception:
                 logger.debug("K2450 init command failed: %s", _cmd, exc_info=True)
         self.bus.connect(INST_KEITHLEY2450, inst)
+        try:
+            terminals = "REAR"
+            hall_tab = getattr(self, "hall_tab", None)
+            if hall_tab is not None and hasattr(hall_tab, "k2450_terminals"):
+                requested = str(hall_tab.k2450_terminals.get()).strip().upper()
+                if requested in {"REAR", "FRONT"}:
+                    terminals = requested
+            self.bus.execute(
+                INST_KEITHLEY2450,
+                "configure_terminals_and_sense",
+                terminals=terminals,
+                remote_sense=True,
+            )
+        except Exception:
+            logger.debug("K2450 terminal apply on connect failed", exc_info=True)
         return True
 
     def _disconnect_hall(self) -> None:

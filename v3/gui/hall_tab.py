@@ -97,6 +97,9 @@ class HallTab(BaseTab):
         self.k2450_voltage_range = tk.StringVar(value="auto")
         self.k2450_filter_count = tk.IntVar(value=10)
         self.k2450_tbm = tk.DoubleVar(value=0.05)           # seconds
+        self.k2450_terminals = tk.StringVar(value="REAR")
+        self.k2450_terminal_button_text = tk.StringVar(value="")
+        self.k2450_active_terminal = tk.StringVar(value="Disconnected")
         self.k2450_hall_offset = tk.DoubleVar(value=0.0)     # V
         self.k2450_hall_v2gauss = tk.DoubleVar(value=10000.0 / 0.215)
         self.k2450_hall_bar = tk.StringVar(value="Wire Hall Bar 1")
@@ -167,6 +170,19 @@ class HallTab(BaseTab):
             sf, self.k2450_voltage_range, "auto",
             "auto", "0.02", "0.2", "2", "20", "200",
         ).grid(row=row, column=1, padx=5, sticky="w")
+
+        row += 1
+        ttk.Label(sf, text="Terminals:").grid(row=row, column=0, sticky="w", padx=5, pady=2)
+        ttk.Button(
+            sf,
+            textvariable=self.k2450_terminal_button_text,
+            command=self._on_terminal_button_pressed,
+            width=24,
+        ).grid(row=row, column=1, padx=5, pady=2, sticky="w")
+
+        row += 1
+        ttk.Label(sf, text="Active Terminal:").grid(row=row, column=0, sticky="w", padx=5, pady=2)
+        ttk.Label(sf, textvariable=self.k2450_active_terminal).grid(row=row, column=1, sticky="w", padx=5, pady=2)
 
         aux = ttk.LabelFrame(settings_row, text="Resistance / IV")
         aux.grid(row=0, column=1, sticky="nsew", padx=(5, 0))
@@ -244,6 +260,7 @@ class HallTab(BaseTab):
         self.register_measure_button(iv_btn)
 
         self._apply_hall_bar_preset(self.k2450_hall_bar.get())
+        self._update_terminal_button_text()
         self.k2450_hall_v2gauss.trace_add("write", self._on_manual_v2gauss_changed)
         self.k2450_iv_mode.trace_add("write", self._on_iv_mode_changed)
         self._update_iv_range_controls()
@@ -387,6 +404,76 @@ class HallTab(BaseTab):
 
     def _on_hall_bar_selected(self, _event: tk.Event | None = None) -> None:
         self._apply_hall_bar_preset(self.k2450_hall_bar.get())
+
+    def _update_terminal_button_text(self) -> None:
+        terminal = str(self.k2450_terminals.get()).strip().upper()
+        if terminal not in {"REAR", "FRONT"}:
+            terminal = "REAR"
+            self.k2450_terminals.set(terminal)
+        next_terminal = "FRONT" if terminal == "REAR" else "REAR"
+        self.k2450_terminal_button_text.set(f"Panel: {terminal} (switch to {next_terminal})")
+
+    def _on_terminal_button_pressed(self) -> None:
+        terminal = str(self.k2450_terminals.get()).strip().upper()
+        self.k2450_terminals.set("FRONT" if terminal != "FRONT" else "REAR")
+        self._update_terminal_button_text()
+        self._apply_terminal_selection()
+
+    def _on_terminal_selected(self, _event: tk.Event | None = None) -> None:
+        self._update_terminal_button_text()
+        self._apply_terminal_selection()
+
+    def _apply_terminal_selection(self) -> None:
+        terminal = str(self.k2450_terminals.get()).strip().upper()
+        if terminal not in {"REAR", "FRONT"}:
+            terminal = "REAR"
+            self.k2450_terminals.set(terminal)
+        self._update_terminal_button_text()
+
+        if not self.app.bus.is_connected(INST_KEITHLEY2450):
+            self.k2450_active_terminal.set("Disconnected")
+            if hasattr(self, "status_text"):
+                self._append_status(f"K2450 terminals set to {terminal} (will apply on connect).")
+            return
+
+        try:
+            self.app.bus.execute(
+                INST_KEITHLEY2450,
+                "configure_terminals_and_sense",
+                terminals=terminal,
+                remote_sense=True,
+            )
+            if hasattr(self, "status_text"):
+                self._append_status(f"K2450 terminals switched to {terminal}.")
+            self.app.ui_bus.post_log(f"K2450 terminals switched to {terminal}")
+            self._refresh_terminal_readback()
+        except Exception as exc:
+            post_error = getattr(self.app, "post_instrument_error", None)
+            if callable(post_error):
+                post_error("hall", str(exc))
+            elif hasattr(self, "status_text"):
+                self._append_status(str(exc), is_error=True)
+            self.app.ui_bus.post_log(f"K2450 terminal switch error: {exc}")
+
+    def _refresh_terminal_readback(self) -> None:
+        if not self.app.bus.is_connected(INST_KEITHLEY2450):
+            self.k2450_active_terminal.set("Disconnected")
+            return
+
+        try:
+            reported = self.app.bus.execute(INST_KEITHLEY2450, "get_terminals")
+            text = str(reported).strip().upper().replace('"', "")
+            if "FRONT" in text:
+                normalized = "FRONT"
+            elif "REAR" in text:
+                normalized = "REAR"
+            else:
+                normalized = text or "UNKNOWN"
+            self.k2450_active_terminal.set(normalized)
+            self.k2450_terminals.set("FRONT" if normalized == "FRONT" else "REAR")
+            self._update_terminal_button_text()
+        except Exception:
+            self.k2450_active_terminal.set("Unknown")
 
     def _on_manual_v2gauss_changed(self, *_args: object) -> None:
         if self._updating_preset:
@@ -655,8 +742,11 @@ class HallTab(BaseTab):
         elif widget_id == W_HALL_CONNECTED:
             if self._conn_header:
                 self._conn_header.set_connected(bool(value))
+            if bool(value):
+                self._refresh_terminal_readback()
             if not bool(value):
                 self._set_source_enabled(False)
+                self.k2450_active_terminal.set("Disconnected")
         elif widget_id == W_HALL_SOURCE_ENABLED:
             self._set_source_enabled(bool(value))
         elif widget_id == W_INSTRUMENT_ERROR:
@@ -666,11 +756,13 @@ class HallTab(BaseTab):
     def on_instrument_connected(self, name: str) -> None:
         if name == "hall" and self._conn_header:
             self._conn_header.set_connected(True)
+            self._refresh_terminal_readback()
 
     def on_instrument_disconnected(self, name: str) -> None:
         if name == "hall" and self._conn_header:
             self._conn_header.set_connected(False)
             self._set_source_enabled(False)
+            self.k2450_active_terminal.set("Disconnected")
             self.app.ui_bus.post(W_LED_HALL, False)
 
     def _set_source_enabled(self, enabled: bool) -> None:

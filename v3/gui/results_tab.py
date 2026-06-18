@@ -1443,6 +1443,19 @@ class ResultsTab(BaseTab):
             "200",
         ).grid(row=vr_row, column=1, padx=5, sticky="w")
 
+        terminals_row = vr_row + 1
+        ttk.Label(sf, text="Terminals:").grid(row=terminals_row, column=0, sticky="w", padx=5, pady=2)
+        ttk.Button(
+            sf,
+            textvariable=hall.k2450_terminal_button_text,
+            command=hall._on_terminal_button_pressed,
+            width=24,
+        ).grid(row=terminals_row, column=1, padx=5, pady=2, sticky="w")
+
+        active_row = terminals_row + 1
+        ttk.Label(sf, text="Active Terminal:").grid(row=active_row, column=0, sticky="w", padx=5, pady=2)
+        ttk.Label(sf, textvariable=hall.k2450_active_terminal).grid(row=active_row, column=1, sticky="w", padx=5, pady=2)
+
         bf = ttk.LabelFrame(parent, text="Hall Measurement")
         bf.pack(fill="x", padx=2, pady=4)
         hall_measure_btn = ttk.Button(bf, text="Measure Hall", command=hall._on_measure)
