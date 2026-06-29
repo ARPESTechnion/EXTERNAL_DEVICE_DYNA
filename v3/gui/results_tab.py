@@ -107,6 +107,7 @@ class ResultsTab(BaseTab):
         self._last_plot_refresh_ts: float = 0.0
         self.data_plot_range_start_var = tk.IntVar(value=1)
         self.data_plot_range_end_var = tk.IntVar(value=1000)
+        self.auto_follow_latest_var = tk.BooleanVar(value=False)
         # Backward-compatible aliases used by existing tests/helpers.
         self.iv_range_start_var = self.data_plot_range_start_var
         self.iv_range_end_var = self.data_plot_range_end_var
@@ -907,13 +908,23 @@ class ResultsTab(BaseTab):
 
         iv_row = ttk.LabelFrame(parent, text="Data Plot Range")
         iv_row.pack(fill="x", padx=5, pady=(2, 4))
-        ttk.Label(iv_row, text="Start:").pack(side="left", padx=(6, 2), pady=4)
-        ValidatingEntry(iv_row, textvariable=self.data_plot_range_start_var, width=8, validator=make_int_validator()).pack(side="left", pady=4)
-        ttk.Label(iv_row, text="End:").pack(side="left", padx=(10, 2), pady=4)
-        ValidatingEntry(iv_row, textvariable=self.data_plot_range_end_var, width=8, validator=make_int_validator()).pack(side="left", pady=4)
-        ttk.Button(iv_row, text="Prev", width=6, command=lambda: self._shift_iv_range(-1)).pack(side="left", padx=(10, 2), pady=4)
-        ttk.Button(iv_row, text="Next", width=6, command=lambda: self._shift_iv_range(1)).pack(side="left", padx=2, pady=4)
-        ttk.Button(iv_row, text="All", width=6, command=self._reset_iv_range).pack(side="left", padx=(10, 2), pady=4)
+        iv_controls_row = ttk.Frame(iv_row)
+        iv_controls_row.pack(fill="x", padx=4, pady=(4, 0))
+        ttk.Label(iv_controls_row, text="Start:").pack(side="left", padx=(2, 2), pady=2)
+        ValidatingEntry(iv_controls_row, textvariable=self.data_plot_range_start_var, width=8, validator=make_int_validator()).pack(side="left", pady=2)
+        ttk.Label(iv_controls_row, text="End:").pack(side="left", padx=(10, 2), pady=2)
+        ValidatingEntry(iv_controls_row, textvariable=self.data_plot_range_end_var, width=8, validator=make_int_validator()).pack(side="left", pady=2)
+        ttk.Button(iv_controls_row, text="Prev", width=6, command=lambda: self._shift_iv_range(-1)).pack(side="left", padx=(10, 2), pady=2)
+        ttk.Button(iv_controls_row, text="Next", width=6, command=lambda: self._shift_iv_range(1)).pack(side="left", padx=2, pady=2)
+        ttk.Button(iv_controls_row, text="All", width=6, command=self._reset_iv_range).pack(side="left", padx=(10, 2), pady=2)
+
+        iv_follow_row = ttk.Frame(iv_row)
+        iv_follow_row.pack(fill="x", padx=6, pady=(0, 4))
+        ttk.Checkbutton(
+            iv_follow_row,
+            text="Auto-follow latest",
+            variable=self.auto_follow_latest_var,
+        ).pack(side="left", pady=2)
 
         self._update_graph_color_buttons()
 
@@ -1464,6 +1475,9 @@ class ResultsTab(BaseTab):
         ttk.Button(bf, text="Set Offset...", command=hall._open_offset_popup).pack(side="left", padx=5, pady=2)
         ttk.Button(bf, text="Enable Source", command=hall._on_enable_source).pack(side="left", padx=5, pady=2)
         ttk.Button(bf, text="Disable Source", command=hall._on_disable_source).pack(side="left", padx=5, pady=2)
+        iv_measure_btn = ttk.Button(bf, text="Measure IV Curve", command=hall._on_measure_iv_curve)
+        iv_measure_btn.pack(side="left", padx=5, pady=2)
+        hall.register_measure_button(iv_measure_btn)
 
         aux = ttk.LabelFrame(parent, text="Resistance / IV")
         aux.pack(fill="x", padx=2, pady=2)
@@ -1501,8 +1515,36 @@ class ResultsTab(BaseTab):
         ttk.Entry(aux, textvariable=hall.k2450_iv_nplc, width=10).grid(row=5, column=1, padx=5, pady=2)
         ttk.Label(aux, text="IV Settle (s):").grid(row=5, column=2, sticky="w", padx=5, pady=2)
         ttk.Entry(aux, textvariable=hall.k2450_iv_settle, width=10).grid(row=5, column=3, padx=5, pady=2)
-        ttk.Checkbutton(aux, text="Ramp to start", variable=hall.k2450_iv_ramp_to_start).grid(row=6, column=0, columnspan=2, sticky="w", padx=5, pady=2)
-        ttk.Button(aux, text="Measure IV Curve", command=hall._on_measure_iv_curve).grid(row=6, column=4, padx=5, pady=2)
+        ttk.Label(aux, text="IV Repetitions:").grid(row=6, column=0, sticky="w", padx=5, pady=2)
+        ValidatingEntry(
+            aux,
+            textvariable=hall.k2450_iv_repetitions,
+            width=10,
+            validator=make_float_validator(1.0, 1000.0),
+        ).grid(row=6, column=1, sticky="w", padx=5, pady=2)
+        iv_range_options = ("auto", "0.01", "0.02", "0.1", "0.2", "1", "2", "10", "20", "100", "200", "1050")
+        ttk.Label(aux, text="Source Range:").grid(row=6, column=2, sticky="w", padx=5, pady=2)
+        ttk.OptionMenu(aux, hall.k2450_iv_source_range, hall.k2450_iv_source_range.get(), *iv_range_options).grid(
+            row=6, column=3, sticky="w", padx=5, pady=2
+        )
+        ttk.Label(aux, text="Measure Range:").grid(row=7, column=0, sticky="w", padx=5, pady=2)
+        ttk.OptionMenu(aux, hall.k2450_iv_measure_range, hall.k2450_iv_measure_range.get(), *iv_range_options).grid(
+            row=7, column=1, sticky="w", padx=5, pady=2
+        )
+        ttk.Checkbutton(aux, text="Ramp to start", variable=hall.k2450_iv_ramp_to_start).grid(row=7, column=2, columnspan=2, sticky="w", padx=5, pady=2)
+        ttk.Button(aux, text="Measure IV Curve", command=hall._on_measure_iv_curve).grid(row=7, column=4, padx=5, pady=2)
+
+        popup_iv_prog = ttk.LabelFrame(parent, text="IV Progress")
+        popup_iv_prog.pack(fill="x", padx=2, pady=4)
+        ttk.Progressbar(
+            popup_iv_prog,
+            orient="horizontal",
+            mode="determinate",
+            maximum=100.0,
+            variable=hall.iv_progress_value,
+            style=hall.iv_progress_style,
+        ).pack(fill="x", padx=6, pady=(6, 2))
+        ttk.Label(popup_iv_prog, textvariable=hall.iv_progress_text).pack(anchor="w", padx=6, pady=(0, 6))
 
     def _build_switch_popup(self, parent: ttk.Frame) -> None:
         switch = self.app.switch_tab
@@ -2958,10 +3000,21 @@ class ResultsTab(BaseTab):
                 self.results_hall_voltage.configure(text=f"  V: {v:.6e} V")
                 self.results_hall_field.configure(text=f"  B: {f:.2f} G")
                 self._blink_hall_led()
-
         # --- New data point → auto-refresh plot ---
         elif widget_id == W_RESULTS_NEW_POINT:
             self._refresh_hall_sample_status_from_results()
+            if self.auto_follow_latest_var.get():
+                try:
+                    start = int(self.data_plot_range_start_var.get())
+                    end = int(self.data_plot_range_end_var.get())
+                except Exception:
+                    start, end = 1, 1
+                span = max(1, end - start + 1)
+                total_rows = len(self.app.data_mgr.get_results())
+                new_end = max(1, total_rows)
+                new_start = max(1, new_end - span + 1)
+                self.data_plot_range_start_var.set(new_start)
+                self.data_plot_range_end_var.set(new_end)
             self._schedule_plot_refresh()
 
     def _refresh_hall_sample_status_from_results(self) -> None:

@@ -160,6 +160,16 @@ class Keithley2450Wrapper:
         if "REAR" in text:
             return "REAR"
         return text or "UNKNOWN"
+
+    def set_iv_display_mode(self):
+        """Best-effort: switch front panel to a graph-centric view for IV sweeps."""
+        # Keithley firmware variants differ in display SCPI support.
+        # Keep this non-fatal and avoid interrupting measurement flow.
+        for cmd in (":DISP:SCR GRAP", ":DISP:SCR HOME"):
+            try:
+                self.instrument.write(cmd)
+            except Exception:
+                continue
         
     @property
     def source_current(self):
@@ -413,6 +423,13 @@ class Keithley2450Wrapper:
             raise ValueError("Empty trace response")
         return float(tokens[0])
 
+    @staticmethod
+    def _parse_csv_float_tokens(raw_text):
+        tokens = [tok.strip() for tok in str(raw_text).replace("\n", ",").split(",") if tok.strip()]
+        if not tokens:
+            raise ValueError("Empty trace response")
+        return [float(tok) for tok in tokens]
+
     def run_iv_sweep_fast(
         self,
         *,
@@ -508,23 +525,57 @@ class Keithley2450Wrapper:
             self.instrument.write(":INIT")
             self.instrument.write("*WAI")
 
+            # Ensure the instrument completed and buffered the expected point count.
+            active = 0
+            for _ in range(25):
+                try:
+                    raw_active = self.instrument.ask('TRAC:ACT? "defbuffer1"')
+                    active = int(self._parse_first_csv_float(raw_active))
+                except Exception:
+                    active = 0
+                if active >= chunk_count:
+                    break
+                time.sleep(0.02)
+            if active < chunk_count:
+                raise RuntimeError(
+                    f"Fast IV trace incomplete: expected {chunk_count} points, got {active}"
+                )
+
             chunk_values = []
-            for idx in range(1, chunk_count + 1):
-                point_value = None
+            window = 200
+            for start_idx in range(1, chunk_count + 1, window):
+                end_idx = min(chunk_count, start_idx + window - 1)
+                expected = end_idx - start_idx + 1
+                window_values = None
                 last_exc = None
-                for _attempt in range(3):
+                for _attempt in range(4):
                     try:
-                        raw = self.instrument.ask(f'TRAC:DATA? {idx}, {idx}, "defbuffer1", READ')
-                        point_value = self._parse_first_csv_float(raw)
+                        raw = self.instrument.ask(
+                            f'TRAC:DATA? {start_idx}, {end_idx}, "defbuffer1", READ'
+                        )
+                        parsed = self._parse_csv_float_tokens(raw)
+                        if len(parsed) < expected:
+                            raise RuntimeError(
+                                f"Fast IV trace window too short: expected {expected}, got {len(parsed)}"
+                            )
+                        # If stale prefix tokens leak into the reply, keep the newest expected window payload.
+                        window_values = [float(v) for v in parsed[-expected:]]
                         break
                     except Exception as exc:
                         last_exc = exc
                         if self._is_undefined_header(exc):
                             raise
-                        time.sleep(0.02)
-                if point_value is None:
-                    raise RuntimeError(f"Fast IV point read failed at index {idx}: {last_exc}")
-                chunk_values.append(float(point_value))
+                        time.sleep(0.03)
+                if window_values is None:
+                    raise RuntimeError(
+                        f"Fast IV window read failed at [{start_idx}:{end_idx}]: {last_exc}"
+                    )
+                chunk_values.extend(window_values)
+
+            if len(chunk_values) != chunk_count:
+                raise RuntimeError(
+                    f"Fast IV chunk length mismatch: expected {chunk_count}, got {len(chunk_values)}"
+                )
             return chunk_values
 
         values = []

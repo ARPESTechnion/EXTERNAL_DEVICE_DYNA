@@ -686,6 +686,7 @@ def measure_iv_curve(
     iv_max: float | None = None,
     env_sample_interval: float = 0.0,
     on_point: Callable[[dict[str, Any]], None] | None = None,
+    on_progress: Callable[[int, int], None] | None = None,
 ) -> dict[str, Any]:
     """Measure a full IV curve as a list of per-point data rows."""
     normalized_mode = str(mode).strip().lower()
@@ -771,15 +772,21 @@ def measure_iv_curve(
             return raw_values
 
         expanded_points = logical_points * reps
-        if len(raw_values) == logical_points:
-            return raw_values
         if len(raw_values) != expanded_points:
-            raise RuntimeError("invalid fast IV payload length")
+            raise RuntimeError(
+                f"invalid fast IV payload length for repetitions={reps}: "
+                f"got {len(raw_values)}, expected {expanded_points}"
+            )
 
         collapsed = []
         for i in range(logical_points):
             seg = raw_values[i * reps:(i + 1) * reps]
             collapsed.append(sum(seg) / float(len(seg)))
+        if len(collapsed) != logical_points:
+            raise RuntimeError(
+                f"collapsed fast IV payload length mismatch: "
+                f"got {len(collapsed)}, expected {logical_points}"
+            )
         return collapsed
 
     try:
@@ -854,6 +861,11 @@ def measure_iv_curve(
                                 on_point(point)
                             except Exception:
                                 logger.debug("IV on_point callback failed", exc_info=True)
+                        if on_progress is not None:
+                            try:
+                                on_progress(index, len(setpoints))
+                            except Exception:
+                                logger.debug("IV on_progress callback failed", exc_info=True)
                 except Exception:
                     logger.info("Fast IV processing failed; falling back to point mode", exc_info=True)
                     fast_values = None
@@ -893,6 +905,11 @@ def measure_iv_curve(
                             on_point(point)
                         except Exception:
                             logger.debug("IV on_point callback failed", exc_info=True)
+                    if on_progress is not None:
+                        try:
+                            on_progress(index, len(setpoints))
+                        except Exception:
+                            logger.debug("IV on_progress callback failed", exc_info=True)
 
         else:
             ctx.bus.execute(
@@ -965,6 +982,11 @@ def measure_iv_curve(
                                 on_point(point)
                             except Exception:
                                 logger.debug("IV on_point callback failed", exc_info=True)
+                        if on_progress is not None:
+                            try:
+                                on_progress(index, len(setpoints))
+                            except Exception:
+                                logger.debug("IV on_progress callback failed", exc_info=True)
                 except Exception:
                     logger.info("Fast IV processing failed; falling back to point mode", exc_info=True)
                     fast_values = None
@@ -1004,6 +1026,11 @@ def measure_iv_curve(
                             on_point(point)
                         except Exception:
                             logger.debug("IV on_point callback failed", exc_info=True)
+                    if on_progress is not None:
+                        try:
+                            on_progress(index, len(setpoints))
+                        except Exception:
+                            logger.debug("IV on_progress callback failed", exc_info=True)
 
     finally:
         # ramp_to_start: optional intermediate ramp from sweep end back to start.

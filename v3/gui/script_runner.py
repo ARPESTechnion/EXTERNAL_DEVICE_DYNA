@@ -47,6 +47,7 @@ from v3.core.ui_events import (
     W_DYNA_SETPOINT,
     W_HALL_RESULT,
     W_HELMHOLTZ_SETPOINT,
+    W_IV_PROGRESS,
     W_LED_HALL,
     W_LOCKIN_CHANNEL,
     W_LED_LOCKIN,
@@ -881,7 +882,13 @@ def _dispatch(
             reset_to_zero = cmd.get_bool("reset_to_zero", ramp_to_start)
 
             ctx.ui_bus.post(W_LED_HALL, True)
+            ctx.ui_bus.post(W_IV_PROGRESS, {"current": 0, "total": 1, "percent": 0.0, "active": True})
+            iv_success = False
             try:
+                try:
+                    ctx.bus.execute("hall", "set_iv_display_mode")
+                except Exception:
+                    pass
                 result = measure_iv_curve(
                     ctx,
                     mode=mode,
@@ -901,15 +908,41 @@ def _dispatch(
                     keep_output=keep_output,
                     ramp_to_start=ramp_to_start,
                     reset_to_zero=reset_to_zero,
+                    on_progress=lambda current, total: ctx.ui_bus.post(
+                        W_IV_PROGRESS,
+                        {
+                            "current": int(current),
+                            "total": max(int(total), 1),
+                            "percent": (100.0 * float(current) / float(max(total, 1))),
+                            "active": True,
+                        },
+                    ),
                 )
+                iv_success = True
             finally:
                 ctx.ui_bus.post(W_LED_HALL, False)
+                if not iv_success:
+                    ctx.ui_bus.post(
+                        W_IV_PROGRESS,
+                        {"current": 0, "total": 1, "percent": 0.0, "active": False},
+                    )
             wrote = ctx.data_mgr.write_rows(result["points"], measurement_type="IV")
             if wrote > 0:
                 ctx.ui_bus.post(W_RESULTS_NEW_POINT, True)
             elapsed_s = max(0.0, time.perf_counter() - t0)
+            point_count = int(result.get("point_count", 0))
+            ctx.ui_bus.post(
+                W_IV_PROGRESS,
+                {
+                    "current": point_count,
+                    "total": max(point_count, 1),
+                    "percent": 100.0,
+                    "active": False,
+                },
+            )
+            ctx.ui_bus.post_log(f"IV recorded: {point_count} points in {elapsed_s:.2f} s")
             ctx.ui_bus.post_log(
-                f"IV curve recorded ({result['point_count']} points in {elapsed_s:.2f} s, "
+                f"IV curve recorded ({point_count} points in {elapsed_s:.2f} s, "
                 f"engine={result.get('engine', 'point')})"
             )
 

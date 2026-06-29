@@ -51,6 +51,7 @@ from v3.core.ui_events import (
     W_INSTRUMENT_CONNECTED,
     W_INSTRUMENT_DISCONNECTED,
     W_LOG_MESSAGE,
+    W_RESULTS_NEW_POINT,
     W_SCRIPT_STATUS,
 )
 from v3.gui.base_tab import (
@@ -442,6 +443,28 @@ class TestResultsTabEvents:
         assert len(series) == 1
         assert series[0]["channel"] == "global"
 
+    def test_auto_follow_latest_updates_range_on_new_point(self, root):
+        from v3.gui.results_tab import ResultsTab
+        frame = ttk.Frame(root)
+        app = MagicMock()
+        app.parser = MagicMock()
+        app.validator = MagicMock()
+        app.script_filename = tk.StringVar(value="test.txt")
+        app.bus = InstrumentBus()
+        app.data_mgr = MagicMock()
+        app.data_mgr.get_results.return_value = [{"Measurement_Type": "IV"}] * 10
+        tab = ResultsTab(frame, app)
+        tab.create_widgets()
+
+        tab.data_plot_range_start_var.set(1)
+        tab.data_plot_range_end_var.set(5)
+        tab.auto_follow_latest_var.set(True)
+
+        tab.on_event(W_RESULTS_NEW_POINT, True)
+
+        assert tab.data_plot_range_start_var.get() == 6
+        assert tab.data_plot_range_end_var.get() == 10
+
 
 class TestLockInTabEvents:
     def test_x_y_r_update(self, root):
@@ -638,6 +661,22 @@ class TestHallTabEvents:
         assert "1.5" in text
         assert "12.5" in text
         assert "±" in text
+
+    def test_iv_progress_event_updates_hall_progress_widgets(self, root):
+        from v3.gui.hall_tab import HallTab
+        from v3.core.ui_events import W_IV_PROGRESS
+
+        frame = ttk.Frame(root)
+        app = MagicMock()
+        app.connect_instrument = MagicMock()
+        app.disconnect_instrument = MagicMock()
+        tab = HallTab(frame, app)
+        tab.create_widgets()
+
+        tab.on_event(W_IV_PROGRESS, {"current": 4, "total": 8, "percent": 50.0, "active": True})
+
+        assert tab.iv_progress_value.get() == pytest.approx(50.0)
+        assert "4/8" in tab.iv_progress_text.get()
 
 
 # ======================================================================

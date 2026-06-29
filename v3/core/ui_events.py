@@ -165,6 +165,7 @@ W_LED_DYNA = "led_dyna"
 
 # --- Results tab ---
 W_RESULTS_NEW_POINT = "results_new_point"
+W_IV_PROGRESS = "iv_progress"
 
 # --- Connection status (generic) ---
 W_INSTRUMENT_CONNECTED = "instrument_connected"

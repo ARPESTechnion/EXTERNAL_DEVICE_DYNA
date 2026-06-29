@@ -230,6 +230,10 @@ class MockKeithley2450:
     def get_terminals(self):
         return self._terminals
 
+    def set_iv_display_mode(self):
+        """Mock no-op for IV display mode command compatibility."""
+        return None
+
     def write(self, command):
         """Simulate writing a command to the instrument."""
         pass

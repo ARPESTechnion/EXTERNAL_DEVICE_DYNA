@@ -379,6 +379,52 @@ class TestMeasureIvCurve(unittest.TestCase):
         currents = [point["IV_Source_Current"] for point in result["points"]]
         self.assertEqual(currents, [0.0, 1.0, 2.0, 1.0, 0.0])
 
+    def test_fast_iv_repetitions_collapses_expanded_payload(self):
+        ctx = _make_context()
+        mock_k2450 = ctx.bus.get_raw(INST_KEITHLEY2450)
+        mock_k2450.run_iv_sweep_fast.return_value = [0.9, 1.1, 1.9, 2.1]
+
+        result = measure_iv_curve(
+            ctx,
+            mode="current",
+            shape="single",
+            start=1e-3,
+            stop=2e-3,
+            step=1e-3,
+            nplc=1.0,
+            repetitions=2,
+        )
+
+        self.assertEqual(result["engine"], "fast")
+        self.assertEqual(result["point_count"], 2)
+        self.assertAlmostEqual(result["points"][0]["IV_Measured_Voltage"], 1.0)
+        self.assertAlmostEqual(result["points"][1]["IV_Measured_Voltage"], 2.0)
+
+    def test_fast_iv_repetitions_invalid_payload_falls_back_to_point_mode(self):
+        ctx = _make_context()
+        mock_k2450 = ctx.bus.get_raw(INST_KEITHLEY2450)
+
+        # For repetitions > 1 this logical-length payload is malformed and
+        # must force point-mode fallback.
+        mock_k2450.run_iv_sweep_fast.return_value = [1.0, 2.0]
+        mock_k2450.measure_voltage.side_effect = [(1.2, 0.1), (2.3, 0.1)]
+
+        result = measure_iv_curve(
+            ctx,
+            mode="current",
+            shape="single",
+            start=1e-3,
+            stop=2e-3,
+            step=1e-3,
+            nplc=1.0,
+            repetitions=3,
+        )
+
+        self.assertEqual(result["engine"], "point")
+        self.assertEqual(result["point_count"], 2)
+        self.assertAlmostEqual(result["points"][0]["IV_Measured_Voltage"], 1.2)
+        self.assertAlmostEqual(result["points"][1]["IV_Measured_Voltage"], 2.3)
+
     def test_continuous_measure_disables_excitation_management_and_settling_wait(self):
         ctx = _make_context()
         mock_lockin = ctx.bus.get_raw(INST_LOCKIN)

@@ -66,6 +66,8 @@ End Sub
 Public Function Merged_InitPostAnalysisLog(ByVal filePath As String) As Boolean
     On Error GoTo EH
 
+    Call IV_ResetParserCache()
+
     MV_MergedLogPath = filePath
     If Not MV_EndsWithIgnoreCase(MV_MergedLogPath, ".dat") Then
         MV_MergedLogPath = MV_MergedLogPath & ".dat"
@@ -116,6 +118,7 @@ End Function
 
 Public Function Merged_ClosePostAnalysisLog() As Boolean
     On Error Resume Next
+    Call IV_ResetParserCache()
     Set MV_MergedDataFile = Nothing
     Merged_ClosePostAnalysisLog = True
 End Function
@@ -199,7 +202,34 @@ Public Function PostAnalysis_AppendMergedRow(ByVal etoDataPath As String, _
     okCh1 = False
     okCh2 = False
 
-    If measureCh1 Then
+    If measureCh1 And measureCh2 Then
+        okCh1 = IV_ExtractTwoBlocksWithMetadataFromFile(etoDataPath, _
+                                                        blockCh1, _
+                                                        blockCh2, _
+                                                        ch1CurrentColIndex, _
+                                                        ch1VoltageColIndex, _
+                                                        ch1AveragingTimeColIndex, _
+                                                        ch1GainColIndex, _
+                                                        ch2CurrentColIndex, _
+                                                        ch2VoltageColIndex, _
+                                                        ch2AveragingTimeColIndex, _
+                                                        ch2GainColIndex, _
+                                                        resultCh1, _
+                                                        ch1Avg_s, _
+                                                        ch1Gain, _
+                                                        ch1HasAvg, _
+                                                        ch1HasGain, _
+                                                        resultCh2, _
+                                                        ch2Avg_s, _
+                                                        ch2Gain, _
+                                                        ch2HasAvg, _
+                                                        ch2HasGain)
+        okCh2 = okCh1
+        If Not okCh1 Then
+            PostAnalysis_AppendMergedRow = False
+            Exit Function
+        End If
+    ElseIf measureCh1 Then
         okCh1 = IV_ExtractBlockWithMetadataFromFile(etoDataPath, _
                                                     blockCh1, _
                                                     ch1CurrentColIndex, _

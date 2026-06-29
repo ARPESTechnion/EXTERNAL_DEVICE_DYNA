@@ -20,6 +20,7 @@ from v3.core.ui_events import (
     W_HALL_CONNECTED,
     W_HALL_RESULT,
     W_HALL_SOURCE_ENABLED,
+    W_IV_PROGRESS,
     W_LED_HALL,
     W_RESULTS_NEW_POINT,
     W_INSTRUMENT_ERROR,
@@ -58,8 +59,12 @@ class HallTab(BaseTab):
         self._iv_measure_range_label: ttk.Label | None = None
         self._iv_source_range_menu: ttk.OptionMenu | None = None
         self._iv_measure_range_menu: ttk.OptionMenu | None = None
+        self.iv_progress_value = tk.DoubleVar(value=0.0)
+        self.iv_progress_text = tk.StringVar(value="IV progress: idle")
+        self.iv_progress_style = "HallIVGreen.Horizontal.TProgressbar"
 
     def create_widgets(self) -> None:
+        self._configure_progress_style()
         self._conn_header = ConnectionHeader(
             self.parent,
             instrument_key="hall",
@@ -78,6 +83,17 @@ class HallTab(BaseTab):
         self._build_readouts(body)
         self._build_buttons(body)
         self._build_status(body)
+
+    def _configure_progress_style(self) -> None:
+        style = ttk.Style(self.parent)
+        style.configure(
+            self.iv_progress_style,
+            troughcolor="#d9d9d9",
+            background="#24a148",
+            darkcolor="#1f8a3d",
+            lightcolor="#2ecf5d",
+            bordercolor="#1f8a3d",
+        )
 
     # ------------------------------------------------------------------
     # Settings
@@ -369,6 +385,18 @@ class HallTab(BaseTab):
         self.resistance_current_display_label.pack(side="left", fill="x", expand=True, padx=(6, 0))
         self.resistance_display_label.bind("<Double-Button-1>", lambda _e: self._open_iv_resistance_popup())
         self.resistance_current_display_label.bind("<Double-Button-1>", lambda _e: self._open_iv_resistance_popup())
+
+        prog_row = ttk.LabelFrame(rd, text="IV Progress")
+        prog_row.pack(fill="x", anchor="w", padx=5, pady=(0, 5))
+        ttk.Progressbar(
+            prog_row,
+            orient="horizontal",
+            mode="determinate",
+            maximum=100.0,
+            variable=self.iv_progress_value,
+            style=self.iv_progress_style,
+        ).pack(fill="x", padx=6, pady=(6, 2))
+        ttk.Label(prog_row, textvariable=self.iv_progress_text).pack(anchor="w", padx=6, pady=(0, 6))
 
     # ------------------------------------------------------------------
     # Buttons
@@ -749,6 +777,19 @@ class HallTab(BaseTab):
                 self.k2450_active_terminal.set("Disconnected")
         elif widget_id == W_HALL_SOURCE_ENABLED:
             self._set_source_enabled(bool(value))
+        elif widget_id == W_IV_PROGRESS:
+            if isinstance(value, dict):
+                current = int(value.get("current", 0))
+                total = max(int(value.get("total", 1)), 1)
+                percent = float(value.get("percent", (100.0 * current / total)))
+                active = bool(value.get("active", False))
+                self.iv_progress_value.set(max(0.0, min(100.0, percent)))
+                if active:
+                    self.iv_progress_text.set(f"IV progress: {current}/{total} points ({percent:.0f}%)")
+                elif current > 0:
+                    self.iv_progress_text.set(f"IV done: {current} points")
+                else:
+                    self.iv_progress_text.set("IV progress: idle")
         elif widget_id == W_INSTRUMENT_ERROR:
             if isinstance(value, dict) and str(value.get("instrument")) == "hall":
                 self._append_status(str(value.get("message", "Unknown error")), is_error=True)
@@ -813,6 +854,13 @@ class HallTab(BaseTab):
         t.start()
 
     def _on_measure_iv_curve(self) -> None:
+        if self._measuring:
+            self.app.ui_bus.post_log("K2450 measurement already in progress.")
+            return
+
+        self._measuring = True
+        self._set_measure_buttons_enabled(False)
+
         try:
             start = float(self.k2450_iv_start.get())
             iv_min = float(self.k2450_iv_min.get())
@@ -827,14 +875,15 @@ class HallTab(BaseTab):
         except Exception as exc:
             self._append_status(str(exc), is_error=True)
             self.app.ui_bus.post_log(f"IV measure error: {exc}")
+            self._measure_done()
             return
-        if self._measuring:
-            self.app.ui_bus.post_log("K2450 measurement already in progress.")
-            return
-        self._measuring = True
-        self._set_measure_buttons_enabled(False)
-        t = threading.Thread(target=self._measure_iv_worker, daemon=True, name="hall-iv-measure")
-        t.start()
+        try:
+            t = threading.Thread(target=self._measure_iv_worker, daemon=True, name="hall-iv-measure")
+            t.start()
+        except Exception as exc:
+            self._append_status(f"Could not start IV worker: {exc}", is_error=True)
+            self.app.ui_bus.post_log(f"IV worker start error: {exc}")
+            self._measure_done()
 
     def _measure_worker(self) -> None:
         try:
@@ -946,6 +995,12 @@ class HallTab(BaseTab):
             self.app.ui_bus.post(W_LED_HALL, True)
             self.app.root.after(0, lambda: set_led(self.source_led, True))
             t0 = time.perf_counter()
+            self.app.ui_bus.post(W_IV_PROGRESS, {"current": 0, "total": 1, "percent": 0.0, "active": True})
+
+            try:
+                self.app.bus.execute(INST_KEITHLEY2450, "set_iv_display_mode")
+            except Exception:
+                pass
 
             source_range_raw = str(self.k2450_iv_source_range.get())
             measure_range_raw = str(self.k2450_iv_measure_range.get())
@@ -981,6 +1036,15 @@ class HallTab(BaseTab):
                 reset_to_zero=ramp_enabled,
                 ramp_to_start=ramp_enabled,
                 env_sample_interval=float(self.k2450_iv_env_interval.get()),
+                on_progress=lambda current, total: self.app.ui_bus.post(
+                    W_IV_PROGRESS,
+                    {
+                        "current": int(current),
+                        "total": max(int(total), 1),
+                        "percent": (100.0 * float(current) / float(max(total, 1))),
+                        "active": True,
+                    },
+                ),
             )
 
             if not isinstance(result, dict):
@@ -1006,16 +1070,29 @@ class HallTab(BaseTab):
                 )
 
                 def _apply() -> None:
-                    self.k2450_aux_result.configure(text=f"IV: {result.get('point_count', 0)} points")
+                    point_count = int(result.get("point_count", 0))
+                    self.k2450_aux_result.configure(text=f"IV: {point_count} points")
                     self._append_status(
-                        f"Recorded IV curve with {result.get('point_count', 0)} points in {elapsed_s:.2f} s"
+                        f"Recorded IV curve with {point_count} points in {elapsed_s:.2f} s"
                     )
                     self._append_status(engine_msg)
                     self.app.ui_bus.post_log(
-                        f"K2450 IV curve recorded: {result.get('point_count', 0)} points in {elapsed_s:.2f} s "
+                        f"IV recorded: {point_count} points in {elapsed_s:.2f} s"
+                    )
+                    self.app.ui_bus.post_log(
+                        f"K2450 IV curve recorded: {point_count} points in {elapsed_s:.2f} s "
                         f"(engine={result.get('engine', 'point')})"
                     )
                     self.app.ui_bus.post_log(f"K2450 {engine_msg}")
+                    self.app.ui_bus.post(
+                        W_IV_PROGRESS,
+                        {
+                            "current": point_count,
+                            "total": max(point_count, 1),
+                            "percent": 100.0,
+                            "active": False,
+                        },
+                    )
 
                 self.app.root.after(0, _apply)
             except Exception:
@@ -1028,6 +1105,10 @@ class HallTab(BaseTab):
             def _show_error() -> None:
                 self._append_status(f"IV measurement failed: {exc_text}", is_error=True)
                 self.app.ui_bus.post_log(f"IV measure error: {exc_text}")
+                self.app.ui_bus.post(
+                    W_IV_PROGRESS,
+                    {"current": 0, "total": 1, "percent": 0.0, "active": False},
+                )
 
             self.app.root.after(0, _show_error)
         finally:

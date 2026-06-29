@@ -6,6 +6,7 @@
 '#Uses "..\Analysis\MV_IV_PostAnalysis.bas"
 '#Uses ".\MV_RunWrappers.bas"
 '#Uses "..\Core\MV_GpibIO.bas"
+'#Uses "..\Core\MV_DynaHelpers.bas"
 
 Option Explicit
 
@@ -70,6 +71,9 @@ Public Sub fn_IP_Loop_Helm_Loop_Bsweep( _
     Dim totalAppendFail As Long
     Dim catchOk As Boolean
     Dim catchCount As Long
+    Dim Skip_IP_Field_Commands As Boolean
+    Dim Is_Single_IP_Zero_Target As Boolean
+    Dim Current_PPMS_Field_Oe As Double
 
     If Temp_Start = Temp_End Then
         Temp_Step_Actual = 0#
@@ -98,6 +102,8 @@ Public Sub fn_IP_Loop_Helm_Loop_Bsweep( _
         N_Steps = CLng(Fix((Abs(Helm_Field_End - Helm_Field_Start) / Abs(Helm_Field_Step)) + 0.5)) + 1
     End If
 
+    Is_Single_IP_Zero_Target = (N_IP = 1 And IP_Field_Start = 0# And IP_Field_End = 0#)
+
     SweepSuffix = NumericTokenNoRound(Helm_Field_Start) & "_" & _
                   NumericTokenNoRound(Abs(Helm_Field_Step)) & "_" & _
                   NumericTokenNoRound(Helm_Field_End) & "G"
@@ -120,6 +126,16 @@ Public Sub fn_IP_Loop_Helm_Loop_Bsweep( _
 
         Measurement_Temperature = Temp_Start + CDbl(IT - 1) * Temp_Step_Actual
         In_Plane_Field = IP_Field_Start + CDbl(IIP - 1) * IP_Field_Step_Actual
+        If Is_Single_IP_Zero_Target Then In_Plane_Field = 0#
+
+        Skip_IP_Field_Commands = False
+        If Is_Single_IP_Zero_Target Then
+            Current_PPMS_Field_Oe = DYNA_GetField_Oe()
+            If Current_PPMS_Field_Oe > -9E98 Then
+                Skip_IP_Field_Commands = (Abs(Current_PPMS_Field_Oe) < 2#)
+            End If
+        End If
+
         RunSuffix = "_T_" & NumericTokenNoRound(Measurement_Temperature) & "K" & _
                 "_IP_" & NumericTokenNoRound(In_Plane_Field) & "G"
 
@@ -145,16 +161,20 @@ Public Sub fn_IP_Loop_Helm_Loop_Bsweep( _
         ' ---------------------------------------------------------
         ' Set Initial Conditions
         ' ---------------------------------------------------------
-        DynaCool.SetTemperature(Measurement_Temperature, 10, 0) 'mvseq:Helmholtz_Bsweep.seq(1)>0008 Set Temp
-        DynaCool.SetField(In_Plane_Field, 50.0, 0, 0) 'mvseq:Helmholtz_Bsweep.seq(1)>0009 Set In-Plane Field
-        Helm_SetField(Helm_Field_Start, 10) 'mvseq:Helmholtz_Bsweep.seq(1)>0010 Set Helmholtz Field
-        Helm_WaitStable(1000, 0) 'mvseq:Helmholtz_Bsweep.seq(1)>0011 Wait Helm Stable
-        DynaCool.WaitFor(1+2*1+4*0+8*0, Wait_For_Stable_s, 0) 'mvseq:Helmholtz_Bsweep.seq(1)>0012 Wait For %t
+        DynaCool.SetTemperature(2.8, 10, 0) 'mvseq:Helmholtz_Bsweep.seq(1)>0008 Set Temp
+        If Not Skip_IP_Field_Commands Then
+            DynaCool.SetField(In_Plane_Field, 50.0, 0, 0) 'mvseq:Helmholtz_Bsweep.seq(1)>0009 Set In-Plane Field
+        End If
+        DynaCool.WaitFor(1+2*1+4*1+8*0, 60, 0) 'mvseq:Helmholtz_Bsweep.seq(1)>0010 Wait For %t
+        DynaCool.SetTemperature(Measurement_Temperature, 10, 0) 'mvseq:Helmholtz_Bsweep.seq(1)>0011 Set Temp
+        Helm_SetField(Helm_Field_Start, 10) 'mvseq:Helmholtz_Bsweep.seq(1)>0013 Set Helmholtz Field
+        Helm_WaitStable(1000, 0) 'mvseq:Helmholtz_Bsweep.seq(1)>0014 Wait Helm Stable
+        DynaCool.WaitFor(1+2*1+4*0+8*0, Wait_For_Stable_s, 0) 'mvseq:Helmholtz_Bsweep.seq(1)>0015 Wait For %t
 
         ' ---------------------------------------------------------
         ' Open ETO Data File
         ' ---------------------------------------------------------
-        DynaCool.SequenceMeasure("ETODF '" & ETO_DataFile & "' 0 Untitled") 'mvseq:Helmholtz_Bsweep.seq(1)>0013 ETODF
+        DynaCool.SequenceMeasure("ETODF '" & ETO_DataFile & "' 0 Untitled") 'mvseq:Helmholtz_Bsweep.seq(1)>0016 ETODF
 
         ' ---------------------------------------------------------
         ' Helmholtz B-Field Sweep Loop
@@ -164,23 +184,30 @@ Public Sub fn_IP_Loop_Helm_Loop_Bsweep( _
 
         For IB1 = 1 To N_Steps 'mvseq:Helmholtz_Bsweep.seq(1)>0014 Scan Helmholtz Field
             tStepStart = Timer
-            B1 = Helm_Field_Start + CDbl(IB1 - 1) * Helm_Field_Step_Actual 'mvseq:Helmholtz_Bsweep.seq(1)>0014 Scan Helmholtz Field
-            Helm_SetField(B1, Helm_Field_Rate) 'mvseq:Helmholtz_Bsweep.seq(1)>0014 Scan Helmholtz Field
-            Helm_WaitStable(Wait_For_Stable_s, 0) 'mvseq:Helmholtz_Bsweep.seq(1)>0014 Scan Helmholtz Field
-            Helm_MeasureAndLog() 'mvseq:Helmholtz_Bsweep.seq(1)>0015 Log Helmholtz State
+            B1 = Helm_Field_Start + CDbl(IB1 - 1) * Helm_Field_Step_Actual 'mvseq:Helmholtz_Bsweep.seq(1)>0017 Scan Helmholtz Field
+            Helm_SetField(B1, Helm_Field_Rate) 'mvseq:Helmholtz_Bsweep.seq(1)>0017 Scan Helmholtz Field
+
+            If B1 = 0  Then
+            	Helm_WaitStable(Wait_For_Stable_s, 60) 'mvseq:Helmholtz_Bsweep.seq(1)>0017 Scan Helmholtz Field
+	   		Else
+	   			Helm_WaitStable(Wait_For_Stable_s, 0) 'mvseq:Helmholtz_Bsweep.seq(1)>0017 Scan Helmholtz Field
+		    End If
+
+            Helm_WaitStable(Wait_For_Stable_s, 0) 'mvseq:Helmholtz_Bsweep.seq(1)>0017 Scan Helmholtz Field
+            Helm_MeasureAndLog() 'mvseq:Helmholtz_Bsweep.seq(1)>0018 Log Helmholtz State
 
             If Measure_Ch1 Then
-                DynaCool.SequenceMeasure("ETOIV 'C:\QdDynacool\default_ETO.qmap' 0 0 " & ETOIV_Params) 'mvseq:Helmholtz_Bsweep.seq(1)>0016 ETOIV Ch1
+                DynaCool.SequenceMeasure("ETOIV 'C:\QdDynacool\default_ETO.qmap' 0 0 " & ETOIV_Params) 'mvseq:Helmholtz_Bsweep.seq(1)>0019 ETOIV Ch1
             End If
             If Measure_Ch2 Then
-                DynaCool.SequenceMeasure("ETOIV 'C:\QdDynacool\default_ETO.qmap' 0 1 " & ETOIV_Params) 'mvseq:Helmholtz_Bsweep.seq(1)>0017 ETOIV Ch2
+                DynaCool.SequenceMeasure("ETOIV 'C:\QdDynacool\default_ETO.qmap' 0 1 " & ETOIV_Params) 'mvseq:Helmholtz_Bsweep.seq(1)>0020 ETOIV Ch2
             End If
             tAfterETO = Timer
 
-            DynaCool.WaitFor(0, 1, 0) 'mvseq:Helmholtz_Bsweep.seq(1)>0018 Wait For %t
+            DynaCool.WaitFor(0, 1, 0) 'mvseq:Helmholtz_Bsweep.seq(1)>0021 Wait For %t
             tAfterWait = Timer
 
-            appendOk = PostAnalysis_AppendAfterETO(ETO_DataFile, False, Measure_Ch1, Measure_Ch2, False, True, 9, 10, 12, 23, 29, 30, 32, 43) 'mvseq:Helmholtz_Bsweep.seq(1)>0019 Append Analysis
+            appendOk = PostAnalysis_AppendAfterETO(ETO_DataFile, False, Measure_Ch1, Measure_Ch2, False, True, 9, 10, 12, 23, 29, 30, 32, 43) 'mvseq:Helmholtz_Bsweep.seq(1)>0022 Append Analysis
             If appendOk Then
                 consecutiveAppendFail = 0
             Else
@@ -221,12 +248,11 @@ Public Sub fn_IP_Loop_Helm_Loop_Bsweep( _
         ' ---------------------------------------------------------
         ' Ramp down between runs
         ' ---------------------------------------------------------
-        DynaCool.SetField(0.0, 50.0, 2, 0) 'mvseq:Helmholtz_Bsweep.seq(1)>0020 Ramp Dyna Field To Zero
-        Helm_SetField(0, 10) 'mvseq:Helmholtz_Bsweep.seq(1)>0021 Ramp Helmholtz Field To Zero
-        Helm_WaitStable(10000, 0) 'mvseq:Helmholtz_Bsweep.seq(1)>0022 Wait Helm Stable
-        DynaCool.WaitFor(1+2*1+4*0+8*0, 1, 0) 'mvseq:Helmholtz_Bsweep.seq(1)>0023 Wait For %t
+        Helm_SetField(0, 10) 'mvseq:Helmholtz_Bsweep.seq(1)>0024 Ramp Helmholtz Field To Zero
+        Helm_WaitStable(10000, 0) 'mvseq:Helmholtz_Bsweep.seq(1)>0025 Wait Helm Stable
+        DynaCool.WaitFor(1+2*1+4*0+8*0, 1, 0) 'mvseq:Helmholtz_Bsweep.seq(1)>0026 Wait For %t
 
-        MV_CloseSession() 'mvseq:Helmholtz_Bsweep.seq(1)>0024 Close Session
+        MV_CloseSession() 'mvseq:Helmholtz_Bsweep.seq(1)>0027 Close Session
 
     Next IIP
     Next IT
@@ -305,18 +331,18 @@ Private Function WaitForEtoDataReady(ByVal filePath As String, ByVal minDataRows
     WaitForEtoDataReady = False
 End Function
 
-Private Function DoubleToCommandText(ByVal value As Double) As String
+Private Function DoubleToCommandText(ByVal Value As Double) As String
     Dim s As String
 
-    s = Trim$(CStr(value))
+    s = Trim$(CStr(Value))
     s = Replace$(s, ",", ".")
     DoubleToCommandText = s
 End Function
 
-Private Function NumericTokenNoRound(ByVal value As Double) As String
+Private Function NumericTokenNoRound(ByVal Value As Double) As String
     Dim s As String
 
-    s = DoubleToCommandText(value)
+    s = DoubleToCommandText(Value)
     s = Replace$(s, ".", "_")
     s = Replace$(s, "+", "")
     s = Replace$(s, "-", "m")

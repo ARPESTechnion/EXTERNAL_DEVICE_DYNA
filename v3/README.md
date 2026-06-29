@@ -322,6 +322,7 @@ IV command updates (latest):
 - Bounds validation is enforced: `min < start < max` and `min < max`.
 - IV run logging reports point count, elapsed time, and engine mode (`fast` or `point` fallback).
 - Cleanup/ramp status text is intentionally omitted from the Hall status log.
+- K2450 front-panel readout shows sequential point execution, while saved/app IV curves show the full programmed sweep path (for example return/hysteresis shapes).
 
 Example:
 
