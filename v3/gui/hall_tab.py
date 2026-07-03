@@ -783,11 +783,23 @@ class HallTab(BaseTab):
                 total = max(int(value.get("total", 1)), 1)
                 percent = float(value.get("percent", (100.0 * current / total)))
                 active = bool(value.get("active", False))
+                elapsed_s = max(0.0, float(value.get("elapsed_s", 0.0)))
+                estimated_total_s = max(0.0, float(value.get("estimated_total_s", 0.0)))
                 self.iv_progress_value.set(max(0.0, min(100.0, percent)))
                 if active:
-                    self.iv_progress_text.set(f"IV progress: {current}/{total} points ({percent:.0f}%)")
+                    if estimated_total_s > 0.0:
+                        self.iv_progress_text.set(
+                            f"IV progress: {elapsed_s:.1f}/{estimated_total_s:.1f} s ({percent:.0f}%) [{current}/{total} pts]"
+                        )
+                    else:
+                        self.iv_progress_text.set(f"IV progress: {current}/{total} points ({percent:.0f}%)")
                 elif current > 0:
-                    self.iv_progress_text.set(f"IV done: {current} points")
+                    if estimated_total_s > 0.0:
+                        self.iv_progress_text.set(
+                            f"IV done: {elapsed_s:.1f} s (est {estimated_total_s:.1f} s), {current} points"
+                        )
+                    else:
+                        self.iv_progress_text.set(f"IV done: {current} points")
                 else:
                     self.iv_progress_text.set("IV progress: idle")
         elif widget_id == W_INSTRUMENT_ERROR:
@@ -990,12 +1002,11 @@ class HallTab(BaseTab):
 
     def _measure_iv_worker(self) -> None:
         try:
-            from v3.core.measurements import measure_iv_curve
+            from v3.core.measurements import estimate_iv_curve_duration, measure_iv_curve
             ctx = self.app.make_context()
             self.app.ui_bus.post(W_LED_HALL, True)
             self.app.root.after(0, lambda: set_led(self.source_led, True))
             t0 = time.perf_counter()
-            self.app.ui_bus.post(W_IV_PROGRESS, {"current": 0, "total": 1, "percent": 0.0, "active": True})
 
             try:
                 self.app.bus.execute(INST_KEITHLEY2450, "set_iv_display_mode")
@@ -1016,15 +1027,42 @@ class HallTab(BaseTab):
             if measure_range is not None and mode_norm in {"voltage", "source_voltage", "v"}:
                 measure_range *= 1e-3
             ramp_enabled = bool(self.k2450_iv_ramp_to_start.get())
+            start_native = float(self.k2450_iv_start.get()) * _ma_to_a
+            min_native = float(self.k2450_iv_min.get()) * _ma_to_a
+            max_native = float(self.k2450_iv_max.get()) * _ma_to_a
+            step_native = float(self.k2450_iv_step.get()) * _ma_to_a
+            estimated_total_s = estimate_iv_curve_duration(
+                shape=str(self.k2450_iv_shape.get()),
+                start=start_native,
+                step=step_native,
+                iv_min=min_native,
+                iv_max=max_native,
+                nplc=float(self.k2450_iv_nplc.get()),
+                settle_time=float(self.k2450_iv_settle.get()),
+                repetitions=int(self.k2450_iv_repetitions.get()),
+                ramp_to_start=ramp_enabled,
+                reset_to_zero=ramp_enabled,
+            )
+            self.app.ui_bus.post(
+                W_IV_PROGRESS,
+                {
+                    "current": 0,
+                    "total": 1,
+                    "percent": 0.0,
+                    "active": True,
+                    "elapsed_s": 0.0,
+                    "estimated_total_s": estimated_total_s,
+                },
+            )
 
             result = measure_iv_curve(
                 ctx,
                 mode=iv_mode,
                 shape=str(self.k2450_iv_shape.get()),
-                start=float(self.k2450_iv_start.get()) * _ma_to_a,
-                iv_min=float(self.k2450_iv_min.get()) * _ma_to_a,
-                iv_max=float(self.k2450_iv_max.get()) * _ma_to_a,
-                step=float(self.k2450_iv_step.get()) * _ma_to_a,
+                start=start_native,
+                iv_min=min_native,
+                iv_max=max_native,
+                step=step_native,
                 source_range=source_range,
                 measure_range=measure_range,
                 compliance=float(self.k2450_iv_compliance.get()),
@@ -1041,8 +1079,17 @@ class HallTab(BaseTab):
                     {
                         "current": int(current),
                         "total": max(int(total), 1),
-                        "percent": (100.0 * float(current) / float(max(total, 1))),
+                        "percent": (
+                            min(
+                                99.0,
+                                100.0 * max(0.0, time.perf_counter() - t0) / estimated_total_s,
+                            )
+                            if estimated_total_s > 0.0
+                            else (100.0 * float(current) / float(max(total, 1)))
+                        ),
                         "active": True,
+                        "elapsed_s": max(0.0, time.perf_counter() - t0),
+                        "estimated_total_s": estimated_total_s,
                     },
                 ),
             )
@@ -1091,6 +1138,8 @@ class HallTab(BaseTab):
                             "total": max(point_count, 1),
                             "percent": 100.0,
                             "active": False,
+                            "elapsed_s": elapsed_s,
+                            "estimated_total_s": estimated_total_s,
                         },
                     )
 
@@ -1107,7 +1156,13 @@ class HallTab(BaseTab):
                 self.app.ui_bus.post_log(f"IV measure error: {exc_text}")
                 self.app.ui_bus.post(
                     W_IV_PROGRESS,
-                    {"current": 0, "total": 1, "percent": 0.0, "active": False},
+                    {
+                        "current": 0,
+                        "total": 1,
+                        "percent": 0.0,
+                        "active": False,
+                        "elapsed_s": max(0.0, time.perf_counter() - t0),
+                    },
                 )
 
             self.app.root.after(0, _show_error)

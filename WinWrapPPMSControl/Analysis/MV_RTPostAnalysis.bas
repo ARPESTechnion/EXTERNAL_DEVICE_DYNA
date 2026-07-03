@@ -294,7 +294,7 @@ Public Function RT_AnalyzeFile(ByVal dataFilePath As String, _
         outFile.AddColumn COL_RT_CH2_DRDT,  mvStartupAxisY4
     End If
 
-    outFile.CreateFileAndWriteHeader outPath, "WinWrapPPMSControl RT post-analysis", "; RT |dR/dT| analysis output"
+    outFile.CreateFileAndWriteHeader outPath, "RT post-analysis", "; RT |dR/dT| analysis output"
 
     ' ---- Compute column base offsets (label at base, value at base+1) ----
     '   rowData layout: label/value pairs in AddColumn order

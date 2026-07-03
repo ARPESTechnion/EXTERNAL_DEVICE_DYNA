@@ -673,10 +673,20 @@ class TestHallTabEvents:
         tab = HallTab(frame, app)
         tab.create_widgets()
 
-        tab.on_event(W_IV_PROGRESS, {"current": 4, "total": 8, "percent": 50.0, "active": True})
+        tab.on_event(
+            W_IV_PROGRESS,
+            {
+                "current": 4,
+                "total": 8,
+                "percent": 50.0,
+                "active": True,
+                "elapsed_s": 5.0,
+                "estimated_total_s": 10.0,
+            },
+        )
 
         assert tab.iv_progress_value.get() == pytest.approx(50.0)
-        assert "4/8" in tab.iv_progress_text.get()
+        assert "5.0/10.0 s" in tab.iv_progress_text.get()
 
 
 # ======================================================================

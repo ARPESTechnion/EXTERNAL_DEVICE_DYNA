@@ -430,6 +430,40 @@ class Keithley2450Wrapper:
             raise ValueError("Empty trace response")
         return [float(tok) for tok in tokens]
 
+    @staticmethod
+    def _pick_trace_layout(tokens, expected, expected_source):
+        """Decode TRAC:DATA payload for READ/SOUR robustly across firmware layouts."""
+        if expected <= 0:
+            return ([], [])
+        total = expected * 2
+        if len(tokens) < total:
+            raise RuntimeError(
+                f"Fast IV trace payload too short: expected {total}, got {len(tokens)}"
+            )
+        vals = [float(v) for v in tokens[-total:]]
+
+        # Candidates seen across adapters/firmware:
+        # 1) interleaved by point: READ,SOUR,READ,SOUR...
+        # 2) interleaved by point: SOUR,READ,SOUR,READ...
+        # 3) grouped by element: READ... then SOUR...
+        # 4) grouped by element: SOUR... then READ...
+        candidates = [
+            ([vals[2 * i] for i in range(expected)], [vals[2 * i + 1] for i in range(expected)]),
+            ([vals[2 * i + 1] for i in range(expected)], [vals[2 * i] for i in range(expected)]),
+            (vals[:expected], vals[expected:]),
+            (vals[expected:], vals[:expected]),
+        ]
+
+        if not expected_source or len(expected_source) != expected:
+            # If no expected source is available, default to first (READ,SOUR) mapping.
+            return candidates[0]
+
+        def _score(src_values):
+            return sum(abs(float(src_values[i]) - float(expected_source[i])) for i in range(expected))
+
+        measured, sourced = min(candidates, key=lambda pair: _score(pair[1]))
+        return (measured, sourced)
+
     def run_iv_sweep_fast(
         self,
         *,
@@ -440,8 +474,8 @@ class Keithley2450Wrapper:
         auto_range: bool = True,
         settle_time: float = 0.0,
         repetitions: int = 1,
-    ) -> list[float]:
-        """Run an instrument-side list IV sweep and return measured values.
+    ):
+        """Run an instrument-side list IV sweep and return buffer readback.
 
         Parameters
         ----------
@@ -459,6 +493,13 @@ class Keithley2450Wrapper:
             Source delay per point (s).
         repetitions : int
             Per-point averaging count.
+        Returns
+        -------
+        dict
+            {
+                "measured": list[float],  # READ element
+                "sourced": list[float],   # SOUR element readback
+            }
         """
         count = len(setpoints)
         if count <= 0:
@@ -488,6 +529,7 @@ class Keithley2450Wrapper:
             list_first_cmd = "SOUR:LIST:CURR"
             list_append_cmd = "SOUR:LIST:CURR:APP"
             sweep_cmd = f"SOUR:SWE:CURR:LIST 1, {max(float(settle_time), 0.0):.6g}"
+            readback_cmd = ":SOUR:CURR:READ:BACK ON"
         else:
             self.instrument.write(":SOUR:FUNC VOLT")
             self.instrument.write(":SENS:FUNC 'CURR'")
@@ -500,6 +542,7 @@ class Keithley2450Wrapper:
             list_first_cmd = "SOUR:LIST:VOLT"
             list_append_cmd = "SOUR:LIST:VOLT:APP"
             sweep_cmd = f"SOUR:SWE:VOLT:LIST 1, {max(float(settle_time), 0.0):.6g}"
+            readback_cmd = ":SOUR:VOLT:READ:BACK ON"
 
         def _upload_list_values(chunk_setpoints):
             max_chars = 200
@@ -519,6 +562,11 @@ class Keithley2450Wrapper:
 
         def _run_chunk(chunk_setpoints):
             chunk_count = len(chunk_setpoints)
+            try:
+                self.instrument.write(readback_cmd)
+            except Exception:
+                # Not all firmware revisions expose readback toggles; continue best-effort.
+                pass
             _upload_list_values(chunk_setpoints)
             self.instrument.write('TRAC:CLE "defbuffer1"')
             self.instrument.write(sweep_cmd)
@@ -541,44 +589,48 @@ class Keithley2450Wrapper:
                     f"Fast IV trace incomplete: expected {chunk_count} points, got {active}"
                 )
 
-            chunk_values = []
+            chunk_measured = []
+            chunk_sourced = []
             window = 200
             for start_idx in range(1, chunk_count + 1, window):
                 end_idx = min(chunk_count, start_idx + window - 1)
                 expected = end_idx - start_idx + 1
-                window_values = None
+                window_measured = None
+                window_sourced = None
                 last_exc = None
                 for _attempt in range(4):
                     try:
                         raw = self.instrument.ask(
-                            f'TRAC:DATA? {start_idx}, {end_idx}, "defbuffer1", READ'
+                            f'TRAC:DATA? {start_idx}, {end_idx}, "defbuffer1", READ,SOUR'
                         )
                         parsed = self._parse_csv_float_tokens(raw)
-                        if len(parsed) < expected:
-                            raise RuntimeError(
-                                f"Fast IV trace window too short: expected {expected}, got {len(parsed)}"
-                            )
-                        # If stale prefix tokens leak into the reply, keep the newest expected window payload.
-                        window_values = [float(v) for v in parsed[-expected:]]
+                        window_measured, window_sourced = self._pick_trace_layout(
+                            parsed,
+                            expected,
+                            chunk_setpoints[start_idx - 1:end_idx],
+                        )
                         break
                     except Exception as exc:
                         last_exc = exc
                         if self._is_undefined_header(exc):
                             raise
                         time.sleep(0.03)
-                if window_values is None:
+                if window_measured is None or window_sourced is None:
                     raise RuntimeError(
                         f"Fast IV window read failed at [{start_idx}:{end_idx}]: {last_exc}"
                     )
-                chunk_values.extend(window_values)
+                chunk_measured.extend(window_measured)
+                chunk_sourced.extend(window_sourced)
 
-            if len(chunk_values) != chunk_count:
+            if len(chunk_measured) != chunk_count or len(chunk_sourced) != chunk_count:
                 raise RuntimeError(
-                    f"Fast IV chunk length mismatch: expected {chunk_count}, got {len(chunk_values)}"
+                    "Fast IV chunk length mismatch: "
+                    f"expected {chunk_count}, got measured={len(chunk_measured)} sourced={len(chunk_sourced)}"
                 )
-            return chunk_values
+            return (chunk_measured, chunk_sourced)
 
-        values = []
+        measured_values = []
+        sourced_values = []
         cursor = 0
         chunk_size = count
         min_chunk = 8
@@ -587,7 +639,9 @@ class Keithley2450Wrapper:
             chunk_count = min(chunk_size, count - cursor)
             chunk = [float(v) for v in setpoints[cursor:cursor + chunk_count]]
             try:
-                values.extend(_run_chunk(chunk))
+                chunk_measured, chunk_sourced = _run_chunk(chunk)
+                measured_values.extend(chunk_measured)
+                sourced_values.extend(chunk_sourced)
                 cursor += chunk_count
             except Exception as exc:
                 if self._is_input_buffer_overrun(exc) and chunk_count > min_chunk:
@@ -595,9 +649,15 @@ class Keithley2450Wrapper:
                     continue
                 raise
 
-        if len(values) != count:
-            raise RuntimeError(f"Fast IV readback length mismatch: expected {count}, got {len(values)}")
-        return values
+        if len(measured_values) != count or len(sourced_values) != count:
+            raise RuntimeError(
+                "Fast IV readback length mismatch: "
+                f"expected {count}, got measured={len(measured_values)} sourced={len(sourced_values)}"
+            )
+        return {
+            "measured": measured_values,
+            "sourced": sourced_values,
+        }
 
     def measure_resistance(self, nplc=1, resistance=1.05, auto_range=True, repetitions=1):
         """

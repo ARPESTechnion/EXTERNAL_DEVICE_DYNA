@@ -552,6 +552,97 @@ def _build_iv_setpoints(
     return points
 
 
+def _build_iv_setpoints_with_directions(
+    start: float,
+    stop: float,
+    step: float,
+    shape: str = "start_max_start",
+    iv_min: float | None = None,
+    iv_max: float | None = None,
+) -> tuple[list[float], list[str]]:
+    """Same as _build_iv_setpoints but also returns a direction tag for each point.
+
+    Each tag is one of: 'up', 'down', 'flat'.
+    """
+    setpoints = _build_iv_setpoints(start, stop, step, shape=shape, iv_min=iv_min, iv_max=iv_max)
+    directions: list[str] = []
+    for i, val in enumerate(setpoints):
+        if i == 0:
+            # First point: look ahead
+            if len(setpoints) > 1:
+                d = setpoints[1] - val
+                directions.append("up" if d > 0 else ("down" if d < 0 else "flat"))
+            else:
+                directions.append("flat")
+        else:
+            d = val - setpoints[i - 1]
+            directions.append("up" if d > 0 else ("down" if d < 0 else "flat"))
+    return (setpoints, directions)
+
+
+def estimate_iv_curve_duration(
+    *,
+    shape: str = "start_max_start",
+    start: float,
+    stop: float | None = None,
+    step: float,
+    nplc: float = 1.0,
+    settle_time: float = 0.0,
+    repetitions: int = 1,
+    iv_min: float | None = None,
+    iv_max: float | None = None,
+    ramp_to_start: bool = True,
+    reset_to_zero: bool = True,
+) -> float:
+    """Estimate total IV run duration in seconds from sweep/ramp settings."""
+    normalized_shape = str(shape).strip().lower()
+
+    sweep_stop = stop
+    if sweep_stop is None:
+        if iv_max is not None:
+            sweep_stop = iv_max
+        elif iv_min is not None:
+            sweep_stop = iv_min
+        else:
+            sweep_stop = start
+
+    setpoints, _ = _build_iv_setpoints_with_directions(
+        start,
+        sweep_stop,
+        step,
+        shape=normalized_shape,
+        iv_min=iv_min,
+        iv_max=iv_max,
+    )
+
+    step_abs = abs(float(step))
+    if step_abs < 1e-15:
+        raise ValueError("IV step must be non-zero")
+
+    nplc_f = max(0.0, float(nplc))
+    reps_i = max(1, int(repetitions))
+    mains_hz = 50.0
+    point_time_s = max(0.0, float(settle_time) + (nplc_f * reps_i / mains_hz))
+
+    estimate_s = float(len(setpoints)) * point_time_s
+
+    if ramp_to_start and abs(float(start)) > step_abs * 0.5:
+        pre_ramp = _build_linear_segment(0.0, float(start), step_abs)
+        estimate_s += max(0, len(pre_ramp) - 1) * point_time_s
+
+    final_setpoint = setpoints[-1] if setpoints else float(start)
+    if ramp_to_start and setpoints and abs(setpoints[-1] - float(start)) > step_abs * 0.5:
+        return_ramp = _build_linear_segment(setpoints[-1], float(start), step_abs)
+        estimate_s += max(0, len(return_ramp) - 1) * point_time_s
+        final_setpoint = float(start)
+
+    if reset_to_zero and abs(final_setpoint) > step_abs * 0.5:
+        zero_ramp = _build_linear_segment(final_setpoint, 0.0, step_abs)
+        estimate_s += max(0, len(zero_ramp) - 1) * point_time_s
+
+    return max(0.0, float(estimate_s))
+
+
 def measure_resistance(
     ctx: MeasurementContext,
     *,
@@ -717,7 +808,9 @@ def measure_iv_curve(
         if not (iv_min_f < start_f < iv_max_f):
             raise ValueError("IV start must be larger than min and smaller than max")
 
-    setpoints = _build_iv_setpoints(start, sweep_stop, step, shape=normalized_shape, iv_min=iv_min, iv_max=iv_max)
+    setpoints, _sp_directions = _build_iv_setpoints_with_directions(
+        start, sweep_stop, step, shape=normalized_shape, iv_min=iv_min, iv_max=iv_max
+    )
     if compliance is None:
         compliance = 10.0 if source_mode == "source_current" else 0.1
     compliance_eff = float(compliance)
@@ -758,36 +851,63 @@ def measure_iv_curve(
             _env_last_time = now
         return _last_temp, _last_field
 
-    def _normalize_fast_payload(fast_raw: Any, logical_points: int, reps: int) -> list[float]:
-        if isinstance(fast_raw, (int, float)):
-            raw_values = [float(fast_raw)]
+    def _normalize_fast_payload(
+        fast_raw: Any,
+        logical_points: int,
+        reps: int,
+    ) -> tuple[list[float], list[float] | None]:
+        measured_raw: list[float]
+        sourced_raw: list[float] | None = None
+
+        if isinstance(fast_raw, dict):
+            measured_tokens = fast_raw.get("measured")
+            sourced_tokens = fast_raw.get("sourced")
+            if measured_tokens is None:
+                raise RuntimeError("invalid fast IV payload: missing measured values")
+            if not isinstance(measured_tokens, (list, tuple)):
+                raise RuntimeError("invalid fast IV payload type for measured values")
+            measured_raw = [float(v) for v in measured_tokens]
+            if sourced_tokens is not None:
+                if not isinstance(sourced_tokens, (list, tuple)):
+                    raise RuntimeError("invalid fast IV payload type for sourced values")
+                sourced_raw = [float(v) for v in sourced_tokens]
+        elif isinstance(fast_raw, (int, float)):
+            measured_raw = [float(fast_raw)]
         elif isinstance(fast_raw, (list, tuple)):
-            raw_values = [float(v) for v in fast_raw]
+            measured_raw = [float(v) for v in fast_raw]
         else:
             raise RuntimeError("invalid fast IV payload type")
 
-        if reps <= 1:
-            if len(raw_values) != logical_points:
-                raise RuntimeError("invalid fast IV payload length")
-            return raw_values
+        def _collapse(values: list[float], label: str) -> list[float]:
+            if reps <= 1:
+                if len(values) != logical_points:
+                    raise RuntimeError(
+                        f"invalid fast IV {label} payload length: "
+                        f"got {len(values)}, expected {logical_points}"
+                    )
+                return values
 
-        expanded_points = logical_points * reps
-        if len(raw_values) != expanded_points:
-            raise RuntimeError(
-                f"invalid fast IV payload length for repetitions={reps}: "
-                f"got {len(raw_values)}, expected {expanded_points}"
-            )
+            expanded_points = logical_points * reps
+            if len(values) != expanded_points:
+                raise RuntimeError(
+                    f"invalid fast IV {label} payload length for repetitions={reps}: "
+                    f"got {len(values)}, expected {expanded_points}"
+                )
 
-        collapsed = []
-        for i in range(logical_points):
-            seg = raw_values[i * reps:(i + 1) * reps]
-            collapsed.append(sum(seg) / float(len(seg)))
-        if len(collapsed) != logical_points:
-            raise RuntimeError(
-                f"collapsed fast IV payload length mismatch: "
-                f"got {len(collapsed)}, expected {logical_points}"
-            )
-        return collapsed
+            collapsed = []
+            for i in range(logical_points):
+                seg = values[i * reps:(i + 1) * reps]
+                collapsed.append(sum(seg) / float(len(seg)))
+            if len(collapsed) != logical_points:
+                raise RuntimeError(
+                    f"collapsed fast IV {label} payload length mismatch: "
+                    f"got {len(collapsed)}, expected {logical_points}"
+                )
+            return collapsed
+
+        measured = _collapse(measured_raw, "measured")
+        sourced = _collapse(sourced_raw, "sourced") if sourced_raw is not None else None
+        return (measured, sourced)
 
     try:
         if source_mode == "source_current":
@@ -810,6 +930,7 @@ def measure_iv_curve(
                     logger.debug("Could not pre-ramp IV source to start", exc_info=True)
 
             fast_values = None
+            fast_sourced = None
             if setpoints:
                 try:
                     reps_i = max(int(repetitions), 1)
@@ -830,7 +951,7 @@ def measure_iv_curve(
                         settle_time=settle_time,
                         repetitions=1,
                     )
-                    fast_values = _normalize_fast_payload(fast_raw, len(setpoints), reps_i)
+                    fast_values, fast_sourced = _normalize_fast_payload(fast_raw, len(setpoints), reps_i)
                     engine_mode = "fast"
                 except Exception:
                     logger.info("Fast IV path unavailable; falling back to point mode", exc_info=True)
@@ -839,17 +960,22 @@ def measure_iv_curve(
                 try:
                     for index, source_current_a in enumerate(setpoints, start=1):
                         measured_voltage_v = float(fast_values[index - 1])
-                        measured_current_a = float(source_current_a)
+                        sourced_current_a = (
+                            float(fast_sourced[index - 1])
+                            if fast_sourced is not None
+                            else float(source_current_a)
+                        )
                         snap = ctx.helmholtz.snapshot()
                         cur_temp, cur_field = _maybe_refresh_env()
                         point = {
                             "Time": ctx.data_mgr.elapsed_time(),
                             "Channel": active_channel,
                             "IV_Point": index,
-                            "IV_Source_Current": source_current_a * 1e3,
+                            "IV_Sweep_Direction": _sp_directions[index - 1],
+                            "IV_Source_Current": sourced_current_a * 1e3,
                             "IV_Source_Voltage": NAN,
                             "IV_Measured_Voltage": measured_voltage_v,
-                            "IV_Measured_Current": measured_current_a * 1e3,
+                            "IV_Measured_Current": sourced_current_a * 1e3,
                             "Temp": cur_temp,
                             "In-plane_Field": cur_field,
                             "Helmholtz_Current": snap.get("Helmholtz_Current", start_helmholtz.get("Helmholtz_Current")),
@@ -890,6 +1016,7 @@ def measure_iv_curve(
                         "Time": ctx.data_mgr.elapsed_time(),
                         "Channel": active_channel,
                         "IV_Point": index,
+                        "IV_Sweep_Direction": _sp_directions[index - 1],
                         "IV_Source_Current": source_current_a * 1e3,
                         "IV_Source_Voltage": NAN,
                         "IV_Measured_Voltage": measured_voltage_v,
@@ -931,6 +1058,7 @@ def measure_iv_curve(
                     logger.debug("Could not pre-ramp IV source to start", exc_info=True)
 
             fast_values = None
+            fast_sourced = None
             if setpoints:
                 try:
                     reps_i = max(int(repetitions), 1)
@@ -951,7 +1079,7 @@ def measure_iv_curve(
                         settle_time=settle_time,
                         repetitions=1,
                     )
-                    fast_values = _normalize_fast_payload(fast_raw, len(setpoints), reps_i)
+                    fast_values, fast_sourced = _normalize_fast_payload(fast_raw, len(setpoints), reps_i)
                     engine_mode = "fast"
                 except Exception:
                     logger.info("Fast IV path unavailable; falling back to point mode", exc_info=True)
@@ -960,16 +1088,21 @@ def measure_iv_curve(
                 try:
                     for index, source_voltage_v in enumerate(setpoints, start=1):
                         measured_current_a = float(fast_values[index - 1])
-                        measured_voltage_v = float(source_voltage_v)
+                        sourced_voltage_v = (
+                            float(fast_sourced[index - 1])
+                            if fast_sourced is not None
+                            else float(source_voltage_v)
+                        )
                         snap = ctx.helmholtz.snapshot()
                         cur_temp, cur_field = _maybe_refresh_env()
                         point = {
                             "Time": ctx.data_mgr.elapsed_time(),
                             "Channel": active_channel,
                             "IV_Point": index,
+                            "IV_Sweep_Direction": _sp_directions[index - 1],
                             "IV_Source_Current": NAN,
-                            "IV_Source_Voltage": source_voltage_v,
-                            "IV_Measured_Voltage": measured_voltage_v,
+                            "IV_Source_Voltage": sourced_voltage_v,
+                            "IV_Measured_Voltage": sourced_voltage_v,
                             "IV_Measured_Current": measured_current_a * 1e3,
                             "Temp": cur_temp,
                             "In-plane_Field": cur_field,
@@ -1011,6 +1144,7 @@ def measure_iv_curve(
                         "Time": ctx.data_mgr.elapsed_time(),
                         "Channel": active_channel,
                         "IV_Point": index,
+                        "IV_Sweep_Direction": _sp_directions[index - 1],
                         "IV_Source_Current": NAN,
                         "IV_Source_Voltage": source_voltage_v,
                         "IV_Measured_Voltage": measured_voltage_v,

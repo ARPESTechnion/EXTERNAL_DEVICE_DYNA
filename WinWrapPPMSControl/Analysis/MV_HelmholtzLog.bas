@@ -46,7 +46,7 @@ Public Function MV_InitHelmholtzLog(ByVal filePath As String) As Boolean
     MV_HelmDataFile.AddColumn COL_HALL_VOLTAGE_V
     MV_HelmDataFile.AddColumn COL_HALL_FIELD_OE
 
-    MV_HelmDataFile.CreateFileAndWriteHeader MV_HelmLogPath, "WinWrapPPMSControl Helmholtz live log", "; WinWrapPPMSControl Helmholtz live log"
+    MV_HelmDataFile.CreateFileAndWriteHeader MV_HelmLogPath, "Helmholtz live log", "; Helmholtz live log"
 
     MV_InitHelmholtzLog = True
     Exit Function

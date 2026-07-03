@@ -53,7 +53,14 @@ class ParsedCommand:
     def get_int(self, key: str, default: int | None = None) -> int | None:
         """Get a kwarg as int."""
         if key in self.kwargs:
-            return int(self.kwargs[key])
+            raw = str(self.kwargs[key]).strip()
+            try:
+                return int(raw)
+            except ValueError:
+                value = float(raw)
+                if value.is_integer():
+                    return int(value)
+                raise ValueError(f"Keyword '{key}' expects an integer value, got '{raw}'")
         return default
 
     def get_str(self, key: str, default: str | None = None) -> str | None:
@@ -525,6 +532,8 @@ class ScriptValidator:
             "set_ppms_field_and_fix_hall": [0, 1],
             "scan_ppms_field_and_fix_hall": [0, 1, 2, 3],
             "time_sweep": [0, 1],
+            "for_loop": [0],
+            "repeat": [0],
         }
 
         positions = numeric_commands.get(cmd.name, [])

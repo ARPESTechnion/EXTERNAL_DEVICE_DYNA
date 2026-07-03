@@ -22,6 +22,7 @@ from v3.core.measurements import (
     MeasurementContext,
     configure_channel,
     disable_hall_output,
+    estimate_iv_curve_duration,
     enable_hall_output,
     measure_iv_curve,
     measure_resistance,
@@ -880,9 +881,32 @@ def _dispatch(
             keep_output = cmd.get_bool("keep_output", False)
             ramp_to_start = cmd.get_bool("ramp_to_start", True)
             reset_to_zero = cmd.get_bool("reset_to_zero", ramp_to_start)
+            estimated_total_s = estimate_iv_curve_duration(
+                shape=shape,
+                start=float(start),
+                stop=None if stop is None else float(stop),
+                step=float(step),
+                nplc=float(nplc),
+                settle_time=float(settle_time),
+                repetitions=int(repetitions),
+                iv_min=None if iv_min is None else float(iv_min),
+                iv_max=None if iv_max is None else float(iv_max),
+                ramp_to_start=bool(ramp_to_start),
+                reset_to_zero=bool(reset_to_zero),
+            )
 
             ctx.ui_bus.post(W_LED_HALL, True)
-            ctx.ui_bus.post(W_IV_PROGRESS, {"current": 0, "total": 1, "percent": 0.0, "active": True})
+            ctx.ui_bus.post(
+                W_IV_PROGRESS,
+                {
+                    "current": 0,
+                    "total": 1,
+                    "percent": 0.0,
+                    "active": True,
+                    "elapsed_s": 0.0,
+                    "estimated_total_s": estimated_total_s,
+                },
+            )
             iv_success = False
             try:
                 try:
@@ -913,8 +937,17 @@ def _dispatch(
                         {
                             "current": int(current),
                             "total": max(int(total), 1),
-                            "percent": (100.0 * float(current) / float(max(total, 1))),
+                            "percent": (
+                                min(
+                                    99.0,
+                                    100.0 * max(0.0, time.perf_counter() - t0) / estimated_total_s,
+                                )
+                                if estimated_total_s > 0.0
+                                else (100.0 * float(current) / float(max(total, 1)))
+                            ),
                             "active": True,
+                            "elapsed_s": max(0.0, time.perf_counter() - t0),
+                            "estimated_total_s": estimated_total_s,
                         },
                     ),
                 )
@@ -924,7 +957,14 @@ def _dispatch(
                 if not iv_success:
                     ctx.ui_bus.post(
                         W_IV_PROGRESS,
-                        {"current": 0, "total": 1, "percent": 0.0, "active": False},
+                        {
+                            "current": 0,
+                            "total": 1,
+                            "percent": 0.0,
+                            "active": False,
+                            "elapsed_s": max(0.0, time.perf_counter() - t0),
+                            "estimated_total_s": estimated_total_s,
+                        },
                     )
             wrote = ctx.data_mgr.write_rows(result["points"], measurement_type="IV")
             if wrote > 0:
@@ -938,6 +978,8 @@ def _dispatch(
                     "total": max(point_count, 1),
                     "percent": 100.0,
                     "active": False,
+                    "elapsed_s": elapsed_s,
+                    "estimated_total_s": estimated_total_s,
                 },
             )
             ctx.ui_bus.post_log(f"IV recorded: {point_count} points in {elapsed_s:.2f} s")

@@ -41,6 +41,13 @@ Private Const COL_CH2_VALID As String = "Ch2_Valid"
 Private Const COL_CH2_AVG_S As String = "Ch2_AveragingTime_s"
 Private Const COL_CH2_GAIN As String = "Ch2_Gain"
 
+Private Const COL_FIELD_CORRECTED_OE As String = "Field_Corrected_Oe"
+Private Const COL_BG_ZERO_PRE_OE As String = "Bg_Zero_Pre_Oe"
+Private Const COL_BG_ZERO_POST_OE As String = "Bg_Zero_Post_Oe"
+Private Const COL_BG_FIT_R2 As String = "Bg_Fit_R2"
+Private Const COL_BG_FIT_RMS As String = "Bg_Fit_RMS"
+Private Const COL_BG_SOURCE_CODE As String = "Bg_Correction_Source_Code"
+
 Private Sub Merged_SetLongOrBlank(ByRef rowData() As Variant, ByVal idxLabel As Integer, ByVal idxValue As Integer, ByVal colName As String, ByVal value As Long, ByVal isPresent As Boolean)
     rowData(idxLabel) = colName
     If isPresent Then
@@ -107,7 +114,14 @@ Public Function Merged_InitPostAnalysisLog(ByVal filePath As String) As Boolean
     MV_MergedDataFile.AddColumn COL_CH2_AVG_S
     MV_MergedDataFile.AddColumn COL_CH2_GAIN
 
-    MV_MergedDataFile.CreateFileAndWriteHeader MV_MergedLogPath, "WinWrapPPMSControl post-analysis merged log", "; WinWrapPPMSControl post-analysis merged log"
+    MV_MergedDataFile.AddColumn COL_FIELD_CORRECTED_OE
+    MV_MergedDataFile.AddColumn COL_BG_ZERO_PRE_OE
+    MV_MergedDataFile.AddColumn COL_BG_ZERO_POST_OE
+    MV_MergedDataFile.AddColumn COL_BG_FIT_R2
+    MV_MergedDataFile.AddColumn COL_BG_FIT_RMS
+    MV_MergedDataFile.AddColumn COL_BG_SOURCE_CODE
+
+    MV_MergedDataFile.CreateFileAndWriteHeader MV_MergedLogPath, "Post-analysis merged log", "; Post-analysis merged log"
 
     Merged_InitPostAnalysisLog = True
     Exit Function
@@ -141,7 +155,13 @@ Public Function PostAnalysis_AppendMergedRow(ByVal etoDataPath As String, _
                                              Optional ByVal overrideTemp_K As Double = -9.9E99, _
                                              Optional ByVal overrideField_Oe As Double = -9.9E99, _
                                              Optional ByVal hallVoltage_V As Double = -9.9E99, _
-                                             Optional ByVal hallField_Oe As Double = -9.9E99) As Boolean
+                                             Optional ByVal hallField_Oe As Double = -9.9E99, _
+                                             Optional ByVal correctedField_Oe As Double = -9.9E99, _
+                                             Optional ByVal bgZeroPre_Oe As Double = -9.9E99, _
+                                             Optional ByVal bgZeroPost_Oe As Double = -9.9E99, _
+                                             Optional ByVal bgFitR2 As Double = -9.9E99, _
+                                             Optional ByVal bgFitRMS As Double = -9.9E99, _
+                                             Optional ByVal bgSourceCode As Long = -999999) As Boolean
     On Error GoTo EH
 
     Dim blockCh1 As Long
@@ -167,7 +187,7 @@ Public Function PostAnalysis_AppendMergedRow(ByVal etoDataPath As String, _
     Dim tempK As Double
     Dim fieldOe As Double
     Dim helmField_Oe As Double
-    Dim rowData(1 To 60) As Variant
+    Dim rowData(1 To 72) As Variant
 
     If MV_MergedDataFile Is Nothing Then
         MV_SetError "Merged post-analysis log writer not initialized"
@@ -370,6 +390,18 @@ Public Function PostAnalysis_AppendMergedRow(ByVal etoDataPath As String, _
         rowData(55) = COL_CH2_VALID: rowData(56) = ""
         rowData(57) = COL_CH2_AVG_S: rowData(58) = ""
         rowData(59) = COL_CH2_GAIN: rowData(60) = ""
+    End If
+
+    Call MV_SetNumericOrBlank(rowData, 61, 62, COL_FIELD_CORRECTED_OE, correctedField_Oe)
+    Call MV_SetNumericOrBlank(rowData, 63, 64, COL_BG_ZERO_PRE_OE, bgZeroPre_Oe)
+    Call MV_SetNumericOrBlank(rowData, 65, 66, COL_BG_ZERO_POST_OE, bgZeroPost_Oe)
+    Call MV_SetNumericOrBlank(rowData, 67, 68, COL_BG_FIT_R2, bgFitR2)
+    Call MV_SetNumericOrBlank(rowData, 69, 70, COL_BG_FIT_RMS, bgFitRMS)
+    rowData(71) = COL_BG_SOURCE_CODE
+    If bgSourceCode = -999999 Then
+        rowData(72) = ""
+    Else
+        rowData(72) = bgSourceCode
     End If
 
     Call MV_MergedDataFile.WriteDataUsingArray(rowData, False)

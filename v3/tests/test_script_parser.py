@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import unittest
 
+from v3.core.constants import SWITCH_PIN_MAX
 from v3.core.script_parser import (
     LOOP_COMMANDS,
     VALID_COMMANDS,
@@ -26,6 +27,15 @@ class TestParsedCommand(unittest.TestCase):
     def test_get_int(self):
         cmd = ParsedCommand(name="test", kwargs={"count": "20"})
         self.assertEqual(cmd.get_int("count"), 20)
+
+    def test_get_int_accepts_integral_float_text(self):
+        cmd = ParsedCommand(name="test", kwargs={"count": "7.0"})
+        self.assertEqual(cmd.get_int("count"), 7)
+
+    def test_get_int_rejects_fractional_float_text(self):
+        cmd = ParsedCommand(name="test", kwargs={"count": "7.25"})
+        with self.assertRaises(ValueError):
+            cmd.get_int("count")
 
     def test_get_bool(self):
         cmd = ParsedCommand(name="test", kwargs={"auto": "true", "skip": "false"})
@@ -377,9 +387,10 @@ class TestScriptValidator(unittest.TestCase):
         self.assertTrue(any("does not accept keyword arguments" in e.message for e in errors))
 
     def test_configure_channel_pin_range_and_unique(self):
-        cmds = self.parser.parse("configure_channel a 1 2 9 4\n")
+        invalid_pin = SWITCH_PIN_MAX + 1
+        cmds = self.parser.parse(f"configure_channel a 1 2 {invalid_pin} 4\n")
         errors = self.validator.validate(cmds)
-        self.assertTrue(any("range 1-8" in e.message for e in errors))
+        self.assertTrue(any(f"range 1-{SWITCH_PIN_MAX}" in e.message for e in errors))
 
         cmds = self.parser.parse("configure_channel a 1 2 2 4\n")
         errors = self.validator.validate(cmds)

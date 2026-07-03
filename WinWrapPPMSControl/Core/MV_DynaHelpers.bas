@@ -29,7 +29,7 @@ End Function
 Public Function DYNA_WaitForTempFieldStable(ByVal timeout_s As Double) As Boolean
     On Error GoTo EH
     ' 1 = temperature, 2 = field
-    DynaCool.WaitFor 1 + 2, CLng(timeout_s), 0
+    DynaCool.WaitFor(1 + 2, CLng(timeout_s), 0)
     DYNA_WaitForTempFieldStable = True
     Exit Function
 EH:
@@ -40,7 +40,7 @@ End Function
 Public Function DYNA_WaitForTemperatureStable(ByVal timeout_s As Double) As Boolean
     On Error GoTo EH
     ' 1 = temperature only
-    DynaCool.WaitFor 1, CLng(timeout_s), 0 'mvseq:K2450_IV_Fast_TempCycle.seq(1)>0004 Wait For %t
+    DynaCool.WaitFor(1, CLng(timeout_s), 0) 'mvseq:K2450_IV_Fast_TempCycle.seq(1)>0004 Wait For %t
     DYNA_WaitForTemperatureStable = True
     Exit Function
 EH:
@@ -79,7 +79,7 @@ Public Function DYNA_SetFieldAndWait(ByVal field_Oe As Double, ByVal rate_Oe_per
     End If
     ' WaitFor bitmask 2 = field only (bitmask 1 = temperature)
     On Error GoTo EH
-    DynaCool.WaitFor 2, CLng(timeout_s), 0
+    DynaCool.WaitFor(2, CLng(timeout_s), 0)
     DYNA_SetFieldAndWait = True
     Exit Function
 EH:

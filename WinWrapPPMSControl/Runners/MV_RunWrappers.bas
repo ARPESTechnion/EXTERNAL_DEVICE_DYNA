@@ -95,7 +95,13 @@ Public Function PostAnalysis_AppendAfterETO(ByVal etoDataPath As String, _
                                             Optional ByVal overrideTemp_K As Double = -9.9E99, _
                                             Optional ByVal overrideField_Oe As Double = -9.9E99, _
                                             Optional ByVal hallVoltage_V As Double = -9.9E99, _
-                                            Optional ByVal hallField_Oe As Double = -9.9E99) As Boolean
+                                            Optional ByVal hallField_Oe As Double = -9.9E99, _
+                                            Optional ByVal correctedField_Oe As Double = -9.9E99, _
+                                            Optional ByVal bgZeroPre_Oe As Double = -9.9E99, _
+                                            Optional ByVal bgZeroPost_Oe As Double = -9.9E99, _
+                                            Optional ByVal bgFitR2 As Double = -9.9E99, _
+                                            Optional ByVal bgFitRMS As Double = -9.9E99, _
+                                            Optional ByVal bgSourceCode As Long = -999999) As Boolean
     Dim ok As Boolean
 
     ok = PostAnalysis_AppendMergedRow(etoDataPath, _
@@ -116,7 +122,13 @@ Public Function PostAnalysis_AppendAfterETO(ByVal etoDataPath As String, _
                                       overrideTemp_K, _
                                       overrideField_Oe, _
                                       hallVoltage_V, _
-                                      hallField_Oe)
+                                      hallField_Oe, _
+                                      correctedField_Oe, _
+                                      bgZeroPre_Oe, _
+                                      bgZeroPost_Oe, _
+                                      bgFitR2, _
+                                      bgFitRMS, _
+                                      bgSourceCode)
 
     If Not ok Then
         PostAnalysis_AppendAfterETO = False
@@ -796,7 +808,7 @@ Private Function K2450RW_SetTemperatureAndDelay(ByVal targetK As Double, _
 
     If settleDelay_s > 0# Then
         MV_Log "[K2450RW][FAST-TC] Extra settle delay " & CStr(settleDelay_s) & " s"
-        DynaCool.WaitFor 0, CLng(settleDelay_s), 0 'mvseq:K2450_IV_Fast_TempCycle.seq(1)>0004 Wait For %t
+        DynaCool.WaitFor(0, CLng(settleDelay_s), 0) 'mvseq:K2450_IV_Fast_TempCycle.seq(1)>0004 Wait For %t
     End If
 
     K2450RW_SetTemperatureAndDelay = True

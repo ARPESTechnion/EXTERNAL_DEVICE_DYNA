@@ -158,6 +158,7 @@ DATA_KEY_TO_CSV: dict[str, str] = {
     "Sample_Resistance":        "Sample_Resistance(Ohm)",
     "Sample_Resistance_Error":  "Sample_Resistance_Error(Ohm)",
     "IV_Point":                 "IV_Point",
+    "IV_Sweep_Direction":        "IV_Sweep_Direction",
     "IV_Source_Current":        "IV_Source_Current(mA)",
     "IV_Source_Voltage":        "IV_Source_Voltage(V)",
     "IV_Measured_Voltage":      "IV_Measured_Voltage(V)",

@@ -12,13 +12,16 @@
 '#Uses ".\Core\MV_GpibIO.bas"
 '#Uses ".\Core\MV_DynaHelpers.bas"
 '#Uses ".\Runners\MV_HelmBSweepLoop.bas"
+'#Uses ".\Runners\MV_PPMSBSweep_HelmIPLoop.bas"
 '#Uses ".\Macros\Macro_K2450_IV_Slow.bas"
 '#Uses ".\Macros\Macro_K2450_IV_Fast.bas"
 '#Uses ".\Macros\Macro_K2450_IV_Fast_TempCycle.bas"
 '#Uses ".\Macros\Macro_Helmholtz_BSweep.bas"
+'#Uses ".\Macros\Macro_PPMS_BSweep_HelmIP.bas"
 '#Uses ".\Macros\Macro_K2600_OutputOff_Check.bas"
 '#Uses ".\Macros\Macro_Hall_ETO_Switch_TempField.bas"
 '#Uses ".\Macros\Macro_Hall_K2450_Switch_TempField.bas"
+'#Uses ".\Macros\Macro_Hall_Offset_ETO.bas"
 '#Uses ".\Legacy\MV_TestFunctions_Legacy.bas"  ' Optional: enable legacy tests/utilities
 
 Option Explicit
@@ -138,12 +141,18 @@ Sub Main()
     MV_Log "[MAIN]   Macro_Run_Helmholtz_BSweep"
     MV_Log "[MAIN]     File: Macro_Helmholtz_BSweep.bas"
     MV_Log "[MAIN]     Edit: B sweep range/rate, temp loop, in-plane field loop, ETO IV params"
+    MV_Log "[MAIN]   Macro_Run_PPMS_BSweep_HelmIP"
+    MV_Log "[MAIN]     File: Macro_PPMS_BSweep_HelmIP.bas"
+    MV_Log "[MAIN]     Edit: PPMS out-of-plane sweep + Helm in-plane loop + background options"
     MV_Log "[MAIN]   Macro_Run_K2600_OutputOff_Check"
     MV_Log "[MAIN]     File: Macro_K2600_OutputOff_Check.bas"
     MV_Log "[MAIN]     Edit: resource name and zero-current tolerance"
     MV_Log "[MAIN]   Macro_Run_Hall_ETO_Switch_TempField"
     MV_Log "[MAIN]     File: Macro_Hall_ETO_Switch_TempField.bas"
     MV_Log "[MAIN]     Edit: Temp/Field loops, ETOR params, switch mappings, output path"
+    MV_Log "[MAIN]   Macro_Run_Hall_Offset_ETO"
+    MV_Log "[MAIN]     File: Macro_Hall_Offset_ETO.bas"
+    MV_Log "[MAIN]     Edit: one-shot or averaged ETO count for Hall voltage offset"
     MV_Log "[MAIN] ========================================"
 
     ' -----------------------------------------------------------------------
@@ -152,10 +161,12 @@ Sub Main()
     ' Keep all others commented.
     ' -----------------------------------------------------------------------
     ' Call Macro_Run_K2450_IV_Slow()
-     Call Macro_Run_K2450_IV_Fast()
+    ' Call Macro_Run_K2450_IV_Fast()
     ' Call Macro_Run_K2450_IV_Fast_TempCycle()
     ' Call Macro_Run_Helmholtz_BSweep()
+    Call Macro_Run_PPMS_BSweep_HelmIP()
     ' Call Macro_Run_K2600_OutputOff_Check()
     ' Call Macro_Run_Hall_ETO_Switch_TempField()
     ' Call Macro_Run_Hall_K2450_Switch_TempField()
+    ' Call Macro_Run_Hall_Offset_ETO()
 End Sub
