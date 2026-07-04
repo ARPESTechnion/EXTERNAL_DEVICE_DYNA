@@ -263,6 +263,12 @@ Public Function IV_ExtractBlockTempFieldFromFile(filePath As String, _
     Dim parts() As String
     Dim okTemp As Boolean
     Dim okField As Boolean
+    Dim rowTemp_K As Double
+    Dim rowField_Oe As Double
+    Dim fieldSum_Oe As Double
+    Dim fieldCount As Long
+    Dim i As Long
+    Dim tempSet As Boolean
 
     On Error GoTo EH
 
@@ -283,11 +289,29 @@ Public Function IV_ExtractBlockTempFieldFromFile(filePath As String, _
         Exit Function
     End If
 
-    okTemp = MV_TryParseDouble(parts(2), temp_K)
-    okField = MV_TryParseDouble(parts(3), field_Oe)
+    For i = LBound(blockLines) To UBound(blockLines)
+        lineText = blockLines(i)
+        parts = Split(lineText, ",")
 
-    If Not okTemp Then temp_K = -9.9E99
-    If Not okField Then field_Oe = -9.9E99
+        If UBound(parts) >= 3 Then
+            okTemp = MV_TryParseDouble(parts(2), rowTemp_K)
+            okField = MV_TryParseDouble(parts(3), rowField_Oe)
+
+            If okTemp And (Not tempSet) Then
+                temp_K = rowTemp_K
+                tempSet = True
+            End If
+
+            If okField Then
+                fieldSum_Oe = fieldSum_Oe + rowField_Oe
+                fieldCount = fieldCount + 1
+            End If
+        End If
+    Next i
+
+    If fieldCount > 0 Then
+        field_Oe = fieldSum_Oe / CDbl(fieldCount)
+    End If
 
     IV_ExtractBlockTempFieldFromFile = True
     Exit Function

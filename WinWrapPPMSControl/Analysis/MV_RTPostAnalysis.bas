@@ -18,10 +18,10 @@ Private Const RT_MAX_ROWS As Long = 50000
 ' =========================================================
 Private Const COL_RT_TEMP_K    As String = "Temperature (K)"
 Private Const COL_RT_FIELD_OE  As String = "Field (Oe)"
-Private Const COL_RT_CH1_R_OHM As String = "Ch1_Resistance_Ohm"
-Private Const COL_RT_CH1_DRDT  As String = "Ch1_abs_dRdT_OhmPerK"
-Private Const COL_RT_CH2_R_OHM As String = "Ch2_Resistance_Ohm"
-Private Const COL_RT_CH2_DRDT  As String = "Ch2_abs_dRdT_OhmPerK"
+Private Const COL_RT_CH1_R_OHM As String = "Ch1 Resistance (Ohm)"
+Private Const COL_RT_CH1_DRDT  As String = "Ch1 |dR/dT| (Ohm/K)"
+Private Const COL_RT_CH2_R_OHM As String = "Ch2 Resistance (Ohm)"
+Private Const COL_RT_CH2_DRDT  As String = "Ch2 |dR/dT| (Ohm/K)"
 
 ' =========================================================
 ' Internal helpers
@@ -31,9 +31,9 @@ Private Const COL_RT_CH2_DRDT  As String = "Ch2_abs_dRdT_OhmPerK"
 '   Reads a QD ETO RT file (alternating Ch1/Ch2 rows),
 '   computes per-channel |dR/dT| via central differences,
 '   and writes "<source>_Analyzed.dat" with columns:
-'     Temperature (K) [X], Field (Oe),
-'     Ch1_Resistance_Ohm [Y1], Ch1_abs_dRdT_OhmPerK [Y2],
-'     Ch2_Resistance_Ohm [Y3], Ch2_abs_dRdT_OhmPerK [Y4]
+'     Temperature (K) [X], Field (Oe],
+'     Ch1 Resistance (Ohm) [Y1], Ch1 |dR/dT| (Ohm/K) [Y2],
+'     Ch2 Resistance (Ohm) [Y3], Ch2 |dR/dT| (Ohm/K) [Y4]
 '   Off-channel value cells are written blank.
 '
 '   Returns True on success; False and MV_LastError on failure.

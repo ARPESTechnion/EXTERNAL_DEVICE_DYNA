@@ -84,8 +84,8 @@ Public Sub Macro_Run_PPMS_BSweep_HelmIP()
     ' Main PPMS OOP sweep
     OOP_Field_Start = -150#
     OOP_Field_End = 150#
-    OOP_Field_Step = 3#
-    OOP_Field_Rate = 10#
+    OOP_Field_Step = 2#
+    OOP_Field_Rate = 3#
 
     ' Helmholtz in-plane bias loop
     IP_Helm_Start = 0#
@@ -102,13 +102,13 @@ Public Sub Macro_Run_PPMS_BSweep_HelmIP()
 
     ' Stabilization and channels
     Wait_For_Stable_s = 300
-    IP_Field_Stable_Wait_s = 600
+    IP_Field_Stable_Wait_s = 1800
     Measure_Ch1_Hall = False
 
     ' Temperature loop
-    Temp_Start = 2.7
-    Temp_End = 2.7
-    Temp_Step = 0#
+    Temp_Start = 2.49
+    Temp_End = 2.5
+    Temp_Step = 0.01
 
     ' Background PRE/POST mini-sweeps
     Enable_Background_Pre = True

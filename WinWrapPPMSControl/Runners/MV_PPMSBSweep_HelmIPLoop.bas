@@ -74,7 +74,7 @@ Public Sub fn_PPMS_BSweep_Helm_IP( _
     Dim Measurement_Temperature As Double
     Dim InPlane_Helm_Oe As Double
     Dim OOP_Field_Target As Double
-    Dim correctedField_Oe As Double
+    Dim fieldZero_Oe As Double
     Dim sourceCode As Long
     Dim fitR2 As Double
     Dim fitRms As Double
@@ -235,9 +235,9 @@ Public Sub fn_PPMS_BSweep_Helm_IP( _
 
             ' During the main sweep we apply PRE-only correction for live output.
             sourceCode = 0
-            correctedField_Oe = OOP_Field_Target
+            fieldZero_Oe = BAD_VALUE
             If preOk Then
-                correctedField_Oe = OOP_Field_Target - preZero_Oe
+                fieldZero_Oe = preZero_Oe
                 sourceCode = 1
             End If
 
@@ -246,7 +246,7 @@ Public Sub fn_PPMS_BSweep_Helm_IP( _
             appendOk = AppendWithRetry(ETO_DataFile, _
                                        Measure_Ch1_Hall, _
                                        OOP_Field_Target, _
-                                       correctedField_Oe, _
+                                       fieldZero_Oe, _
                                        bgPreForRow, _
                                        bgPostForRow, _
                                        fitR2, _
@@ -433,15 +433,34 @@ End Function
 Private Function AppendWithRetry(ByVal etoDataPath As String, _
                                  ByVal measureCh1 As Boolean, _
                                  ByVal rawField_Oe As Double, _
-                                 ByVal correctedField_Oe As Double, _
+                                 ByVal fieldZero_Oe As Double, _
                                  ByVal bgZeroPre_Oe As Double, _
                                  ByVal bgZeroPost_Oe As Double, _
                                  ByVal bgFitR2 As Double, _
                                  ByVal bgFitRms As Double, _
                                  ByVal bgSourceCode As Long) As Boolean
     Dim i As Long
+    Dim extractedTemp_K As Double
+    Dim recordedField_Oe As Double
+    Dim correctedField_Oe As Double
 
     For i = 1 To 25
+        recordedField_Oe = rawField_Oe
+        If IV_ExtractBlockTempFieldFromFile(etoDataPath, MV_PostAnalysisStepIndex, extractedTemp_K, recordedField_Oe) Then
+            If Not MV_IsFinite(recordedField_Oe) Then
+                recordedField_Oe = rawField_Oe
+            End If
+        Else
+            MV_WaitSeconds 0.2
+            DoEvents
+            GoTo NextRetry
+        End If
+
+        correctedField_Oe = recordedField_Oe
+        If MV_IsFinite(fieldZero_Oe) Then
+            correctedField_Oe = recordedField_Oe - fieldZero_Oe
+        End If
+
         If PostAnalysis_AppendAfterETO(etoDataPath, _
                                        False, _
                                        measureCh1, _
@@ -457,7 +476,7 @@ Private Function AppendWithRetry(ByVal etoDataPath As String, _
                                        IV_CH2_AVG_COL, _
                                        IV_CH2_GAIN_COL, _
                                        BAD_VALUE, _
-                                       rawField_Oe, _
+                                       recordedField_Oe, _
                                        BAD_VALUE, _
                                        BAD_VALUE, _
                                        correctedField_Oe, _
@@ -470,6 +489,7 @@ Private Function AppendWithRetry(ByVal etoDataPath As String, _
             Exit Function
         End If
 
+NextRetry:
         MV_WaitSeconds 0.2
         DoEvents
     Next i
@@ -536,7 +556,7 @@ Private Function RunBackgroundSweepAndFit(ByVal etoiVParams As String, _
         If Not AppendWithRetry(bgDataPath, _
                                False, _
                                commandField, _
-                               commandField, _
+                               BAD_VALUE, _
                                BAD_VALUE, _
                                BAD_VALUE, _
                                BAD_VALUE, _
