@@ -59,6 +59,8 @@ class HallTab(BaseTab):
         self._iv_measure_range_label: ttk.Label | None = None
         self._iv_source_range_menu: ttk.OptionMenu | None = None
         self._iv_measure_range_menu: ttk.OptionMenu | None = None
+        self._iv_progress_after_id: str | None = None
+        self._iv_progress_active = False
         self.iv_progress_value = tk.DoubleVar(value=0.0)
         self.iv_progress_text = tk.StringVar(value="IV progress: idle")
         self.iv_progress_style = "HallIVGreen.Horizontal.TProgressbar"
@@ -836,6 +838,56 @@ class HallTab(BaseTab):
             lambda: set_led(self.source_led, self._source_enabled),
         )
 
+    def _stop_iv_progress_pulse(self) -> None:
+        self._iv_progress_active = False
+        if self._iv_progress_after_id is not None:
+            try:
+                self.app.root.after_cancel(self._iv_progress_after_id)
+            except Exception:
+                pass
+            self._iv_progress_after_id = None
+
+    def _start_iv_progress_pulse(self, *, started_at: float, estimated_total_s: float, point_total: int) -> None:
+        self._stop_iv_progress_pulse()
+        self._iv_progress_active = True
+
+        def _pulse() -> None:
+            if not self._iv_progress_active:
+                return
+
+            elapsed_s = max(0.0, time.perf_counter() - started_at)
+            if estimated_total_s > 0.0:
+                percent = min(99.0, 100.0 * elapsed_s / estimated_total_s)
+            else:
+                percent = 0.0
+
+            approx_current = 0
+            if point_total > 0 and estimated_total_s > 0.0:
+                approx_current = max(1, min(point_total, int(round(point_total * percent / 100.0))))
+
+            self.app.ui_bus.post(
+                W_IV_PROGRESS,
+                {
+                    "current": approx_current,
+                    "total": max(point_total, 1),
+                    "percent": percent,
+                    "active": True,
+                    "elapsed_s": elapsed_s,
+                    "estimated_total_s": estimated_total_s,
+                },
+            )
+
+            if self._iv_progress_active:
+                try:
+                    self._iv_progress_after_id = self.app.root.after(100, _pulse)
+                except Exception:
+                    self._iv_progress_active = False
+
+        try:
+            self._iv_progress_after_id = self.app.root.after(0, _pulse)
+        except Exception:
+            self._iv_progress_active = False
+
     # ------------------------------------------------------------------
     # Button handlers
     # ------------------------------------------------------------------
@@ -1002,7 +1054,7 @@ class HallTab(BaseTab):
 
     def _measure_iv_worker(self) -> None:
         try:
-            from v3.core.measurements import estimate_iv_curve_duration, measure_iv_curve
+            from v3.core.measurements import _build_iv_setpoints_with_directions, estimate_iv_curve_duration, measure_iv_curve
             ctx = self.app.make_context()
             self.app.ui_bus.post(W_LED_HALL, True)
             self.app.root.after(0, lambda: set_led(self.source_led, True))
@@ -1031,6 +1083,19 @@ class HallTab(BaseTab):
             min_native = float(self.k2450_iv_min.get()) * _ma_to_a
             max_native = float(self.k2450_iv_max.get()) * _ma_to_a
             step_native = float(self.k2450_iv_step.get()) * _ma_to_a
+            try:
+                estimated_points = len(
+                    _build_iv_setpoints_with_directions(
+                        start_native,
+                        max_native,
+                        step_native,
+                        shape=str(self.k2450_iv_shape.get()),
+                        iv_min=min_native,
+                        iv_max=max_native,
+                    )[0]
+                )
+            except Exception:
+                estimated_points = 1
             estimated_total_s = estimate_iv_curve_duration(
                 shape=str(self.k2450_iv_shape.get()),
                 start=start_native,
@@ -1043,16 +1108,10 @@ class HallTab(BaseTab):
                 ramp_to_start=ramp_enabled,
                 reset_to_zero=ramp_enabled,
             )
-            self.app.ui_bus.post(
-                W_IV_PROGRESS,
-                {
-                    "current": 0,
-                    "total": 1,
-                    "percent": 0.0,
-                    "active": True,
-                    "elapsed_s": 0.0,
-                    "estimated_total_s": estimated_total_s,
-                },
+            self._start_iv_progress_pulse(
+                started_at=t0,
+                estimated_total_s=estimated_total_s,
+                point_total=estimated_points,
             )
 
             result = measure_iv_curve(
@@ -1168,6 +1227,7 @@ class HallTab(BaseTab):
             self.app.root.after(0, _show_error)
         finally:
             try:
+                self._stop_iv_progress_pulse()
                 self.app.ui_bus.post(W_LED_HALL, False)
                 _src = self._source_enabled
                 self.app.root.after(0, lambda: set_led(self.source_led, _src))
