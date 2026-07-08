@@ -1164,8 +1164,17 @@ class HallTab(BaseTab):
                     rows = []
 
                 wrote = ctx.data_mgr.write_rows(rows, measurement_type="IV")
+                if wrote <= 0 and rows:
+                    fallback_wrote = 0
+                    for row in rows:
+                        if ctx.data_mgr.write_row(row, measurement_type="IV"):
+                            fallback_wrote += 1
+                    wrote = fallback_wrote
+
                 if wrote > 0:
                     self.app.ui_bus.post(W_RESULTS_NEW_POINT, True)
+                elif rows:
+                    self.app.ui_bus.post_log("IV data was produced but could not be written to the data file.")
 
                 elapsed_s = max(0.0, time.perf_counter() - t0)
                 engine = str(result.get("engine", "point")).strip().lower()
