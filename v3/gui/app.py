@@ -675,6 +675,11 @@ class MeasureApp:
         return True
 
     def _disconnect_hall(self) -> None:
+        try:
+            if hasattr(self, "hall_tab") and self.hall_tab is not None:
+                self.hall_tab.request_iv_stop("Hall disconnect requested: stopping IV run.", show_status=False)
+        except Exception:
+            logger.debug("Could not request IV stop before hall disconnect", exc_info=True)
         old = self.bus.disconnect(INST_KEITHLEY2450)
         if old is not None:
             try:

@@ -8,6 +8,7 @@ calibration.  Displays live Hall voltage and field readouts.
 
 from __future__ import annotations
 
+import logging
 import threading
 import traceback
 import time
@@ -31,6 +32,9 @@ from v3.gui.theme import COLORS, FONTS
 
 if TYPE_CHECKING:
     from v3.gui.app import MeasureApp
+
+
+logger = logging.getLogger(__name__)
 
 
 class HallTab(BaseTab):
@@ -61,6 +65,9 @@ class HallTab(BaseTab):
         self._iv_measure_range_menu: ttk.OptionMenu | None = None
         self._iv_progress_after_id: str | None = None
         self._iv_progress_active = False
+        self._iv_run_seq = 0
+        self._iv_active_run_id = 0
+        self._iv_stop_requested = threading.Event()
         self.iv_progress_value = tk.DoubleVar(value=0.0)
         self.iv_progress_text = tk.StringVar(value="IV progress: idle")
         self.iv_progress_style = "HallIVGreen.Horizontal.TProgressbar"
@@ -274,8 +281,9 @@ class HallTab(BaseTab):
         resistance_btn.pack(side="left", padx=(0, 6))
         self.register_measure_button(resistance_btn)
         iv_btn = ttk.Button(action_row, text="Measure IV Curve", command=self._on_measure_iv_curve)
-        iv_btn.pack(side="left")
+        iv_btn.pack(side="left", padx=(0, 6))
         self.register_measure_button(iv_btn)
+        ttk.Button(action_row, text="Stop IV", command=self._on_stop_iv_measurement).pack(side="left")
 
         self._apply_hall_bar_preset(self.k2450_hall_bar.get())
         self._update_terminal_button_text()
@@ -294,6 +302,95 @@ class HallTab(BaseTab):
 
     def _on_iv_mode_changed(self, *_args: object) -> None:
         self._update_iv_range_controls()
+
+    def _normalize_iv_mode(self) -> str:
+        mode_norm = str(self.k2450_iv_mode.get()).strip().lower()
+        if mode_norm in {"current", "source_current", "i"}:
+            return "current"
+        if mode_norm in {"voltage", "source_voltage", "v"}:
+            return "voltage"
+        raise ValueError("IV mode must be current or voltage")
+
+    def _build_iv_run_config(self) -> dict[str, Any]:
+        mode_norm = self._normalize_iv_mode()
+
+        source_range_raw = str(self.k2450_iv_source_range.get()).strip().lower()
+        measure_range_raw = str(self.k2450_iv_measure_range.get()).strip().lower()
+        source_range_gui = None if source_range_raw == "auto" else float(source_range_raw)
+        measure_range_gui = None if measure_range_raw == "auto" else float(measure_range_raw)
+
+        if source_range_gui is not None and source_range_gui <= 0.0:
+            raise ValueError("Source range must be > 0 or auto")
+        if measure_range_gui is not None and measure_range_gui <= 0.0:
+            raise ValueError("Measure range must be > 0 or auto")
+
+        unit_scale = 1e-3 if mode_norm == "current" else 1.0
+        start_native = float(self.k2450_iv_start.get()) * unit_scale
+        min_native = float(self.k2450_iv_min.get()) * unit_scale
+        max_native = float(self.k2450_iv_max.get()) * unit_scale
+        step_native = float(self.k2450_iv_step.get()) * unit_scale
+
+        if abs(step_native) < 1e-15:
+            raise ValueError("IV step must be non-zero")
+        if min_native >= max_native:
+            raise ValueError("IV min must be smaller than IV max")
+        if not (min_native < start_native < max_native):
+            raise ValueError("IV start must be larger than min and smaller than max")
+
+        source_range_native = source_range_gui
+        if source_range_native is not None and mode_norm == "current":
+            source_range_native *= 1e-3
+
+        measure_range_native = measure_range_gui
+        if measure_range_native is not None and mode_norm == "voltage":
+            measure_range_native *= 1e-3
+
+        max_setpoint_abs = max(abs(start_native), abs(min_native), abs(max_native))
+        if source_range_native is not None and source_range_native + 1e-15 < max_setpoint_abs:
+            unit = "mA" if mode_norm == "current" else "V"
+            raise ValueError(f"Source range must cover IV sweep span (>= |max setpoint| in {unit})")
+
+        compliance = float(self.k2450_iv_compliance.get())
+        if compliance <= 0.0:
+            raise ValueError("IV compliance must be > 0")
+        if measure_range_native is not None and compliance > measure_range_native:
+            raise ValueError("IV compliance must be <= fixed measure range")
+
+        nplc = float(self.k2450_iv_nplc.get())
+        if nplc <= 0.0:
+            raise ValueError("IV NPLC must be > 0")
+
+        settle_s = float(self.k2450_iv_settle.get())
+        if settle_s < 0.0:
+            raise ValueError("IV settle time must be >= 0")
+
+        repetitions = int(self.k2450_iv_repetitions.get())
+        if repetitions < 1:
+            raise ValueError("IV repetitions must be >= 1")
+
+        env_sample_interval = float(self.k2450_iv_env_interval.get())
+        if env_sample_interval < 0.0:
+            raise ValueError("IV env sample interval must be >= 0")
+
+        return {
+            "mode": str(self.k2450_iv_mode.get()),
+            "shape": str(self.k2450_iv_shape.get()),
+            "start": start_native,
+            "iv_min": min_native,
+            "iv_max": max_native,
+            "step": step_native,
+            "source_range": source_range_native,
+            "measure_range": measure_range_native,
+            "compliance": compliance,
+            "nplc": nplc,
+            "auto_range": measure_range_native is None,
+            "settle_time": settle_s,
+            "repetitions": repetitions,
+            "keep_output": False,
+            "reset_to_zero": bool(self.k2450_iv_ramp_to_start.get()),
+            "ramp_to_start": bool(self.k2450_iv_ramp_to_start.get()),
+            "env_sample_interval": env_sample_interval,
+        }
 
     def _update_iv_range_controls(self) -> None:
         if self._iv_source_range_label is None or self._iv_measure_range_label is None:
@@ -738,20 +835,56 @@ class HallTab(BaseTab):
         ttk.Checkbutton(ivf, text="Ramp", variable=self.k2450_iv_ramp_to_start).grid(row=5, column=0, columnspan=2, sticky="w", padx=5, pady=2)
         ttk.Label(ivf, text="Env sample interval (s):").grid(row=5, column=2, sticky="w", padx=5, pady=2)
         ttk.Entry(ivf, textvariable=self.k2450_iv_env_interval, width=10).grid(row=5, column=3, padx=5, pady=2)
-        ttk.Button(ivf, text="Measure IV Curve", command=self._on_measure_iv_curve).grid(row=6, column=0, columnspan=4, pady=4)
+        ttk.Button(ivf, text="Measure IV Curve", command=self._on_measure_iv_curve).grid(row=6, column=0, columnspan=2, pady=4)
+        ttk.Button(ivf, text="Stop IV", command=self._on_stop_iv_measurement).grid(row=6, column=2, columnspan=2, pady=4)
 
         ttk.Button(body, text="Close", command=popup.destroy).pack(anchor="e", pady=(8, 0))
         self._center_toplevel(popup, width=580, height=510)
 
     def _append_status(self, message: str, *, is_error: bool = False) -> None:
-        prefix = "Error" if is_error else "Info"
-        self.status_text.configure(state="normal")
-        self.status_text.insert("end", f"{prefix}: {message}\n")
-        self.status_text.see("end")
-        line_count = int(self.status_text.index("end-1c").split(".")[0])
-        if line_count > 200:
-            self.status_text.delete("1.0", f"{line_count - 200}.0")
-        self.status_text.configure(state="disabled")
+        if not hasattr(self, "status_text"):
+            return
+        try:
+            if not bool(self.status_text.winfo_exists()):
+                return
+            prefix = "Error" if is_error else "Info"
+            self.status_text.configure(state="normal")
+            self.status_text.insert("end", f"{prefix}: {message}\n")
+            self.status_text.see("end")
+            line_count = int(self.status_text.index("end-1c").split(".")[0])
+            if line_count > 200:
+                self.status_text.delete("1.0", f"{line_count - 200}.0")
+            self.status_text.configure(state="disabled")
+        except Exception:
+            logger.debug("Could not append hall status text", exc_info=True)
+
+    def _apply_iv_progress_payload(self, payload: dict[str, Any]) -> None:
+        current = int(payload.get("current", 0))
+        total = max(int(payload.get("total", 1)), 1)
+        percent = float(payload.get("percent", (100.0 * current / total)))
+        active = bool(payload.get("active", False))
+        elapsed_s = max(0.0, float(payload.get("elapsed_s", 0.0)))
+        estimated_total_s = max(0.0, float(payload.get("estimated_total_s", 0.0)))
+
+        self.iv_progress_value.set(max(0.0, min(100.0, percent)))
+        if active:
+            if estimated_total_s > 0.0:
+                self.iv_progress_text.set(
+                    f"IV progress: {elapsed_s:.1f}/{estimated_total_s:.1f} s ({percent:.0f}%) [{current}/{total} pts]"
+                )
+            else:
+                self.iv_progress_text.set(f"IV progress: {current}/{total} points ({percent:.0f}%)")
+        elif current > 0:
+            if estimated_total_s > 0.0:
+                self.iv_progress_text.set(
+                    f"IV done: {elapsed_s:.1f} s (est {estimated_total_s:.1f} s), {current} points"
+                )
+            else:
+                self.iv_progress_text.set(f"IV done: {current} points")
+            self._stop_iv_progress_pulse()
+        else:
+            self.iv_progress_text.set("IV progress: idle")
+            self._stop_iv_progress_pulse()
 
     # ------------------------------------------------------------------
     # Event handling
@@ -781,29 +914,13 @@ class HallTab(BaseTab):
             self._set_source_enabled(bool(value))
         elif widget_id == W_IV_PROGRESS:
             if isinstance(value, dict):
-                current = int(value.get("current", 0))
-                total = max(int(value.get("total", 1)), 1)
-                percent = float(value.get("percent", (100.0 * current / total)))
-                active = bool(value.get("active", False))
-                elapsed_s = max(0.0, float(value.get("elapsed_s", 0.0)))
-                estimated_total_s = max(0.0, float(value.get("estimated_total_s", 0.0)))
-                self.iv_progress_value.set(max(0.0, min(100.0, percent)))
-                if active:
-                    if estimated_total_s > 0.0:
-                        self.iv_progress_text.set(
-                            f"IV progress: {elapsed_s:.1f}/{estimated_total_s:.1f} s ({percent:.0f}%) [{current}/{total} pts]"
-                        )
-                    else:
-                        self.iv_progress_text.set(f"IV progress: {current}/{total} points ({percent:.0f}%)")
-                elif current > 0:
-                    if estimated_total_s > 0.0:
-                        self.iv_progress_text.set(
-                            f"IV done: {elapsed_s:.1f} s (est {estimated_total_s:.1f} s), {current} points"
-                        )
-                    else:
-                        self.iv_progress_text.set(f"IV done: {current} points")
-                else:
-                    self.iv_progress_text.set("IV progress: idle")
+                try:
+                    run_id = int(value.get("run_id", 0))
+                except Exception:
+                    run_id = 0
+                if run_id > 0 and run_id != self._iv_active_run_id:
+                    return
+                self._apply_iv_progress_payload(value)
         elif widget_id == W_INSTRUMENT_ERROR:
             if isinstance(value, dict) and str(value.get("instrument")) == "hall":
                 self._append_status(str(value.get("message", "Unknown error")), is_error=True)
@@ -815,10 +932,32 @@ class HallTab(BaseTab):
 
     def on_instrument_disconnected(self, name: str) -> None:
         if name == "hall" and self._conn_header:
+            self._request_iv_stop("Hall disconnected during IV run.", show_status=False)
+            self._stop_iv_progress_pulse()
             self._conn_header.set_connected(False)
             self._set_source_enabled(False)
             self.k2450_active_terminal.set("Disconnected")
             self.app.ui_bus.post(W_LED_HALL, False)
+
+    def _request_iv_stop(self, reason: str = "IV stop requested.", *, show_status: bool = True) -> None:
+        if not self._measuring:
+            return
+        if self._iv_stop_requested.is_set():
+            return
+        self._iv_stop_requested.set()
+        if show_status:
+            self._append_status(reason)
+        self.app.ui_bus.post_log(reason)
+
+    def request_iv_stop(self, reason: str = "IV stop requested.", *, show_status: bool = True) -> None:
+        self._request_iv_stop(reason, show_status=show_status)
+
+    def _on_stop_iv_measurement(self) -> None:
+        if not self._measuring:
+            self._append_status("No measurement in progress.")
+            return
+        self._request_iv_stop("IV stop requested by user.")
+        self.iv_progress_text.set("IV stopping...")
 
     def _set_source_enabled(self, enabled: bool) -> None:
         self._source_enabled = enabled
@@ -847,12 +986,15 @@ class HallTab(BaseTab):
                 pass
             self._iv_progress_after_id = None
 
-    def _start_iv_progress_pulse(self, *, started_at: float, estimated_total_s: float, point_total: int) -> None:
+    def _start_iv_progress_pulse(self, *, started_at: float, estimated_total_s: float, point_total: int, run_id: int) -> None:
         self._stop_iv_progress_pulse()
         self._iv_progress_active = True
 
         def _pulse() -> None:
             if not self._iv_progress_active:
+                return
+            if run_id != self._iv_active_run_id:
+                self._iv_progress_active = False
                 return
 
             elapsed_s = max(0.0, time.perf_counter() - started_at)
@@ -874,6 +1016,7 @@ class HallTab(BaseTab):
                     "active": True,
                     "elapsed_s": elapsed_s,
                     "estimated_total_s": estimated_total_s,
+                    "run_id": run_id,
                 },
             )
 
@@ -922,27 +1065,28 @@ class HallTab(BaseTab):
             self.app.ui_bus.post_log("K2450 measurement already in progress.")
             return
 
-        self._measuring = True
-        self._set_measure_buttons_enabled(False)
-
         try:
-            start = float(self.k2450_iv_start.get())
-            iv_min = float(self.k2450_iv_min.get())
-            iv_max = float(self.k2450_iv_max.get())
-            step = float(self.k2450_iv_step.get())
-            if abs(step) < 1e-15:
-                raise ValueError("IV step must be non-zero")
-            if iv_min >= iv_max:
-                raise ValueError("IV min must be smaller than IV max")
-            if not (iv_min < start < iv_max):
-                raise ValueError("IV start must be larger than min and smaller than max")
+            iv_run_cfg = self._build_iv_run_config()
         except Exception as exc:
             self._append_status(str(exc), is_error=True)
             self.app.ui_bus.post_log(f"IV measure error: {exc}")
-            self._measure_done()
             return
+
+        self._measuring = True
+        self._iv_stop_requested.clear()
+        self._iv_run_seq += 1
+        self._iv_active_run_id = self._iv_run_seq
+        iv_run_cfg["run_id"] = self._iv_active_run_id
+        self.iv_progress_text.set("IV progress: starting...")
+        self.iv_progress_value.set(0.0)
+        self._set_measure_buttons_enabled(False)
         try:
-            t = threading.Thread(target=self._measure_iv_worker, daemon=True, name="hall-iv-measure")
+            t = threading.Thread(
+                target=self._measure_iv_worker,
+                args=(iv_run_cfg,),
+                daemon=True,
+                name="hall-iv-measure",
+            )
             t.start()
         except Exception as exc:
             self._append_status(f"Could not start IV worker: {exc}", is_error=True)
@@ -1052,44 +1196,34 @@ class HallTab(BaseTab):
             except Exception:
                 self._measuring = False
 
-    def _measure_iv_worker(self) -> None:
+    def _measure_iv_worker(self, iv_run_cfg: dict[str, Any] | None = None) -> None:
         try:
-            from v3.core.measurements import _build_iv_setpoints_with_directions, estimate_iv_curve_duration, measure_iv_curve
+            from v3.core.measurements import IVMeasurementCancelled, _build_iv_setpoints_with_directions, estimate_iv_curve_duration, measure_iv_curve
             ctx = self.app.make_context()
             self.app.ui_bus.post(W_LED_HALL, True)
             self.app.root.after(0, lambda: set_led(self.source_led, True))
             t0 = time.perf_counter()
+
+            if iv_run_cfg is None:
+                iv_run_cfg = self._build_iv_run_config()
 
             try:
                 self.app.bus.execute(INST_KEITHLEY2450, "set_iv_display_mode")
             except Exception:
                 pass
 
-            source_range_raw = str(self.k2450_iv_source_range.get())
-            measure_range_raw = str(self.k2450_iv_measure_range.get())
-            source_range = None if source_range_raw.lower() == "auto" else float(source_range_raw)
-            measure_range = None if measure_range_raw.lower() == "auto" else float(measure_range_raw)
-            iv_auto_range = measure_range is None
-
-            iv_mode = str(self.k2450_iv_mode.get())
-            mode_norm = iv_mode.strip().lower()
-            _ma_to_a = 1e-3 if mode_norm in {"current", "source_current", "i"} else 1.0
-            if source_range is not None and mode_norm in {"current", "source_current", "i"}:
-                source_range *= 1e-3
-            if measure_range is not None and mode_norm in {"voltage", "source_voltage", "v"}:
-                measure_range *= 1e-3
-            ramp_enabled = bool(self.k2450_iv_ramp_to_start.get())
-            start_native = float(self.k2450_iv_start.get()) * _ma_to_a
-            min_native = float(self.k2450_iv_min.get()) * _ma_to_a
-            max_native = float(self.k2450_iv_max.get()) * _ma_to_a
-            step_native = float(self.k2450_iv_step.get()) * _ma_to_a
+            start_native = float(iv_run_cfg["start"])
+            min_native = float(iv_run_cfg["iv_min"])
+            max_native = float(iv_run_cfg["iv_max"])
+            step_native = float(iv_run_cfg["step"])
+            run_id = int(iv_run_cfg.get("run_id", self._iv_active_run_id))
             try:
                 estimated_points = len(
                     _build_iv_setpoints_with_directions(
                         start_native,
                         max_native,
                         step_native,
-                        shape=str(self.k2450_iv_shape.get()),
+                        shape=str(iv_run_cfg["shape"]),
                         iv_min=min_native,
                         iv_max=max_native,
                     )[0]
@@ -1097,42 +1231,44 @@ class HallTab(BaseTab):
             except Exception:
                 estimated_points = 1
             estimated_total_s = estimate_iv_curve_duration(
-                shape=str(self.k2450_iv_shape.get()),
+                shape=str(iv_run_cfg["shape"]),
                 start=start_native,
                 step=step_native,
                 iv_min=min_native,
                 iv_max=max_native,
-                nplc=float(self.k2450_iv_nplc.get()),
-                settle_time=float(self.k2450_iv_settle.get()),
-                repetitions=int(self.k2450_iv_repetitions.get()),
-                ramp_to_start=ramp_enabled,
-                reset_to_zero=ramp_enabled,
+                nplc=float(iv_run_cfg["nplc"]),
+                settle_time=float(iv_run_cfg["settle_time"]),
+                repetitions=int(iv_run_cfg["repetitions"]),
+                ramp_to_start=bool(iv_run_cfg["ramp_to_start"]),
+                reset_to_zero=bool(iv_run_cfg["reset_to_zero"]),
             )
             self._start_iv_progress_pulse(
                 started_at=t0,
                 estimated_total_s=estimated_total_s,
                 point_total=estimated_points,
+                run_id=run_id,
             )
 
             result = measure_iv_curve(
                 ctx,
-                mode=iv_mode,
-                shape=str(self.k2450_iv_shape.get()),
-                start=start_native,
-                iv_min=min_native,
-                iv_max=max_native,
-                step=step_native,
-                source_range=source_range,
-                measure_range=measure_range,
-                compliance=float(self.k2450_iv_compliance.get()),
-                nplc=float(self.k2450_iv_nplc.get()),
-                auto_range=iv_auto_range,
-                settle_time=float(self.k2450_iv_settle.get()),
-                repetitions=int(self.k2450_iv_repetitions.get()),
-                keep_output=False,
-                reset_to_zero=ramp_enabled,
-                ramp_to_start=ramp_enabled,
-                env_sample_interval=float(self.k2450_iv_env_interval.get()),
+                mode=str(iv_run_cfg["mode"]),
+                shape=str(iv_run_cfg["shape"]),
+                start=float(iv_run_cfg["start"]),
+                iv_min=float(iv_run_cfg["iv_min"]),
+                iv_max=float(iv_run_cfg["iv_max"]),
+                step=float(iv_run_cfg["step"]),
+                source_range=iv_run_cfg["source_range"],
+                measure_range=iv_run_cfg["measure_range"],
+                compliance=float(iv_run_cfg["compliance"]),
+                nplc=float(iv_run_cfg["nplc"]),
+                auto_range=bool(iv_run_cfg["auto_range"]),
+                settle_time=float(iv_run_cfg["settle_time"]),
+                repetitions=int(iv_run_cfg["repetitions"]),
+                keep_output=bool(iv_run_cfg["keep_output"]),
+                reset_to_zero=bool(iv_run_cfg["reset_to_zero"]),
+                ramp_to_start=bool(iv_run_cfg["ramp_to_start"]),
+                env_sample_interval=float(iv_run_cfg["env_sample_interval"]),
+                on_should_stop=self._iv_stop_requested.is_set,
                 on_progress=lambda current, total: self.app.ui_bus.post(
                     W_IV_PROGRESS,
                     {
@@ -1149,6 +1285,7 @@ class HallTab(BaseTab):
                         "active": True,
                         "elapsed_s": max(0.0, time.perf_counter() - t0),
                         "estimated_total_s": estimated_total_s,
+                        "run_id": run_id,
                     },
                 ),
             )
@@ -1185,6 +1322,8 @@ class HallTab(BaseTab):
                 )
 
                 def _apply() -> None:
+                    if run_id != self._iv_active_run_id:
+                        return
                     point_count = int(result.get("point_count", 0))
                     self.k2450_aux_result.configure(text=f"IV: {point_count} points")
                     self._append_status(
@@ -1199,44 +1338,68 @@ class HallTab(BaseTab):
                         f"(engine={result.get('engine', 'point')})"
                     )
                     self.app.ui_bus.post_log(f"K2450 {engine_msg}")
-                    self.app.ui_bus.post(
-                        W_IV_PROGRESS,
-                        {
-                            "current": point_count,
-                            "total": max(point_count, 1),
-                            "percent": 100.0,
-                            "active": False,
-                            "elapsed_s": elapsed_s,
-                            "estimated_total_s": estimated_total_s,
-                        },
-                    )
+                    final_payload = {
+                        "current": point_count,
+                        "total": max(point_count, 1),
+                        "percent": 100.0,
+                        "active": False,
+                        "elapsed_s": elapsed_s,
+                        "estimated_total_s": estimated_total_s,
+                        "run_id": run_id,
+                    }
+                    self._apply_iv_progress_payload(final_payload)
+                    self.app.ui_bus.post(W_IV_PROGRESS, final_payload)
 
                 self.app.root.after(0, _apply)
             except Exception:
                 logger.exception("IV post-processing failed")
                 self.app.ui_bus.post_log("IV post-processing warning: measurement finished, but result handling had an issue")
         except Exception as exc:
-            exc_text = str(exc)
-            logger.error("IV measurement worker failed: %s", exc_text)
-            logger.debug("IV measurement traceback:\n%s", traceback.format_exc())
-            def _show_error() -> None:
-                self._append_status(f"IV measurement failed: {exc_text}", is_error=True)
-                self.app.ui_bus.post_log(f"IV measure error: {exc_text}")
-                self.app.ui_bus.post(
-                    W_IV_PROGRESS,
-                    {
+            if isinstance(exc, IVMeasurementCancelled):
+                elapsed_s = max(0.0, time.perf_counter() - t0)
+                run_id = int(iv_run_cfg.get("run_id", self._iv_active_run_id)) if isinstance(iv_run_cfg, dict) else self._iv_active_run_id
+
+                def _show_cancelled() -> None:
+                    if run_id != self._iv_active_run_id:
+                        return
+                    self._append_status("IV measurement cancelled.")
+                    self.app.ui_bus.post_log("IV measurement cancelled by request.")
+                    cancel_payload = {
                         "current": 0,
                         "total": 1,
                         "percent": 0.0,
                         "active": False,
-                        "elapsed_s": max(0.0, time.perf_counter() - t0),
-                    },
-                )
+                        "elapsed_s": elapsed_s,
+                        "run_id": run_id,
+                    }
+                    self._apply_iv_progress_payload(cancel_payload)
+                    self.app.ui_bus.post(W_IV_PROGRESS, cancel_payload)
+
+                self.app.root.after(0, _show_cancelled)
+                return
+            exc_text = str(exc)
+            logger.error("IV measurement worker failed: %s", exc_text)
+            logger.debug("IV measurement traceback:\n%s", traceback.format_exc())
+            run_id = int(iv_run_cfg.get("run_id", self._iv_active_run_id)) if isinstance(iv_run_cfg, dict) else self._iv_active_run_id
+            def _show_error() -> None:
+                if run_id != self._iv_active_run_id:
+                    return
+                self._append_status(f"IV measurement failed: {exc_text}", is_error=True)
+                self.app.ui_bus.post_log(f"IV measure error: {exc_text}")
+                error_payload = {
+                    "current": 0,
+                    "total": 1,
+                    "percent": 0.0,
+                    "active": False,
+                    "elapsed_s": max(0.0, time.perf_counter() - t0),
+                    "run_id": run_id,
+                }
+                self._apply_iv_progress_payload(error_payload)
+                self.app.ui_bus.post(W_IV_PROGRESS, error_payload)
 
             self.app.root.after(0, _show_error)
         finally:
             try:
-                self._stop_iv_progress_pulse()
                 self.app.ui_bus.post(W_LED_HALL, False)
                 _src = self._source_enabled
                 self.app.root.after(0, lambda: set_led(self.source_led, _src))
@@ -1245,6 +1408,8 @@ class HallTab(BaseTab):
                 self._measuring = False
 
     def _measure_done(self) -> None:
+        self._stop_iv_progress_pulse()
+        self._iv_stop_requested.clear()
         self._measuring = False
         self._set_measure_buttons_enabled(True)
 

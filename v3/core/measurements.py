@@ -51,6 +51,10 @@ _DYNA_FIELD_RES_OE = 1e-3
 _DYNA_TEMP_RES_K = 1e-5
 
 
+class IVMeasurementCancelled(RuntimeError):
+    """Raised when a cooperative stop is requested during IV measurement."""
+
+
 # ============================================================================
 # MeasurementContext  -  shared dependencies for every measurement
 # ============================================================================
@@ -778,6 +782,7 @@ def measure_iv_curve(
     env_sample_interval: float = 0.0,
     on_point: Callable[[dict[str, Any]], None] | None = None,
     on_progress: Callable[[int, int], None] | None = None,
+    on_should_stop: Callable[[], bool] | None = None,
 ) -> dict[str, Any]:
     """Measure a full IV curve as a list of per-point data rows."""
     normalized_mode = str(mode).strip().lower()
@@ -814,7 +819,7 @@ def measure_iv_curve(
     if compliance is None:
         compliance = 10.0 if source_mode == "source_current" else 0.1
     compliance_eff = float(compliance)
-    if not bool(auto_range) and measure_range is not None:
+    if measure_range is not None:
         fixed_measure_range = abs(float(measure_range))
         if fixed_measure_range > 0.0 and compliance_eff > fixed_measure_range:
             logger.info(
@@ -909,7 +914,31 @@ def measure_iv_curve(
         sourced = _collapse(sourced_raw, "sourced") if sourced_raw is not None else None
         return (measured, sourced)
 
+    def _check_cancelled() -> None:
+        if on_should_stop is None:
+            return
+        try:
+            if bool(on_should_stop()):
+                raise IVMeasurementCancelled("IV measurement cancelled by request")
+        except IVMeasurementCancelled:
+            raise
+        except Exception:
+            logger.debug("IV stop-check callback failed", exc_info=True)
+
+    def _sleep_interruptible(duration_s: float) -> None:
+        remaining = float(duration_s)
+        if remaining <= 0.0:
+            return
+        deadline = time.perf_counter() + remaining
+        while True:
+            _check_cancelled()
+            remaining = deadline - time.perf_counter()
+            if remaining <= 0.0:
+                return
+            time.sleep(min(0.05, remaining))
+
     try:
+        _check_cancelled()
         if source_mode == "source_current":
             ctx.bus.execute(
                 INST_KEITHLEY2450,
@@ -918,21 +947,24 @@ def measure_iv_curve(
                 compliance_voltage=compliance_eff,
             )
             ctx.bus.execute(INST_KEITHLEY2450, "enable_source")
+            _check_cancelled()
 
             # Pre-sweep ramp: 0 → start (safe ramp before the measured sweep begins)
             if ramp_to_start and abs(float(start)) > abs(float(step)) * 0.5:
                 try:
                     pre_ramp = _build_linear_segment(0.0, float(start), abs(float(step)))
                     for sp in pre_ramp[1:]:  # skip 0, which is the source's default-on state
+                        _check_cancelled()
                         ctx.bus.execute(INST_KEITHLEY2450, "set_source_current_amps", sp)
-                        time.sleep(ramp_step_pause)
-                except Exception:
-                    logger.debug("Could not pre-ramp IV source to start", exc_info=True)
+                        _sleep_interruptible(ramp_step_pause)
+                except Exception as exc:
+                    raise RuntimeError("IV pre-ramp to start failed in current mode") from exc
 
             fast_values = None
             fast_sourced = None
             if setpoints:
                 try:
+                    _check_cancelled()
                     reps_i = max(int(repetitions), 1)
                     fast_setpoints = [float(sp) for sp in setpoints]
                     if reps_i > 1:
@@ -959,6 +991,7 @@ def measure_iv_curve(
             if fast_values is not None:
                 try:
                     for index, source_current_a in enumerate(setpoints, start=1):
+                        _check_cancelled()
                         measured_voltage_v = float(fast_values[index - 1])
                         sourced_current_a = (
                             float(fast_sourced[index - 1])
@@ -998,9 +1031,9 @@ def measure_iv_curve(
                     points.clear()
             if fast_values is None:
                 for index, source_current_a in enumerate(setpoints, start=1):
+                    _check_cancelled()
                     ctx.bus.execute(INST_KEITHLEY2450, "set_source_current_amps", source_current_a)
-                    if settle_time > 0:
-                        time.sleep(settle_time)
+                    _sleep_interruptible(settle_time)
                     measured_voltage_v, measured_voltage_std = ctx.bus.execute(
                         INST_KEITHLEY2450,
                         "measure_voltage",
@@ -1046,21 +1079,24 @@ def measure_iv_curve(
                 compliance_current=compliance_eff,
             )
             ctx.bus.execute(INST_KEITHLEY2450, "enable_source")
+            _check_cancelled()
 
             # Pre-sweep ramp: 0 → start (safe ramp before the measured sweep begins)
             if ramp_to_start and abs(float(start)) > abs(float(step)) * 0.5:
                 try:
                     pre_ramp = _build_linear_segment(0.0, float(start), abs(float(step)))
                     for sp in pre_ramp[1:]:
+                        _check_cancelled()
                         ctx.bus.execute(INST_KEITHLEY2450, "set_source_voltage_volts", sp)
-                        time.sleep(ramp_step_pause)
-                except Exception:
-                    logger.debug("Could not pre-ramp IV source to start", exc_info=True)
+                        _sleep_interruptible(ramp_step_pause)
+                except Exception as exc:
+                    raise RuntimeError("IV pre-ramp to start failed in voltage mode") from exc
 
             fast_values = None
             fast_sourced = None
             if setpoints:
                 try:
+                    _check_cancelled()
                     reps_i = max(int(repetitions), 1)
                     fast_setpoints = [float(sp) for sp in setpoints]
                     if reps_i > 1:
@@ -1087,11 +1123,13 @@ def measure_iv_curve(
             if fast_values is not None:
                 try:
                     for index, source_voltage_v in enumerate(setpoints, start=1):
+                        _check_cancelled()
+                        commanded_voltage_v = float(source_voltage_v)
                         measured_current_a = float(fast_values[index - 1])
                         sourced_voltage_v = (
                             float(fast_sourced[index - 1])
                             if fast_sourced is not None
-                            else float(source_voltage_v)
+                            else commanded_voltage_v
                         )
                         snap = ctx.helmholtz.snapshot()
                         cur_temp, cur_field = _maybe_refresh_env()
@@ -1102,7 +1140,7 @@ def measure_iv_curve(
                             "IV_Sweep_Direction": _sp_directions[index - 1],
                             "IV_Source_Current": NAN,
                             "IV_Source_Voltage": sourced_voltage_v,
-                            "IV_Measured_Voltage": sourced_voltage_v,
+                            "IV_Measured_Voltage": commanded_voltage_v,
                             "IV_Measured_Current": measured_current_a * 1e3,
                             "Temp": cur_temp,
                             "In-plane_Field": cur_field,
@@ -1126,9 +1164,9 @@ def measure_iv_curve(
                     points.clear()
             if fast_values is None:
                 for index, source_voltage_v in enumerate(setpoints, start=1):
+                    _check_cancelled()
                     ctx.bus.execute(INST_KEITHLEY2450, "set_source_voltage_volts", source_voltage_v)
-                    if settle_time > 0:
-                        time.sleep(settle_time)
+                    _sleep_interruptible(settle_time)
                     measured_current_a, measured_current_std = ctx.bus.execute(
                         INST_KEITHLEY2450,
                         "measure_current",

@@ -269,6 +269,27 @@ class TestWriteRow:
             else:
                 assert val == pytest.approx(1.0)
 
+    def test_iv_sweep_direction_column_is_present(self, dm, tmp_data_dir):
+        path = dm.initialize_file(filename="iv_direction")
+        dm.write_row(
+            {
+                "Time": 1.0,
+                "IV_Point": 1,
+                "IV_Sweep_Direction": "up",
+                "IV_Source_Current": 2.0,
+                "IV_Measured_Voltage": 3.0,
+                "IV_Measured_Current": 4.0,
+            },
+            measurement_type="IV",
+        )
+        dm.close()
+
+        with open(path, "r", newline="", encoding="utf-8") as f:
+            reader = csv.DictReader(f)
+            row = next(reader)
+
+        assert row["IV_Sweep_Direction"] == "up"
+
     def test_write_100_rows(self, dm, tmp_data_dir):
         """Write 100 rows and verify all are persisted."""
         path = dm.initialize_file(filename="hundred")

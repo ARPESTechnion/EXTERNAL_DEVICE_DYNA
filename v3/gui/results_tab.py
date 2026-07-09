@@ -165,6 +165,7 @@ class ResultsTab(BaseTab):
         self._command_preview: tk.Text | None = None
         self._control_popups: dict[str, tk.Toplevel] = {}
         self._lockin_popup_output_led: tk.Label | None = None
+        self._hall_popup_iv_mode_trace: str | None = None
         self._script_notebook: ttk.Notebook | None = None
         self._script_tabs: list[dict[str, Any]] = []
         self._running_tab_index: int | None = None
@@ -1121,6 +1122,12 @@ class ResultsTab(BaseTab):
             popup.destroy()
         if key == "lockin":
             self._lockin_popup_output_led = None
+        if key == "hall" and self._hall_popup_iv_mode_trace is not None:
+            try:
+                self.app.hall_tab.k2450_iv_mode.trace_remove("write", self._hall_popup_iv_mode_trace)
+            except Exception:
+                pass
+            self._hall_popup_iv_mode_trace = None
         self._control_popups.pop(key, None)
 
     def _open_control_popup(
@@ -1406,16 +1413,52 @@ class ResultsTab(BaseTab):
     def _build_hall_popup(self, parent: ttk.Frame) -> None:
         hall = self.app.hall_tab
 
-        sf = ttk.LabelFrame(parent, text="Measurement Settings")
-        sf.pack(fill="x", padx=2, pady=2)
+        if self._hall_popup_iv_mode_trace is not None:
+            try:
+                hall.k2450_iv_mode.trace_remove("write", self._hall_popup_iv_mode_trace)
+            except Exception:
+                pass
+            self._hall_popup_iv_mode_trace = None
 
-        ttk.Label(sf, text="Hall Bar Preset:").grid(row=0, column=0, sticky="w", padx=5, pady=2)
+        def _build_foldable_section(container: ttk.Frame, title: str, *, expanded: bool = True) -> ttk.Frame:
+            section = ttk.LabelFrame(container, text=title)
+            section.pack(fill="x", padx=2, pady=2)
+
+            header = ttk.Frame(section)
+            header.pack(fill="x", padx=4, pady=(2, 0))
+
+            body = ttk.Frame(section)
+            expanded_state = {"value": bool(expanded)}
+            toggle_text = tk.StringVar(value="Hide" if expanded_state["value"] else "Show")
+
+            def _refresh_section_state() -> None:
+                toggle_text.set("Hide" if expanded_state["value"] else "Show")
+                if expanded_state["value"]:
+                    if not body.winfo_ismapped():
+                        body.pack(fill="x", padx=2, pady=(2, 4))
+                else:
+                    if body.winfo_ismapped():
+                        body.pack_forget()
+
+            def _toggle_section() -> None:
+                expanded_state["value"] = not expanded_state["value"]
+                _refresh_section_state()
+
+            ttk.Button(header, textvariable=toggle_text, width=8, command=_toggle_section).pack(side="left")
+            _refresh_section_state()
+            return body
+
+        hall_body = _build_foldable_section(parent, "Hall Measurement", expanded=True)
+        hall_settings = ttk.Frame(hall_body)
+        hall_settings.pack(fill="x")
+
+        ttk.Label(hall_settings, text="Hall Bar Preset:").grid(row=0, column=0, sticky="w", padx=5, pady=2)
         preset_values = [
             *list(hall._HALL_BAR_PRESETS_V_PER_G.keys()),
             hall._CUSTOM_PRESET_NAME,
         ]
         preset_combo = ttk.Combobox(
-            sf,
+            hall_settings,
             textvariable=hall.k2450_hall_bar,
             values=preset_values,
             state="readonly",
@@ -1424,26 +1467,26 @@ class ResultsTab(BaseTab):
         preset_combo.grid(row=0, column=1, padx=5, pady=2, sticky="w")
         preset_combo.bind("<<ComboboxSelected>>", hall._on_hall_bar_selected)
 
-        ttk.Label(sf, text="Preset V/G:").grid(row=1, column=0, sticky="w", padx=5, pady=2)
-        ttk.Label(sf, textvariable=hall.k2450_hall_v_per_g).grid(row=1, column=1, sticky="w", padx=5, pady=2)
+        ttk.Label(hall_settings, text="Preset V/G:").grid(row=1, column=0, sticky="w", padx=5, pady=2)
+        ttk.Label(hall_settings, textvariable=hall.k2450_hall_v_per_g).grid(row=1, column=1, sticky="w", padx=5, pady=2)
 
-        entries = [
+        hall_entries = [
             ("Current (mA):", hall.k2450_current, make_float_validator(0.0, 105.0)),
             ("NPLC:", hall.k2450_nplc, make_float_validator(0.01, 20.0)),
             ("Compliance (V):", hall.k2450_compliance_v, make_float_validator(0.0, 210.0)),
             ("Filter Count:", hall.k2450_filter_count, make_float_validator(1.0, 100.0)),
             ("TBM delay (s):", hall.k2450_tbm, make_float_validator(0.0, 10.0)),
             ("Hall Offset (V):", hall.k2450_hall_offset, make_float_validator(-5.0, 5.0)),
-            ("V→Gauss (G/V):", hall.k2450_hall_v2gauss, make_float_validator(-1e7, 1e7)),
+            ("V->Gauss (G/V):", hall.k2450_hall_v2gauss, make_float_validator(-1e7, 1e7)),
         ]
-        for idx, (label, var, validator) in enumerate(entries, start=2):
-            ttk.Label(sf, text=label).grid(row=idx, column=0, sticky="w", padx=5, pady=2)
-            ValidatingEntry(sf, textvariable=var, width=12, validator=validator).grid(row=idx, column=1, padx=5, pady=2)
+        for idx, (label, var, validator) in enumerate(hall_entries, start=2):
+            ttk.Label(hall_settings, text=label).grid(row=idx, column=0, sticky="w", padx=5, pady=2)
+            ValidatingEntry(hall_settings, textvariable=var, width=12, validator=validator).grid(row=idx, column=1, padx=5, pady=2)
 
-        vr_row = len(entries) + 2
-        ttk.Label(sf, text="Voltage Range:").grid(row=vr_row, column=0, sticky="w", padx=5, pady=2)
+        vr_row = len(hall_entries) + 2
+        ttk.Label(hall_settings, text="Voltage Range:").grid(row=vr_row, column=0, sticky="w", padx=5, pady=2)
         ttk.OptionMenu(
-            sf,
+            hall_settings,
             hall.k2450_voltage_range,
             hall.k2450_voltage_range.get(),
             "auto",
@@ -1455,86 +1498,145 @@ class ResultsTab(BaseTab):
         ).grid(row=vr_row, column=1, padx=5, sticky="w")
 
         terminals_row = vr_row + 1
-        ttk.Label(sf, text="Terminals:").grid(row=terminals_row, column=0, sticky="w", padx=5, pady=2)
+        ttk.Label(hall_settings, text="Terminals:").grid(row=terminals_row, column=0, sticky="w", padx=5, pady=2)
         ttk.Button(
-            sf,
+            hall_settings,
             textvariable=hall.k2450_terminal_button_text,
             command=hall._on_terminal_button_pressed,
             width=24,
         ).grid(row=terminals_row, column=1, padx=5, pady=2, sticky="w")
 
         active_row = terminals_row + 1
-        ttk.Label(sf, text="Active Terminal:").grid(row=active_row, column=0, sticky="w", padx=5, pady=2)
-        ttk.Label(sf, textvariable=hall.k2450_active_terminal).grid(row=active_row, column=1, sticky="w", padx=5, pady=2)
+        ttk.Label(hall_settings, text="Active Terminal:").grid(row=active_row, column=0, sticky="w", padx=5, pady=2)
+        ttk.Label(hall_settings, textvariable=hall.k2450_active_terminal).grid(row=active_row, column=1, sticky="w", padx=5, pady=2)
 
-        bf = ttk.LabelFrame(parent, text="Hall Measurement")
-        bf.pack(fill="x", padx=2, pady=4)
-        hall_measure_btn = ttk.Button(bf, text="Measure Hall", command=hall._on_measure)
+        hall_button_row = ttk.Frame(hall_body)
+        hall_button_row.pack(fill="x", padx=2, pady=(4, 2))
+        hall_measure_btn = ttk.Button(hall_button_row, text="Measure Hall", command=hall._on_measure)
         hall_measure_btn.pack(side="left", padx=5, pady=2)
         hall.register_measure_button(hall_measure_btn)
-        ttk.Button(bf, text="Set Offset...", command=hall._open_offset_popup).pack(side="left", padx=5, pady=2)
-        ttk.Button(bf, text="Enable Source", command=hall._on_enable_source).pack(side="left", padx=5, pady=2)
-        ttk.Button(bf, text="Disable Source", command=hall._on_disable_source).pack(side="left", padx=5, pady=2)
-        iv_measure_btn = ttk.Button(bf, text="Measure IV Curve", command=hall._on_measure_iv_curve)
-        iv_measure_btn.pack(side="left", padx=5, pady=2)
-        hall.register_measure_button(iv_measure_btn)
+        ttk.Button(hall_button_row, text="Set Offset...", command=hall._open_offset_popup).pack(side="left", padx=5, pady=2)
+        ttk.Button(hall_button_row, text="Enable Source", command=hall._on_enable_source).pack(side="left", padx=5, pady=2)
+        ttk.Button(hall_button_row, text="Disable Source", command=hall._on_disable_source).pack(side="left", padx=5, pady=2)
 
-        aux = ttk.LabelFrame(parent, text="Resistance / IV")
-        aux.pack(fill="x", padx=2, pady=2)
-        ttk.Label(aux, text="R Current (mA):").grid(row=0, column=0, sticky="w", padx=5, pady=2)
-        ttk.Entry(aux, textvariable=hall.k2450_resistance_current_mA, width=10).grid(row=0, column=1, padx=5, pady=2)
-        ttk.Label(aux, text="R Compliance (V):").grid(row=0, column=2, sticky="w", padx=5, pady=2)
-        ttk.Entry(aux, textvariable=hall.k2450_resistance_compliance_v, width=10).grid(row=0, column=3, padx=5, pady=2)
-        ttk.Label(aux, text="R NPLC:").grid(row=1, column=0, sticky="w", padx=5, pady=2)
-        ttk.Entry(aux, textvariable=hall.k2450_resistance_nplc, width=10).grid(row=1, column=1, padx=5, pady=2)
-        ttk.Label(aux, text="R Settle (s):").grid(row=1, column=2, sticky="w", padx=5, pady=2)
-        ttk.Entry(aux, textvariable=hall.k2450_resistance_settle, width=10).grid(row=1, column=3, padx=5, pady=2)
-        ttk.Button(aux, text="Measure Resistance", command=hall._on_measure_resistance).grid(row=1, column=4, padx=5, pady=2)
+        resistance_body = _build_foldable_section(parent, "Resistance", expanded=True)
+        resistance_grid = ttk.Frame(resistance_body)
+        resistance_grid.pack(fill="x")
+        ttk.Label(resistance_grid, text="R Current (mA):").grid(row=0, column=0, sticky="w", padx=5, pady=2)
+        ttk.Entry(resistance_grid, textvariable=hall.k2450_resistance_current_mA, width=10).grid(row=0, column=1, padx=5, pady=2)
+        ttk.Label(resistance_grid, text="R Compliance (V):").grid(row=0, column=2, sticky="w", padx=5, pady=2)
+        ttk.Entry(resistance_grid, textvariable=hall.k2450_resistance_compliance_v, width=10).grid(row=0, column=3, padx=5, pady=2)
+        ttk.Label(resistance_grid, text="R NPLC:").grid(row=1, column=0, sticky="w", padx=5, pady=2)
+        ttk.Entry(resistance_grid, textvariable=hall.k2450_resistance_nplc, width=10).grid(row=1, column=1, padx=5, pady=2)
+        ttk.Label(resistance_grid, text="R Settle (s):").grid(row=1, column=2, sticky="w", padx=5, pady=2)
+        ttk.Entry(resistance_grid, textvariable=hall.k2450_resistance_settle, width=10).grid(row=1, column=3, padx=5, pady=2)
+        resistance_measure_btn = ttk.Button(resistance_grid, text="Measure Resistance", command=hall._on_measure_resistance)
+        resistance_measure_btn.grid(row=0, column=4, rowspan=2, padx=5, pady=2, sticky="nsew")
+        hall.register_measure_button(resistance_measure_btn)
 
-        ttk.Label(aux, text="IV Shape:").grid(row=2, column=0, sticky="w", padx=5, pady=2)
+        iv_body = _build_foldable_section(parent, "IV", expanded=True)
+        iv_layout = ttk.Frame(iv_body)
+        iv_layout.pack(fill="x", padx=2, pady=2)
+        iv_layout.grid_columnconfigure(0, weight=1)
+        iv_layout.grid_columnconfigure(1, weight=1)
+        iv_layout.grid_columnconfigure(2, weight=0)
+
+        iv_left = ttk.Frame(iv_layout)
+        iv_left.grid(row=0, column=0, sticky="nsew", padx=(0, 8))
+        iv_middle = ttk.Frame(iv_layout)
+        iv_middle.grid(row=0, column=1, sticky="nsew", padx=(0, 8))
+        iv_buttons = ttk.Frame(iv_layout)
+        iv_buttons.grid(row=0, column=2, sticky="n", padx=(0, 4))
+
+        ttk.Label(iv_left, text="IV Shape:").grid(row=0, column=0, sticky="w", padx=5, pady=2)
         ttk.OptionMenu(
-            aux,
+            iv_left,
             hall.k2450_iv_shape,
             hall.k2450_iv_shape.get(),
             "start_min_max_start",
             "start_max_min_start",
             "start_min_start",
             "start_max_start",
-        ).grid(row=2, column=1, sticky="w", padx=5, pady=2)
-        ttk.Label(aux, text="Start (mA/V):").grid(row=2, column=2, sticky="w", padx=5, pady=2)
-        ttk.Entry(aux, textvariable=hall.k2450_iv_start, width=10).grid(row=2, column=3, padx=5, pady=2)
-        ttk.Label(aux, text="Min (mA/V):").grid(row=3, column=0, sticky="w", padx=5, pady=2)
-        ttk.Entry(aux, textvariable=hall.k2450_iv_min, width=10).grid(row=3, column=1, padx=5, pady=2)
-        ttk.Label(aux, text="Max (mA/V):").grid(row=3, column=2, sticky="w", padx=5, pady=2)
-        ttk.Entry(aux, textvariable=hall.k2450_iv_max, width=10).grid(row=3, column=3, padx=5, pady=2)
-        ttk.Label(aux, text="Step (mA/V):").grid(row=4, column=0, sticky="w", padx=5, pady=2)
-        ttk.Entry(aux, textvariable=hall.k2450_iv_step, width=10).grid(row=4, column=1, padx=5, pady=2)
-        ttk.Label(aux, text="IV Compliance (V):").grid(row=4, column=2, sticky="w", padx=5, pady=2)
-        ttk.Entry(aux, textvariable=hall.k2450_iv_compliance, width=10).grid(row=4, column=3, padx=5, pady=2)
-        ttk.Label(aux, text="IV NPLC:").grid(row=5, column=0, sticky="w", padx=5, pady=2)
-        ttk.Entry(aux, textvariable=hall.k2450_iv_nplc, width=10).grid(row=5, column=1, padx=5, pady=2)
-        ttk.Label(aux, text="IV Settle (s):").grid(row=5, column=2, sticky="w", padx=5, pady=2)
-        ttk.Entry(aux, textvariable=hall.k2450_iv_settle, width=10).grid(row=5, column=3, padx=5, pady=2)
-        ttk.Label(aux, text="IV Repetitions:").grid(row=6, column=0, sticky="w", padx=5, pady=2)
+        ).grid(row=0, column=1, sticky="w", padx=5, pady=2)
+
+        ttk.Label(iv_left, text="IV Mode:").grid(row=1, column=0, sticky="w", padx=5, pady=2)
+        ttk.OptionMenu(iv_left, hall.k2450_iv_mode, hall.k2450_iv_mode.get(), "current", "voltage").grid(
+            row=1, column=1, sticky="w", padx=5, pady=2
+        )
+        ttk.Label(iv_left, text="Start (mA/V):").grid(row=2, column=0, sticky="w", padx=5, pady=2)
+        ttk.Entry(iv_left, textvariable=hall.k2450_iv_start, width=10).grid(row=2, column=1, padx=5, pady=2)
+        ttk.Label(iv_left, text="Min (mA/V):").grid(row=3, column=0, sticky="w", padx=5, pady=2)
+        ttk.Entry(iv_left, textvariable=hall.k2450_iv_min, width=10).grid(row=3, column=1, padx=5, pady=2)
+        ttk.Label(iv_left, text="Max (mA/V):").grid(row=4, column=0, sticky="w", padx=5, pady=2)
+        ttk.Entry(iv_left, textvariable=hall.k2450_iv_max, width=10).grid(row=4, column=1, padx=5, pady=2)
+        ttk.Label(iv_left, text="Step (mA/V):").grid(row=5, column=0, sticky="w", padx=5, pady=2)
+        ttk.Entry(iv_left, textvariable=hall.k2450_iv_step, width=10).grid(row=5, column=1, padx=5, pady=2)
+
+        ttk.Label(iv_middle, text="IV Compliance (V):").grid(row=0, column=0, sticky="w", padx=5, pady=2)
+        ttk.Entry(iv_middle, textvariable=hall.k2450_iv_compliance, width=10).grid(row=0, column=1, padx=5, pady=2)
+        ttk.Label(iv_middle, text="IV NPLC:").grid(row=1, column=0, sticky="w", padx=5, pady=2)
+        ttk.Entry(iv_middle, textvariable=hall.k2450_iv_nplc, width=10).grid(row=1, column=1, padx=5, pady=2)
+        ttk.Label(iv_middle, text="IV Settle (s):").grid(row=2, column=0, sticky="w", padx=5, pady=2)
+        ttk.Entry(iv_middle, textvariable=hall.k2450_iv_settle, width=10).grid(row=2, column=1, padx=5, pady=2)
+        ttk.Label(iv_middle, text="IV Repetitions:").grid(row=3, column=0, sticky="w", padx=5, pady=2)
         ValidatingEntry(
-            aux,
+            iv_middle,
             textvariable=hall.k2450_iv_repetitions,
             width=10,
             validator=make_float_validator(1.0, 1000.0),
-        ).grid(row=6, column=1, sticky="w", padx=5, pady=2)
-        iv_range_options = ("auto", "0.01", "0.02", "0.1", "0.2", "1", "2", "10", "20", "100", "200", "1050")
-        ttk.Label(aux, text="Source Range:").grid(row=6, column=2, sticky="w", padx=5, pady=2)
-        ttk.OptionMenu(aux, hall.k2450_iv_source_range, hall.k2450_iv_source_range.get(), *iv_range_options).grid(
-            row=6, column=3, sticky="w", padx=5, pady=2
-        )
-        ttk.Label(aux, text="Measure Range:").grid(row=7, column=0, sticky="w", padx=5, pady=2)
-        ttk.OptionMenu(aux, hall.k2450_iv_measure_range, hall.k2450_iv_measure_range.get(), *iv_range_options).grid(
-            row=7, column=1, sticky="w", padx=5, pady=2
-        )
-        ttk.Checkbutton(aux, text="Ramp to start", variable=hall.k2450_iv_ramp_to_start).grid(row=7, column=2, columnspan=2, sticky="w", padx=5, pady=2)
-        ttk.Button(aux, text="Measure IV Curve", command=hall._on_measure_iv_curve).grid(row=7, column=4, padx=5, pady=2)
+        ).grid(row=3, column=1, sticky="w", padx=5, pady=2)
 
-        popup_iv_prog = ttk.LabelFrame(parent, text="IV Progress")
+        source_range_label = ttk.Label(iv_middle, text="Source Range (mA):")
+        source_range_label.grid(row=4, column=0, sticky="w", padx=5, pady=2)
+        source_range_menu = ttk.OptionMenu(
+            iv_middle,
+            hall.k2450_iv_source_range,
+            hall.k2450_iv_source_range.get(),
+            *hall._IV_RANGE_OPTIONS_MA,
+        )
+        source_range_menu.grid(row=4, column=1, sticky="w", padx=5, pady=2)
+
+        measure_range_label = ttk.Label(iv_middle, text="Measure Range (V):")
+        measure_range_label.grid(row=5, column=0, sticky="w", padx=5, pady=2)
+        measure_range_menu = ttk.OptionMenu(
+            iv_middle,
+            hall.k2450_iv_measure_range,
+            hall.k2450_iv_measure_range.get(),
+            *hall._IV_RANGE_OPTIONS_V,
+        )
+        measure_range_menu.grid(row=5, column=1, sticky="w", padx=5, pady=2)
+
+        ttk.Checkbutton(iv_middle, text="Ramp to start", variable=hall.k2450_iv_ramp_to_start).grid(
+            row=6,
+            column=0,
+            columnspan=2,
+            sticky="w",
+            padx=5,
+            pady=2,
+        )
+
+        def _update_popup_iv_range_controls(*_args: object) -> None:
+            mode_norm = str(hall.k2450_iv_mode.get()).strip().lower()
+            if mode_norm in {"current", "source_current", "i"}:
+                source_range_label.configure(text="Source Range (mA):")
+                measure_range_label.configure(text="Measure Range (V):")
+                hall._set_option_menu_values(source_range_menu, hall.k2450_iv_source_range, hall._IV_RANGE_OPTIONS_MA)
+                hall._set_option_menu_values(measure_range_menu, hall.k2450_iv_measure_range, hall._IV_RANGE_OPTIONS_V)
+            else:
+                source_range_label.configure(text="Source Range (V):")
+                measure_range_label.configure(text="Measure Range (mA):")
+                hall._set_option_menu_values(source_range_menu, hall.k2450_iv_source_range, hall._IV_RANGE_OPTIONS_V)
+                hall._set_option_menu_values(measure_range_menu, hall.k2450_iv_measure_range, hall._IV_RANGE_OPTIONS_MA)
+
+        _update_popup_iv_range_controls()
+        self._hall_popup_iv_mode_trace = hall.k2450_iv_mode.trace_add("write", _update_popup_iv_range_controls)
+
+        iv_measure_btn = ttk.Button(iv_buttons, text="Measure IV Curve", command=hall._on_measure_iv_curve)
+        iv_measure_btn.pack(fill="x", padx=4, pady=(2, 6))
+        hall.register_measure_button(iv_measure_btn)
+        ttk.Button(iv_buttons, text="Stop IV", command=hall._on_stop_iv_measurement).pack(fill="x", padx=4, pady=(0, 2))
+
+        popup_iv_prog = ttk.LabelFrame(iv_body, text="IV Progress")
         popup_iv_prog.pack(fill="x", padx=2, pady=4)
         ttk.Progressbar(
             popup_iv_prog,

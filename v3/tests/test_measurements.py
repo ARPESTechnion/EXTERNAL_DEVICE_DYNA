@@ -11,11 +11,14 @@ import unittest
 from enum import IntEnum
 from unittest.mock import MagicMock, patch
 
+from Utility.Mock_Kethley2450 import MockKeithley2450
+
 from v3.core.calibration import CalibrationConfig
 from v3.core.data_manager import DataManager
 from v3.core.helmholtz_controller import HelmholtzController
 from v3.core.instrument_bus import InstrumentBus
 from v3.core.measurements import (
+    IVMeasurementCancelled,
     MeasurementContext,
     NAN,
     _assign_channel_data,
@@ -45,6 +48,7 @@ from v3.core.measurements import (
     configure_channel,
 )
 from v3.core.constants import INST_LOCKIN, INST_KEITHLEY2450, INST_SWITCH, INST_DYNA
+from v3.core.constants import SWITCH_PIN_MAX
 from v3.core.ui_events import UIEventBus
 from v3.core.ui_events import W_HALL_SOURCE_ENABLED, W_LED_HALL, W_LOCKIN_OUTPUT_VOLTAGE
 
@@ -452,6 +456,209 @@ class TestMeasureIvCurve(unittest.TestCase):
         self.assertAlmostEqual(result["points"][0]["IV_Measured_Voltage"], 1.2)
         self.assertAlmostEqual(result["points"][1]["IV_Measured_Voltage"], 2.3)
 
+    def test_fast_voltage_mode_without_source_readback_uses_commanded_voltage(self):
+        ctx = _make_context()
+        mock_k2450 = ctx.bus.get_raw(INST_KEITHLEY2450)
+        mock_k2450.run_iv_sweep_fast.return_value = {
+            "measured": [1e-3, 2e-3],
+        }
+
+        result = measure_iv_curve(
+            ctx,
+            mode="voltage",
+            shape="single",
+            start=0.1,
+            stop=0.2,
+            step=0.1,
+            nplc=1.0,
+            repetitions=1,
+        )
+
+        self.assertEqual(result["engine"], "fast")
+        self.assertEqual(result["point_count"], 2)
+        self.assertAlmostEqual(result["points"][0]["IV_Source_Voltage"], 0.1)
+        self.assertAlmostEqual(result["points"][0]["IV_Measured_Voltage"], 0.1)
+        self.assertAlmostEqual(result["points"][1]["IV_Source_Voltage"], 0.2)
+        self.assertAlmostEqual(result["points"][1]["IV_Measured_Voltage"], 0.2)
+
+    def test_iv_preramp_failure_raises_explicit_error(self):
+        ctx = _make_context()
+        mock_k2450 = ctx.bus.get_raw(INST_KEITHLEY2450)
+        mock_k2450.set_source_current_amps.side_effect = RuntimeError("forced pre-ramp failure")
+
+        with patch("v3.core.measurements.time.sleep", return_value=None):
+            with self.assertRaisesRegex(RuntimeError, "pre-ramp"):
+                measure_iv_curve(
+                    ctx,
+                    mode="current",
+                    shape="single",
+                    start=2e-3,
+                    stop=3e-3,
+                    step=1e-3,
+                    nplc=1.0,
+                    repetitions=1,
+                    ramp_to_start=True,
+                )
+
+    def test_iv_clamps_compliance_when_fixed_measure_range_is_provided(self):
+        ctx = _make_context()
+        mock_k2450 = ctx.bus.get_raw(INST_KEITHLEY2450)
+        mock_k2450.run_iv_sweep_fast.side_effect = RuntimeError("force point mode")
+        mock_k2450.measure_current.return_value = (1e-3, 0.0)
+
+        result = measure_iv_curve(
+            ctx,
+            mode="voltage",
+            shape="single",
+            start=0.1,
+            stop=0.1,
+            step=0.1,
+            measure_range=0.02,
+            auto_range=True,
+            compliance=0.05,
+            nplc=1.0,
+            repetitions=1,
+        )
+
+        self.assertEqual(result["point_count"], 1)
+        self.assertAlmostEqual(
+            float(mock_k2450.apply_voltage.call_args.kwargs["compliance_current"]),
+            0.02,
+        )
+
+    def test_iv_can_be_cancelled_via_stop_callback(self):
+        ctx = _make_context()
+
+        with self.assertRaises(IVMeasurementCancelled):
+            measure_iv_curve(
+                ctx,
+                mode="current",
+                shape="single",
+                start=1e-3,
+                stop=2e-3,
+                step=1e-3,
+                nplc=1.0,
+                repetitions=1,
+                on_should_stop=lambda: True,
+            )
+
+    def test_iv_point_mode_on_progress_called_for_each_point(self):
+        ctx = _make_context()
+        mock_k2450 = ctx.bus.get_raw(INST_KEITHLEY2450)
+        mock_k2450.run_iv_sweep_fast.side_effect = RuntimeError("force point mode")
+        mock_k2450.measure_voltage.side_effect = [(1.0, 0.0), (2.0, 0.0), (3.0, 0.0)]
+        seen = []
+
+        result = measure_iv_curve(
+            ctx,
+            mode="current",
+            shape="single",
+            start=1e-3,
+            stop=3e-3,
+            step=1e-3,
+            nplc=1.0,
+            repetitions=1,
+            on_progress=lambda current, total: seen.append((int(current), int(total))),
+        )
+
+        self.assertEqual(result["engine"], "point")
+        self.assertEqual(result["point_count"], 3)
+        self.assertEqual(seen, [(1, 3), (2, 3), (3, 3)])
+
+    def test_iv_on_progress_callback_exception_does_not_abort(self):
+        ctx = _make_context()
+        mock_k2450 = ctx.bus.get_raw(INST_KEITHLEY2450)
+        mock_k2450.run_iv_sweep_fast.side_effect = RuntimeError("force point mode")
+        mock_k2450.measure_voltage.side_effect = [(1.0, 0.0), (2.0, 0.0)]
+
+        result = measure_iv_curve(
+            ctx,
+            mode="current",
+            shape="single",
+            start=1e-3,
+            stop=2e-3,
+            step=1e-3,
+            nplc=1.0,
+            repetitions=1,
+            on_progress=lambda _current, _total: (_ for _ in ()).throw(RuntimeError("bad callback")),
+        )
+
+        self.assertEqual(result["point_count"], 2)
+
+    def test_fast_iv_non_numeric_payload_falls_back_to_point_mode(self):
+        ctx = _make_context()
+        mock_k2450 = ctx.bus.get_raw(INST_KEITHLEY2450)
+        mock_k2450.run_iv_sweep_fast.return_value = {"measured": [1.0, "bad"]}
+        mock_k2450.measure_voltage.side_effect = [(1.2, 0.0), (2.3, 0.0)]
+
+        result = measure_iv_curve(
+            ctx,
+            mode="current",
+            shape="single",
+            start=1e-3,
+            stop=2e-3,
+            step=1e-3,
+            nplc=1.0,
+            repetitions=1,
+        )
+
+        self.assertEqual(result["engine"], "point")
+        self.assertAlmostEqual(result["points"][0]["IV_Measured_Voltage"], 1.2)
+        self.assertAlmostEqual(result["points"][1]["IV_Measured_Voltage"], 2.3)
+
+    def test_iv_cancel_still_disables_source_in_cleanup(self):
+        ctx = _make_context()
+        mock_k2450 = ctx.bus.get_raw(INST_KEITHLEY2450)
+        mock_k2450.run_iv_sweep_fast.side_effect = RuntimeError("force point mode")
+        mock_k2450.measure_voltage.return_value = (0.5, 0.0)
+
+        call_counter = {"n": 0}
+
+        def _stop_after_some_checks():
+            call_counter["n"] += 1
+            return call_counter["n"] > 8
+
+        with self.assertRaises(IVMeasurementCancelled):
+            measure_iv_curve(
+                ctx,
+                mode="current",
+                shape="single",
+                start=1e-3,
+                stop=4e-3,
+                step=1e-3,
+                nplc=1.0,
+                settle_time=0.1,
+                repetitions=1,
+                on_should_stop=_stop_after_some_checks,
+            )
+
+        self.assertGreaterEqual(mock_k2450.disable_source.call_count, 1)
+
+
+class TestMockKeithley2450FastIv(unittest.TestCase):
+    def test_mock_fast_iv_current_mode_returns_measured_list(self):
+        inst = MockKeithley2450()
+        inst.fast_iv_latency_s = 0.0
+        inst.fast_iv_return_sourced = False
+        payload = inst.run_iv_sweep_fast(mode="source_current", setpoints=[0.001, 0.002], nplc=0.0)
+
+        self.assertIsInstance(payload, list)
+        self.assertEqual(len(payload), 2)
+        self.assertTrue(all(isinstance(v, float) for v in payload))
+
+    def test_mock_fast_iv_voltage_mode_can_return_sourced_and_fail(self):
+        inst = MockKeithley2450()
+        inst.fast_iv_return_sourced = True
+        payload = inst.run_iv_sweep_fast(mode="source_voltage", setpoints=[0.1, 0.2], nplc=0.0)
+
+        self.assertIsInstance(payload, dict)
+        self.assertEqual(len(payload["measured"]), 2)
+        self.assertEqual(len(payload["sourced"]), 2)
+
+        inst.fast_iv_fail = True
+        with self.assertRaises(RuntimeError):
+            inst.run_iv_sweep_fast(mode="source_voltage", setpoints=[0.1], nplc=0.0)
+
     def test_continuous_measure_disables_excitation_management_and_settling_wait(self):
         ctx = _make_context()
         mock_lockin = ctx.bus.get_raw(INST_LOCKIN)
@@ -792,7 +999,7 @@ class TestSwitchCommands(unittest.TestCase):
             configure_channel(ctx, "a", 0, 2, 3, 4)  # out of range
 
         with self.assertRaises(ValueError):
-            configure_channel(ctx, "a", 1, 2, 3, 9)  # out of range (1-8)
+            configure_channel(ctx, "a", 1, 2, 3, SWITCH_PIN_MAX + 1)  # out of range
 
     def test_configure_channel_success(self):
         ctx = _make_context()

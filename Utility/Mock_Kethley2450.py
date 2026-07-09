@@ -26,6 +26,11 @@ class MockKeithley2450:
         self._terminals = 'REAR'
         self._remote_sense = True
         self._load_resistance_ohm = 1200.0
+        self.fast_iv_fail = False
+        self.fast_iv_latency_s = 0.0
+        self.fast_iv_return_sourced = False
+        self.fast_iv_noise_sigma_v = 1e-3
+        self.fast_iv_noise_sigma_a = 1e-6
 
     @property
     def source_mode(self):
@@ -233,6 +238,61 @@ class MockKeithley2450:
     def set_iv_display_mode(self):
         """Mock no-op for IV display mode command compatibility."""
         return None
+
+    def run_iv_sweep_fast(
+        self,
+        *,
+        mode,
+        setpoints,
+        nplc=1,
+        measure_range=None,
+        auto_range=True,
+        settle_time=0.0,
+        repetitions=1,
+    ):
+        mode_norm = str(mode).strip().lower()
+        if mode_norm in {"source_current", "current", "i"}:
+            source_mode = "current"
+        elif mode_norm in {"source_voltage", "voltage", "v"}:
+            source_mode = "voltage"
+        else:
+            raise ValueError("Unsupported IV mode")
+
+        if self.fast_iv_fail:
+            raise RuntimeError("Mock fast IV failure")
+
+        points = [float(v) for v in setpoints]
+        dwell = max(float(self.fast_iv_latency_s), 0.0)
+        dwell += max(float(nplc), 0.0) * 0.02 * max(len(points), 1)
+        if dwell > 0.0:
+            time.sleep(dwell)
+
+        measured = []
+        sourced = []
+        if source_mode == "current":
+            self.source_mode = "current"
+            for current_a in points:
+                self._source_current = current_a
+                v = (current_a * self._load_resistance_ohm) + np.random.normal(0.0, self.fast_iv_noise_sigma_v)
+                measured.append(float(v))
+                sourced.append(float(current_a))
+        else:
+            self.source_mode = "voltage"
+            for voltage_v in points:
+                self._source_voltage = voltage_v
+                if abs(self._load_resistance_ohm) > 1e-12:
+                    i = (voltage_v / self._load_resistance_ohm) + np.random.normal(0.0, self.fast_iv_noise_sigma_a)
+                else:
+                    i = np.random.normal(0.0, self.fast_iv_noise_sigma_a)
+                measured.append(float(i))
+                sourced.append(float(voltage_v))
+
+        if self.fast_iv_return_sourced:
+            return {
+                "measured": measured,
+                "sourced": sourced,
+            }
+        return measured
 
     def write(self, command):
         """Simulate writing a command to the instrument."""

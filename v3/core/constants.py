@@ -118,6 +118,7 @@ CSV_FIELDNAMES: list[str] = [
     "Sample_Resistance(Ohm)",
     "Sample_Resistance_Error(Ohm)",
     "IV_Point",
+    "IV_Sweep_Direction",
     "IV_Source_Current(mA)",
     "IV_Source_Voltage(V)",
     "IV_Measured_Voltage(V)",

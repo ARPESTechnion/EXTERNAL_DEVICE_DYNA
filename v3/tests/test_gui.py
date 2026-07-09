@@ -465,6 +465,73 @@ class TestResultsTabEvents:
         assert tab.data_plot_range_start_var.get() == 6
         assert tab.data_plot_range_end_var.get() == 10
 
+    def test_hall_popup_has_stop_iv_and_mode_aware_range_labels(self, root):
+        from v3.gui.hall_tab import HallTab
+        from v3.gui.results_tab import ResultsTab
+
+        # Build a real HallTab so popup controls bind to actual Hall variables/handlers.
+        hall_app = MagicMock()
+        hall_app.connect_instrument = MagicMock()
+        hall_app.disconnect_instrument = MagicMock()
+        hall_app.root = root
+        hall_app.bus = InstrumentBus()
+        hall_app.data_mgr = MagicMock()
+        hall_app.data_mgr.set_hall_metadata = MagicMock()
+        hall_app.ui_bus = UIEventBus()
+        hall_tab = HallTab(ttk.Frame(root), hall_app)
+        hall_tab.create_widgets()
+
+        app = MagicMock()
+        app.parser = MagicMock()
+        app.validator = MagicMock()
+        app.script_filename = tk.StringVar(value="test.txt")
+        app.bus = InstrumentBus()
+        app.data_mgr = MagicMock()
+        app.data_mgr.get_results.return_value = []
+        app.root = root
+        app.hall_tab = hall_tab
+
+        tab = ResultsTab(ttk.Frame(root), app)
+        host = ttk.Frame(root)
+        tab._build_hall_popup(host)
+        root.update_idletasks()
+
+        def _iter_widgets(widget):
+            yield widget
+            for child in widget.winfo_children():
+                yield from _iter_widgets(child)
+
+        button_texts = [
+            w.cget("text")
+            for w in _iter_widgets(host)
+            if isinstance(w, ttk.Button)
+        ]
+        assert "Stop IV" in button_texts
+
+        label_texts = [
+            w.cget("text")
+            for w in _iter_widgets(host)
+            if isinstance(w, ttk.Label)
+        ]
+        assert "Source Range (mA):" in label_texts
+        assert "Measure Range (V):" in label_texts
+
+        hall_tab.k2450_iv_mode.set("voltage")
+        root.update_idletasks()
+
+        label_texts = [
+            w.cget("text")
+            for w in _iter_widgets(host)
+            if isinstance(w, ttk.Label)
+        ]
+        assert "Source Range (V):" in label_texts
+        assert "Measure Range (mA):" in label_texts
+
+        # Cleanup popup-local trace binding created by _build_hall_popup.
+        if tab._hall_popup_iv_mode_trace is not None:
+            hall_tab.k2450_iv_mode.trace_remove("write", tab._hall_popup_iv_mode_trace)
+            tab._hall_popup_iv_mode_trace = None
+
 
 class TestLockInTabEvents:
     def test_x_y_r_update(self, root):
@@ -670,6 +737,7 @@ class TestHallTabEvents:
         app = MagicMock()
         app.connect_instrument = MagicMock()
         app.disconnect_instrument = MagicMock()
+        app.root = root
         tab = HallTab(frame, app)
         tab.create_widgets()
 
@@ -687,6 +755,70 @@ class TestHallTabEvents:
 
         assert tab.iv_progress_value.get() == pytest.approx(50.0)
         assert "5.0/10.0 s" in tab.iv_progress_text.get()
+
+    def test_iv_progress_ignores_stale_run_id(self, root):
+        from v3.gui.hall_tab import HallTab
+        from v3.core.ui_events import W_IV_PROGRESS
+
+        frame = ttk.Frame(root)
+        app = MagicMock()
+        app.connect_instrument = MagicMock()
+        app.disconnect_instrument = MagicMock()
+        app.root = root
+        tab = HallTab(frame, app)
+        tab.create_widgets()
+
+        tab._iv_active_run_id = 5
+        tab.iv_progress_value.set(12.0)
+        tab.iv_progress_text.set("baseline")
+
+        tab.on_event(
+            W_IV_PROGRESS,
+            {
+                "run_id": 4,
+                "current": 9,
+                "total": 10,
+                "percent": 90.0,
+                "active": True,
+                "elapsed_s": 9.0,
+                "estimated_total_s": 10.0,
+            },
+        )
+
+        assert tab.iv_progress_value.get() == pytest.approx(12.0)
+        assert tab.iv_progress_text.get() == "baseline"
+
+    def test_iv_progress_terminal_event_stops_pulse(self, root):
+        from v3.gui.hall_tab import HallTab
+        from v3.core.ui_events import W_IV_PROGRESS
+
+        frame = ttk.Frame(root)
+        app = MagicMock()
+        app.connect_instrument = MagicMock()
+        app.disconnect_instrument = MagicMock()
+        app.root = root
+        tab = HallTab(frame, app)
+        tab.create_widgets()
+
+        tab._iv_active_run_id = 6
+        tab._iv_progress_active = True
+
+        tab.on_event(
+            W_IV_PROGRESS,
+            {
+                "run_id": 6,
+                "current": 7,
+                "total": 7,
+                "percent": 100.0,
+                "active": False,
+                "elapsed_s": 3.2,
+                "estimated_total_s": 3.0,
+            },
+        )
+
+        assert tab._iv_progress_active is False
+        assert tab.iv_progress_value.get() == pytest.approx(100.0)
+        assert "IV done" in tab.iv_progress_text.get()
 
 
 # ======================================================================
