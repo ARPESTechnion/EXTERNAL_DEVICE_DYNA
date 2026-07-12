@@ -1731,10 +1731,10 @@ class ResultsTab(BaseTab):
             self.ax2.clear()
             self.ax1.set_title("Graph 1")
             self.ax2.set_title("Graph 2")
-            self.ax1.set_xlabel(self.x1_var.get())
-            self.ax1.set_ylabel(self.y1_var.get())
-            self.ax2.set_xlabel(self.x2_var.get())
-            self.ax2.set_ylabel(self.y2_var.get())
+            self.ax1.set_xlabel(self.x1_var.get().replace("_", " "))
+            self.ax1.set_ylabel(self.y1_var.get().replace("_", " "))
+            self.ax2.set_xlabel(self.x2_var.get().replace("_", " "))
+            self.ax2.set_ylabel(self.y2_var.get().replace("_", " "))
             self.ax1.tick_params(axis="both", which="both", direction="in")
             self.ax2.tick_params(axis="both", which="both", direction="in")
             self._apply_plot_grid(self.ax1)
@@ -1781,7 +1781,8 @@ class ResultsTab(BaseTab):
             selected_channels = self._selected_channels_for_graph(graph_index)
             x_label = xvar.get()
             y_label = yvar.get()
-            x_key = self._resolve_plot_key(x_label)
+            x_label_display = x_label.replace("_", " ")
+            y_label_display = y_label.replace("_", " ")
             y_key = self._resolve_plot_key(y_label)
             style = style_var.get()
             color = self._resolve_plot_color(color_var.get())
@@ -1873,11 +1874,11 @@ class ResultsTab(BaseTab):
                 "series": graph_series,
             }
 
-            ax.set_xlabel(x_label)
+            ax.set_xlabel(x_label_display)
             if derivative_enabled:
-                ax.set_ylabel(f"d({y_label})/d({x_label})")
+                ax.set_ylabel(f"d({y_label_display})/d({x_label_display})")
             else:
-                ax.set_ylabel(y_label)
+                ax.set_ylabel(y_label_display)
             ax.tick_params(axis="both", which="both", direction="in")
             self._apply_plot_grid(ax)
             if plotted_series > 0 and (len(selected_channels) > 1 or fit_enabled):

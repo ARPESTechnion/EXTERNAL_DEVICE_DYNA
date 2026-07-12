@@ -353,6 +353,7 @@ class TestMeasureIvCurve(unittest.TestCase):
         self.assertEqual(result["point_count"], 2)
         self.assertAlmostEqual(result["points"][0]["IV_Point"], 1)
         self.assertAlmostEqual(result["points"][0]["IV_Source_Voltage"], 0.1)
+        self.assertAlmostEqual(result["points"][0]["IV_Measured_Voltage"], 0.1)
         self.assertAlmostEqual(result["points"][0]["IV_Measured_Current"], 1.0)
         self.assertNotIn("IV_Resistance", result["points"][0])
 
@@ -427,9 +428,11 @@ class TestMeasureIvCurve(unittest.TestCase):
         self.assertEqual(result["point_count"], 2)
         self.assertAlmostEqual(result["points"][0]["IV_Measured_Voltage"], 0.11)
         self.assertAlmostEqual(result["points"][1]["IV_Measured_Voltage"], 0.22)
-        # Source current should come from Keithley buffer readback (A -> mA conversion).
-        self.assertAlmostEqual(result["points"][0]["IV_Source_Current"], 1.2)
-        self.assertAlmostEqual(result["points"][1]["IV_Source_Current"], 2.3)
+        # Source current should be the commanded setpoint; measured current is the buffer readback.
+        self.assertAlmostEqual(result["points"][0]["IV_Source_Current"], 1.0)
+        self.assertAlmostEqual(result["points"][1]["IV_Source_Current"], 2.0)
+        self.assertAlmostEqual(result["points"][0]["IV_Measured_Current"], 1.2)
+        self.assertAlmostEqual(result["points"][1]["IV_Measured_Current"], 2.3)
 
     def test_fast_iv_repetitions_invalid_payload_falls_back_to_point_mode(self):
         ctx = _make_context()
@@ -452,6 +455,7 @@ class TestMeasureIvCurve(unittest.TestCase):
         )
 
         self.assertEqual(result["engine"], "point")
+        self.assertIs(result["fallback_used"], True)
         self.assertEqual(result["point_count"], 2)
         self.assertAlmostEqual(result["points"][0]["IV_Measured_Voltage"], 1.2)
         self.assertAlmostEqual(result["points"][1]["IV_Measured_Voltage"], 2.3)

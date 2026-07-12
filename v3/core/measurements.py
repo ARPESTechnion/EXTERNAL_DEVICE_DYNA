@@ -845,7 +845,14 @@ def measure_iv_curve(
     cleanup_ramped_to_start = False
     cleanup_reset_to_zero = False
     cleanup_source_disabled = False
+    fallback_reason: str | None = None
     engine_mode = "point"
+
+    def _mark_fallback(reason: str) -> None:
+        nonlocal engine_mode, fallback_reason
+        engine_mode = "point"
+        if fallback_reason is None:
+            fallback_reason = str(reason)
 
     def _maybe_refresh_env() -> tuple[float, float]:
         nonlocal _env_last_time, _last_temp, _last_field
@@ -986,6 +993,7 @@ def measure_iv_curve(
                     fast_values, fast_sourced = _normalize_fast_payload(fast_raw, len(setpoints), reps_i)
                     engine_mode = "fast"
                 except Exception:
+                    _mark_fallback("fast-path setup failed in current mode")
                     logger.info("Fast IV path unavailable; falling back to point mode", exc_info=True)
 
             if fast_values is not None:
@@ -1005,7 +1013,7 @@ def measure_iv_curve(
                             "Channel": active_channel,
                             "IV_Point": index,
                             "IV_Sweep_Direction": _sp_directions[index - 1],
-                            "IV_Source_Current": sourced_current_a * 1e3,
+                            "IV_Source_Current": float(source_current_a) * 1e3,
                             "IV_Source_Voltage": NAN,
                             "IV_Measured_Voltage": measured_voltage_v,
                             "IV_Measured_Current": sourced_current_a * 1e3,
@@ -1026,6 +1034,7 @@ def measure_iv_curve(
                             except Exception:
                                 logger.debug("IV on_progress callback failed", exc_info=True)
                 except Exception:
+                    _mark_fallback("fast payload processing failed in current mode")
                     logger.info("Fast IV processing failed; falling back to point mode", exc_info=True)
                     fast_values = None
                     points.clear()
@@ -1118,6 +1127,7 @@ def measure_iv_curve(
                     fast_values, fast_sourced = _normalize_fast_payload(fast_raw, len(setpoints), reps_i)
                     engine_mode = "fast"
                 except Exception:
+                    _mark_fallback("fast-path setup failed in voltage mode")
                     logger.info("Fast IV path unavailable; falling back to point mode", exc_info=True)
 
             if fast_values is not None:
@@ -1139,8 +1149,8 @@ def measure_iv_curve(
                             "IV_Point": index,
                             "IV_Sweep_Direction": _sp_directions[index - 1],
                             "IV_Source_Current": NAN,
-                            "IV_Source_Voltage": sourced_voltage_v,
-                            "IV_Measured_Voltage": commanded_voltage_v,
+                            "IV_Source_Voltage": commanded_voltage_v,
+                            "IV_Measured_Voltage": sourced_voltage_v,
                             "IV_Measured_Current": measured_current_a * 1e3,
                             "Temp": cur_temp,
                             "In-plane_Field": cur_field,
@@ -1159,6 +1169,7 @@ def measure_iv_curve(
                             except Exception:
                                 logger.debug("IV on_progress callback failed", exc_info=True)
                 except Exception:
+                    _mark_fallback("fast payload processing failed in voltage mode")
                     logger.info("Fast IV processing failed; falling back to point mode", exc_info=True)
                     fast_values = None
                     points.clear()
@@ -1253,6 +1264,9 @@ def measure_iv_curve(
         "shape": normalized_shape,
         "point_count": len(points),
         "engine": engine_mode,
+        "fast_requested": bool(setpoints),
+        "fallback_used": bool(setpoints) and engine_mode != "fast",
+        "fallback_reason": fallback_reason,
         "points": points,
         "cleanup": {
             "ramped_to_start": cleanup_ramped_to_start,

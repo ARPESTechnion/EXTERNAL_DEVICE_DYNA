@@ -589,36 +589,37 @@ class Keithley2450Wrapper:
                     f"Fast IV trace incomplete: expected {chunk_count} points, got {active}"
                 )
 
+            def _query_trace_window_values(start_idx, end_idx, element, expected_count):
+                last_exc = None
+                for _attempt in range(4):
+                    try:
+                        raw = self.instrument.ask(
+                            f'TRAC:DATA? {start_idx}, {end_idx}, "defbuffer1", {element}'
+                        )
+                        parsed = self._parse_csv_float_tokens(raw)
+                        if len(parsed) < expected_count:
+                            raise RuntimeError(
+                                f"Fast IV {element} payload too short at [{start_idx}:{end_idx}]: "
+                                f"expected {expected_count}, got {len(parsed)}"
+                            )
+                        return [float(v) for v in parsed[-expected_count:]]
+                    except Exception as exc:
+                        last_exc = exc
+                        if self._is_undefined_header(exc):
+                            raise
+                        time.sleep(0.03)
+                raise RuntimeError(
+                    f"Fast IV {element} window read failed at [{start_idx}:{end_idx}]: {last_exc}"
+                )
+
             chunk_measured = []
             chunk_sourced = []
             window = 200
             for start_idx in range(1, chunk_count + 1, window):
                 end_idx = min(chunk_count, start_idx + window - 1)
                 expected = end_idx - start_idx + 1
-                window_measured = None
-                window_sourced = None
-                last_exc = None
-                for _attempt in range(4):
-                    try:
-                        raw = self.instrument.ask(
-                            f'TRAC:DATA? {start_idx}, {end_idx}, "defbuffer1", READ,SOUR'
-                        )
-                        parsed = self._parse_csv_float_tokens(raw)
-                        window_measured, window_sourced = self._pick_trace_layout(
-                            parsed,
-                            expected,
-                            chunk_setpoints[start_idx - 1:end_idx],
-                        )
-                        break
-                    except Exception as exc:
-                        last_exc = exc
-                        if self._is_undefined_header(exc):
-                            raise
-                        time.sleep(0.03)
-                if window_measured is None or window_sourced is None:
-                    raise RuntimeError(
-                        f"Fast IV window read failed at [{start_idx}:{end_idx}]: {last_exc}"
-                    )
+                window_measured = _query_trace_window_values(start_idx, end_idx, "READ", expected)
+                window_sourced = _query_trace_window_values(start_idx, end_idx, "SOUR", expected)
                 chunk_measured.extend(window_measured)
                 chunk_sourced.extend(window_sourced)
 

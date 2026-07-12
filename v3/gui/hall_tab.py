@@ -148,6 +148,7 @@ class HallTab(BaseTab):
         self.k2450_iv_settle = tk.DoubleVar(value=0.0)
         self.k2450_iv_repetitions = tk.IntVar(value=1)
         self.k2450_iv_ramp_to_start = tk.BooleanVar(value=True)
+        self.k2450_iv_reset_to_zero = tk.BooleanVar(value=True)
         self.k2450_iv_env_interval = tk.DoubleVar(value=0.0)
 
         ttk.Label(sf, text="Hall Bar Preset:").grid(row=0, column=0, sticky="w", padx=5, pady=2)
@@ -269,7 +270,8 @@ class HallTab(BaseTab):
 
         ramp_row = ttk.Frame(aux)
         ramp_row.grid(row=6, column=0, columnspan=6, sticky="w", padx=5, pady=2)
-        ttk.Checkbutton(ramp_row, text="Ramp", variable=self.k2450_iv_ramp_to_start).pack(side="left")
+        ttk.Checkbutton(ramp_row, text="Ramp to start", variable=self.k2450_iv_ramp_to_start).pack(side="left")
+        ttk.Checkbutton(ramp_row, text="Reset to zero", variable=self.k2450_iv_reset_to_zero).pack(side="left", padx=(10, 0))
         ttk.Label(ramp_row, text="Env sample interval (s):").pack(side="left", padx=(20, 2))
         ValidatingEntry(ramp_row, textvariable=self.k2450_iv_env_interval, width=7, validator=make_float_validator(0.0, 3600.0)).pack(side="left")
         self.k2450_aux_result = ttk.Label(aux, text="R / IV: ---", width=44)
@@ -387,7 +389,7 @@ class HallTab(BaseTab):
             "settle_time": settle_s,
             "repetitions": repetitions,
             "keep_output": False,
-            "reset_to_zero": bool(self.k2450_iv_ramp_to_start.get()),
+            "reset_to_zero": bool(self.k2450_iv_reset_to_zero.get()),
             "ramp_to_start": bool(self.k2450_iv_ramp_to_start.get()),
             "env_sample_interval": env_sample_interval,
         }
@@ -832,7 +834,8 @@ class HallTab(BaseTab):
         ttk.Label(ivf, text="Repetitions:").grid(row=4, column=2, sticky="w", padx=5, pady=2)
         ttk.Entry(ivf, textvariable=self.k2450_iv_repetitions, width=10).grid(row=4, column=3, padx=5, pady=2)
 
-        ttk.Checkbutton(ivf, text="Ramp", variable=self.k2450_iv_ramp_to_start).grid(row=5, column=0, columnspan=2, sticky="w", padx=5, pady=2)
+        ttk.Checkbutton(ivf, text="Ramp to start", variable=self.k2450_iv_ramp_to_start).grid(row=5, column=0, sticky="w", padx=5, pady=2)
+        ttk.Checkbutton(ivf, text="Reset to zero", variable=self.k2450_iv_reset_to_zero).grid(row=5, column=1, sticky="w", padx=5, pady=2)
         ttk.Label(ivf, text="Env sample interval (s):").grid(row=5, column=2, sticky="w", padx=5, pady=2)
         ttk.Entry(ivf, textvariable=self.k2450_iv_env_interval, width=10).grid(row=5, column=3, padx=5, pady=2)
         ttk.Button(ivf, text="Measure IV Curve", command=self._on_measure_iv_curve).grid(row=6, column=0, columnspan=2, pady=4)
@@ -1300,6 +1303,14 @@ class HallTab(BaseTab):
                 elif not isinstance(rows, list):
                     rows = []
 
+                fallback_used = bool(result.get("fallback_used", False))
+                fallback_reason = str(result.get("fallback_reason", "")).strip()
+                if fallback_used:
+                    note = "IV fallback: point-by-point mode used"
+                    if fallback_reason:
+                        note = f"{note} ({fallback_reason})"
+                    ctx.data_mgr.append_note(note)
+
                 wrote = ctx.data_mgr.write_rows(rows, measurement_type="IV")
                 if wrote <= 0 and rows:
                     fallback_wrote = 0
@@ -1320,6 +1331,8 @@ class HallTab(BaseTab):
                     if engine == "fast"
                     else "IV engine: point-by-point fallback"
                 )
+                if fallback_used and fallback_reason:
+                    engine_msg = f"{engine_msg} ({fallback_reason})"
 
                 def _apply() -> None:
                     if run_id != self._iv_active_run_id:
