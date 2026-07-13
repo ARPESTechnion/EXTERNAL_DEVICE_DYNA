@@ -174,10 +174,18 @@ Public Function MV_IsFinite(ByVal x As Double) As Boolean
     MV_IsFinite = (Abs(x) < 1E90)
 End Function
 
+Public Function MV_TimerElapsedSeconds(ByVal tStart As Double, ByVal tEnd As Double) As Double
+    If tEnd >= tStart Then
+        MV_TimerElapsedSeconds = tEnd - tStart
+    Else
+        MV_TimerElapsedSeconds = (86400# - tStart) + tEnd
+    End If
+End Function
+
 Public Sub MV_WaitSeconds(ByVal seconds As Double)
     Dim t0 As Double
     t0 = Timer
-    Do While (Timer - t0) < seconds
+    Do While MV_TimerElapsedSeconds(t0, Timer) < seconds
         DoEvents
     Loop
 End Sub

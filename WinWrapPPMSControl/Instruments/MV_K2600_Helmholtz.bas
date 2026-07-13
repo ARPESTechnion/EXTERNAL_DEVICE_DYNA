@@ -298,7 +298,7 @@ Public Function Helm_WaitStable(ByVal timeout_s As Double, Optional ByVal delay_
 
         MV_WaitSeconds MV_DEFAULT_POLL_S
         DoEvents
-    Loop While (Timer - t0) < timeout_s
+    Loop While MV_TimerElapsedSeconds(t0, Timer) < timeout_s
 
 Fail:
     MV_SetError "Helmholtz stability timeout"

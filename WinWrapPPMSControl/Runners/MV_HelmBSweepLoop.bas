@@ -326,7 +326,7 @@ Private Function WaitForEtoDataReady(ByVal filePath As String, ByVal minDataRows
 
         MV_WaitSeconds 0.2
         DoEvents
-    Loop While (Timer - t0) < timeout_s
+    Loop While MV_TimerElapsedSeconds(t0, Timer) < timeout_s
 
     WaitForEtoDataReady = False
 End Function

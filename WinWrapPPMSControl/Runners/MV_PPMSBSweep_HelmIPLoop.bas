@@ -3,7 +3,7 @@
 '#Uses "..\Analysis\MV_HelmholtzLog.bas"
 '#Uses "..\Instruments\MV_K2600_Helmholtz.bas"
 '#Uses "..\Analysis\MV_IV_PostAnalysis.bas"
-'#Uses "..\MV_RunWrappers.bas"
+'#Uses "..\Runners\MV_RunWrappers.bas"
 '#Uses "..\..\Utility\Macros__QD_Library_Oct_2015\MultiVuDataFile\MultiVuDataFile.cls"
 
 Option Explicit
@@ -19,6 +19,12 @@ Private Const IV_CH2_AVG_COL As Long = 32
 Private Const IV_CH2_GAIN_COL As Long = 43
 
 Private Const BAD_VALUE As Double = -9.9E99
+Private Const BG_SOURCE_NONE As Long = 0
+Private Const BG_SOURCE_PRE_ONLY As Long = 1
+Private Const BG_SOURCE_POST_ONLY As Long = 2
+Private Const BG_SOURCE_PRE_POST_INTERP As Long = 3
+Private Const BG_SOURCE_PRE_SWEEP As Long = 10
+Private Const BG_SOURCE_POST_SWEEP As Long = 11
 
 Public Sub fn_PPMS_BSweep_Helm_IP( _
     ByVal OOP_Field_Start As Double, _
@@ -102,6 +108,18 @@ Public Sub fn_PPMS_BSweep_Helm_IP( _
 
     Dim prevPostZeroByIP() As Double
     Dim prevPostValidByIP() As Boolean
+    Dim mainRawFieldByStep() As Double
+    Dim mainFieldZeroByStep() As Double
+    Dim mainBgPreByStep() As Double
+    Dim mainBgPostByStep() As Double
+    Dim mainFitR2ByStep() As Double
+    Dim mainFitRmsByStep() As Double
+    Dim mainSourceCodeByStep() As Long
+    Dim mainNextAppendBlockIndex As Long
+    Dim consecutiveAppendFail As Long
+    Dim recoveredAppendCount As Long
+    Dim pendingAppendCount As Long
+    Dim appendBlockIndexBefore As Long
 
     ' Resolve loop counts and signed steps for Temp/IP/OOP scans.
     If Not BuildLoop(Temp_Start, Temp_End, Temp_Step, Temp_Step_Actual, N_Temps) Then Exit Sub
@@ -155,7 +173,7 @@ Public Sub fn_PPMS_BSweep_Helm_IP( _
         skipHelmSetWait = False
         If Abs(InPlane_Helm_Oe) < 1 Then
             currentHelmField_Oe = Helm_GetField_Oe()
-            If currentHelmField_Oe > BAD_VALUE / 2# Then
+            If MV_IsFinite(currentHelmField_Oe) Then
                 skipHelmSetWait = (Abs(currentHelmField_Oe) < 2#)
             End If
         End If
@@ -191,6 +209,7 @@ Public Sub fn_PPMS_BSweep_Helm_IP( _
                         Bg_Field_End, _
                         Bg_Field_Step, _
                         Bg_Field_Rate, _
+                        BG_SOURCE_PRE_SWEEP, _
                         Bg_MinPointsForFit, _
                         preZero_Oe, _
                         preR2, _
@@ -217,6 +236,15 @@ Public Sub fn_PPMS_BSweep_Helm_IP( _
             fitR2 = preR2
             fitRms = preRms
         End If
+        ReDim mainRawFieldByStep(1 To N_OOP)
+        ReDim mainFieldZeroByStep(1 To N_OOP)
+        ReDim mainBgPreByStep(1 To N_OOP)
+        ReDim mainBgPostByStep(1 To N_OOP)
+        ReDim mainFitR2ByStep(1 To N_OOP)
+        ReDim mainFitRmsByStep(1 To N_OOP)
+        ReDim mainSourceCodeByStep(1 To N_OOP)
+        mainNextAppendBlockIndex = 0
+        consecutiveAppendFail = 0
 
         For IOOP = 1 To N_OOP
             tStepStart = Timer
@@ -225,7 +253,9 @@ Public Sub fn_PPMS_BSweep_Helm_IP( _
             DynaCool.SetField(OOP_Field_Target, OOP_Field_Rate, 0, 0) 'mvseq:fn_PPMS_BSweep_Helm_IP.seq(1)>0009 Set OOP field point
             DynaCool.WaitFor(2, 0, 0) 'mvseq:fn_PPMS_BSweep_Helm_IP.seq(1)>0010 Brief settle OOP
 
-            Call Helm_MeasureAndLog() 'mvseq:fn_PPMS_BSweep_Helm_IP.seq(1)>0011 Helm measure log
+            If Not Helm_MeasureAndLog() Then 'mvseq:fn_PPMS_BSweep_Helm_IP.seq(1)>0011 Helm measure log
+                MV_Log "[SEQ][WARN] Helm measure/log failed at OOP step " & CStr(IOOP)
+            End If
 
             If Measure_Ch1_Hall Then
                 DynaCool.SequenceMeasure("ETOIV 'C:\QdDynacool\default_ETO.qmap' 0 0 " & ETOIV_Params) 'mvseq:fn_PPMS_BSweep_Helm_IP.seq(1)>0012 ETOIV Ch1
@@ -234,32 +264,82 @@ Public Sub fn_PPMS_BSweep_Helm_IP( _
             tAfterETO = Timer
 
             ' During the main sweep we apply PRE-only correction for live output.
-            sourceCode = 0
+            sourceCode = BG_SOURCE_NONE
             fieldZero_Oe = BAD_VALUE
             If preOk Then
                 fieldZero_Oe = preZero_Oe
-                sourceCode = 1
+                sourceCode = BG_SOURCE_PRE_ONLY
             End If
+
+            mainRawFieldByStep(IOOP) = OOP_Field_Target
+            mainFieldZeroByStep(IOOP) = fieldZero_Oe
+            mainBgPreByStep(IOOP) = bgPreForRow
+            mainBgPostByStep(IOOP) = bgPostForRow
+            mainFitR2ByStep(IOOP) = fitR2
+            mainFitRmsByStep(IOOP) = fitRms
+            mainSourceCodeByStep(IOOP) = sourceCode
 
             DynaCool.WaitFor(0, 1, 0) 'mvseq:fn_PPMS_BSweep_Helm_IP.seq(1)>0013 Flush ETO buffer (main live append)
             tAfterWait = Timer
-            appendOk = AppendWithRetry(ETO_DataFile, _
-                                       Measure_Ch1_Hall, _
-                                       OOP_Field_Target, _
-                                       fieldZero_Oe, _
-                                       bgPreForRow, _
-                                       bgPostForRow, _
-                                       fitR2, _
-                                       fitRms, _
-                                       sourceCode)
+            appendBlockIndexBefore = mainNextAppendBlockIndex
+            Do While mainNextAppendBlockIndex < IOOP
+                appendOk = AppendWithRetry(ETO_DataFile, _
+                                           mainNextAppendBlockIndex, _
+                                           Measure_Ch1_Hall, _
+                                           mainRawFieldByStep(mainNextAppendBlockIndex + 1), _
+                                           mainFieldZeroByStep(mainNextAppendBlockIndex + 1), _
+                                           mainBgPreByStep(mainNextAppendBlockIndex + 1), _
+                                           mainBgPostByStep(mainNextAppendBlockIndex + 1), _
+                                           mainFitR2ByStep(mainNextAppendBlockIndex + 1), _
+                                           mainFitRmsByStep(mainNextAppendBlockIndex + 1), _
+                                           mainSourceCodeByStep(mainNextAppendBlockIndex + 1))
+                If Not appendOk Then Exit Do
+                mainNextAppendBlockIndex = mainNextAppendBlockIndex + 1
+            Loop
             waitMs = TimerElapsedMs(tAfterETO, tAfterWait)
             appendMs = TimerElapsedMs(tAfterWait, Timer)
             totalMs = TimerElapsedMs(tStepStart, Timer)
-            If Not appendOk Then
-                MV_Log "[SEQ][WARN] Main live append failed at OOP step " & CStr(IOOP)
+            appendOk = (mainNextAppendBlockIndex = IOOP)
+            If appendOk Then
+                consecutiveAppendFail = 0
+            Else
+                If mainNextAppendBlockIndex = appendBlockIndexBefore Then
+                    consecutiveAppendFail = consecutiveAppendFail + 1
+                End If
+                pendingAppendCount = IOOP - mainNextAppendBlockIndex
+                MV_Log "[SEQ][WARN] Main live append pending after OOP step " & CStr(IOOP) & _
+                       " (pending=" & CStr(pendingAppendCount) & ", consecutive fails=" & CStr(consecutiveAppendFail) & ")"
             End If
             MV_Log "[SEQ][TIMING] step=" & CStr(IOOP) & " wait_ms=" & Format(waitMs, "0") & " append_ms=" & Format(appendMs, "0") & " total_ms=" & Format(totalMs, "0") & " append_ok=" & CStr(IIf(appendOk, 1, 0))
         Next IOOP
+
+        If mainNextAppendBlockIndex < N_OOP Then
+            pendingAppendCount = N_OOP - mainNextAppendBlockIndex
+            MV_Log "[SEQ] Catch-up pass: " & CStr(pendingAppendCount) & " main-sweep step(s) may be pending"
+            DynaCool.WaitFor(0, 1, 0) ' allow last ETO blocks to flush
+            recoveredAppendCount = 0
+            Do While mainNextAppendBlockIndex < N_OOP
+                appendOk = AppendWithRetry(ETO_DataFile, _
+                                           mainNextAppendBlockIndex, _
+                                           Measure_Ch1_Hall, _
+                                           mainRawFieldByStep(mainNextAppendBlockIndex + 1), _
+                                           mainFieldZeroByStep(mainNextAppendBlockIndex + 1), _
+                                           mainBgPreByStep(mainNextAppendBlockIndex + 1), _
+                                           mainBgPostByStep(mainNextAppendBlockIndex + 1), _
+                                           mainFitR2ByStep(mainNextAppendBlockIndex + 1), _
+                                           mainFitRmsByStep(mainNextAppendBlockIndex + 1), _
+                                           mainSourceCodeByStep(mainNextAppendBlockIndex + 1))
+                If Not appendOk Then Exit Do
+                mainNextAppendBlockIndex = mainNextAppendBlockIndex + 1
+                recoveredAppendCount = recoveredAppendCount + 1
+            Loop
+            If recoveredAppendCount > 0 Then
+                MV_Log "[SEQ] Catch-up recovered " & CStr(recoveredAppendCount) & " main-sweep step(s)"
+            End If
+            If mainNextAppendBlockIndex < N_OOP Then
+                MV_Log "[SEQ][WARN] " & CStr(N_OOP - mainNextAppendBlockIndex) & " main-sweep step(s) could not be recovered"
+            End If
+        End If
 
         ' ------- Post-run settle and optional POST background measurement -------
         DynaCool.SetTemperature(2.8, 10, 0) 'mvseq:fn_PPMS_BSweep_Helm_IP.seq(1)>00014 Set temp above TC after sweep
@@ -282,6 +362,7 @@ Public Sub fn_PPMS_BSweep_Helm_IP( _
                         Bg_Field_End, _
                         Bg_Field_Step, _
                         Bg_Field_Rate, _
+                        BG_SOURCE_POST_SWEEP, _
                         Bg_MinPointsForFit, _
                         postZero_Oe, _
                         postR2, _
@@ -326,6 +407,8 @@ Private Function BuildLoop(ByVal startValue As Double, _
                            ByVal stepInput As Double, _
                            ByRef actualStep As Double, _
                            ByRef count As Long) As Boolean
+    Dim intervalCount As Double
+    Dim roundedIntervals As Long
 
     If startValue = endValue Then
         actualStep = 0#
@@ -341,7 +424,16 @@ Private Function BuildLoop(ByVal startValue As Double, _
     End If
 
     actualStep = Sgn(endValue - startValue) * Abs(stepInput)
-    count = CLng(Fix((Abs(endValue - startValue) / Abs(stepInput)) + 0.5)) + 1
+    intervalCount = Abs(endValue - startValue) / Abs(stepInput)
+    roundedIntervals = CLng(Fix(intervalCount + 0.5))
+    If Abs(intervalCount - CDbl(roundedIntervals)) > 0.000001 Then
+        MV_SetError "Loop range must be divisible by step: start=" & CStr(startValue) & _
+                    " end=" & CStr(endValue) & " step=" & CStr(stepInput)
+        BuildLoop = False
+        Exit Function
+    End If
+
+    count = roundedIntervals + 1
     BuildLoop = True
 End Function
 
@@ -414,9 +506,10 @@ Private Function AppendSweepWithCorrections(ByVal etoDataPath As String, _
         correctedField_Oe = rawField_Oe - offsetUsed_Oe
 
         If Not AppendWithRetry(etoDataPath, _
-                               measureCh1, _
-                               rawField_Oe, _
-                               correctedField_Oe, _
+                       i - 1, _
+                       measureCh1, _
+                       rawField_Oe, _
+                       offsetUsed_Oe, _
                                bgPreForRow, _
                                bgPostForRow, _
                                fitR2, _
@@ -431,6 +524,7 @@ Private Function AppendSweepWithCorrections(ByVal etoDataPath As String, _
 End Function
 
 Private Function AppendWithRetry(ByVal etoDataPath As String, _
+                                 ByVal blockIndex As Long, _
                                  ByVal measureCh1 As Boolean, _
                                  ByVal rawField_Oe As Double, _
                                  ByVal fieldZero_Oe As Double, _
@@ -446,7 +540,7 @@ Private Function AppendWithRetry(ByVal etoDataPath As String, _
 
     For i = 1 To 25
         recordedField_Oe = rawField_Oe
-        If IV_ExtractBlockTempFieldFromFile(etoDataPath, MV_PostAnalysisStepIndex, extractedTemp_K, recordedField_Oe) Then
+        If IV_ExtractBlockTempFieldFromFile(etoDataPath, blockIndex, extractedTemp_K, recordedField_Oe) Then
             If Not MV_IsFinite(recordedField_Oe) Then
                 recordedField_Oe = rawField_Oe
             End If
@@ -461,30 +555,31 @@ Private Function AppendWithRetry(ByVal etoDataPath As String, _
             correctedField_Oe = recordedField_Oe - fieldZero_Oe
         End If
 
-        If PostAnalysis_AppendAfterETO(etoDataPath, _
-                                       False, _
-                                       measureCh1, _
-                                       True, _
-                                       False, _
-                                       True, _
-                                       IV_CH1_CURR_COL, _
-                                       IV_CH1_VOLT_COL, _
-                                       IV_CH1_AVG_COL, _
-                                       IV_CH1_GAIN_COL, _
-                                       IV_CH2_CURR_COL, _
-                                       IV_CH2_VOLT_COL, _
-                                       IV_CH2_AVG_COL, _
-                                       IV_CH2_GAIN_COL, _
-                                       BAD_VALUE, _
-                                       recordedField_Oe, _
-                                       BAD_VALUE, _
-                                       BAD_VALUE, _
-                                       correctedField_Oe, _
-                                       bgZeroPre_Oe, _
-                                       bgZeroPost_Oe, _
-                                       bgFitR2, _
-                                       bgFitRms, _
-                                       bgSourceCode) Then
+        If PostAnalysis_AppendAfterETOBlock(etoDataPath, _
+                                            blockIndex, _
+                                            False, _
+                                            measureCh1, _
+                                            True, _
+                                            False, _
+                                            True, _
+                                            IV_CH1_CURR_COL, _
+                                            IV_CH1_VOLT_COL, _
+                                            IV_CH1_AVG_COL, _
+                                            IV_CH1_GAIN_COL, _
+                                            IV_CH2_CURR_COL, _
+                                            IV_CH2_VOLT_COL, _
+                                            IV_CH2_AVG_COL, _
+                                            IV_CH2_GAIN_COL, _
+                                            BAD_VALUE, _
+                                            recordedField_Oe, _
+                                            BAD_VALUE, _
+                                            BAD_VALUE, _
+                                            correctedField_Oe, _
+                                            bgZeroPre_Oe, _
+                                            bgZeroPost_Oe, _
+                                            bgFitR2, _
+                                            bgFitRms, _
+                                            bgSourceCode) Then
             AppendWithRetry = True
             Exit Function
         End If
@@ -509,6 +604,7 @@ Private Function RunBackgroundSweepAndFit(ByVal etoiVParams As String, _
                                           ByVal bgFieldEnd As Double, _
                                           ByVal bgFieldStep As Double, _
                                           ByVal bgFieldRate As Double, _
+                                          ByVal bgSourceCode As Long, _
                                           ByVal minPoints As Long, _
                                           ByRef outZero_Oe As Double, _
                                           ByRef outR2 As Double, _
@@ -526,8 +622,11 @@ Private Function RunBackgroundSweepAndFit(ByVal etoiVParams As String, _
 
     Dim x() As Double
     Dim y() As Double
+    Dim bgCommandFieldByStep() As Double
     Dim fitN As Long
     Dim coeff(0 To 4) As Double
+    Dim bgNextAppendBlockIndex As Long
+    Dim bgRecoveredCount As Long
 
     If Not BuildLoop(bgFieldStart, bgFieldEnd, bgFieldStep, bgStepActual, nBg) Then
         RunBackgroundSweepAndFit = False
@@ -537,6 +636,8 @@ Private Function RunBackgroundSweepAndFit(ByVal etoiVParams As String, _
     ' Collect background R(B) points from ETO Ch2 and append live rows for visibility.
     ReDim x(1 To nBg)
     ReDim y(1 To nBg)
+    ReDim bgCommandFieldByStep(1 To nBg)
+    bgNextAppendBlockIndex = 0
 
     DynaCool.SetTemperature bgTemp_K, 10, 0 'mvseq:fn_PPMS_BSweep_Helm_IP.seq(1)>0019 BG: Set Temp
     DynaCool.SetField bgFieldStart, bgFieldRate, 0, 0 'mvseq:fn_PPMS_BSweep_Helm_IP.seq(1)>0020 BG: Set field start
@@ -546,6 +647,7 @@ Private Function RunBackgroundSweepAndFit(ByVal etoiVParams As String, _
 
     For i = 1 To nBg
         commandField = bgFieldStart + CDbl(i - 1) * bgStepActual
+        bgCommandFieldByStep(i) = commandField
 
         DynaCool.SetField commandField, bgFieldRate, 0, 0 'mvseq:fn_PPMS_BSweep_Helm_IP.seq(1)>0023 BG: Set field point
         DynaCool.WaitFor(2, 0, 0) 'mvseq:fn_PPMS_BSweep_Helm_IP.seq(1)>0024 BG: Wait For %t stable
@@ -553,20 +655,55 @@ Private Function RunBackgroundSweepAndFit(ByVal etoiVParams As String, _
         DynaCool.SequenceMeasure "ETOIV 'C:\QdDynacool\default_ETO.qmap' 0 1 " & etoiVParams 'mvseq:fn_PPMS_BSweep_Helm_IP.seq(1)>0025 BG: ETOIV Ch2
         DynaCool.WaitFor(0, 1, 0) 'mvseq:fn_PPMS_BSweep_Helm_IP.seq(1)>0025a BG: Flush ETO buffer for live append
 
-        If Not AppendWithRetry(bgDataPath, _
-                               False, _
-                               commandField, _
-                               BAD_VALUE, _
-                               BAD_VALUE, _
-                               BAD_VALUE, _
-                               BAD_VALUE, _
-                               BAD_VALUE, _
-                               10) Then
-            MV_Log "[BG][WARN] Live append failed at BG step " & CStr(i)
+        Do While bgNextAppendBlockIndex < i
+            If Not AppendWithRetry(bgDataPath, _
+                                   bgNextAppendBlockIndex, _
+                                   False, _
+                                   bgCommandFieldByStep(bgNextAppendBlockIndex + 1), _
+                                   BAD_VALUE, _
+                                   BAD_VALUE, _
+                                   BAD_VALUE, _
+                                   BAD_VALUE, _
+                                   BAD_VALUE, _
+                                   bgSourceCode) Then
+                Exit Do
+            End If
+            bgNextAppendBlockIndex = bgNextAppendBlockIndex + 1
+        Loop
+
+        If bgNextAppendBlockIndex < i Then
+            MV_Log "[BG][WARN] Live append pending at BG step " & CStr(i) & _
+                   " (pending=" & CStr(i - bgNextAppendBlockIndex) & ")"
         End If
     Next i
 
     DynaCool.WaitFor(0, 1, 0) 'mvseq:fn_PPMS_BSweep_Helm_IP.seq(1)>0026 BG: Flush ETO buffer
+
+    If bgNextAppendBlockIndex < nBg Then
+        bgRecoveredCount = 0
+        Do While bgNextAppendBlockIndex < nBg
+            If Not AppendWithRetry(bgDataPath, _
+                                   bgNextAppendBlockIndex, _
+                                   False, _
+                                   bgCommandFieldByStep(bgNextAppendBlockIndex + 1), _
+                                   BAD_VALUE, _
+                                   BAD_VALUE, _
+                                   BAD_VALUE, _
+                                   BAD_VALUE, _
+                                   BAD_VALUE, _
+                                   bgSourceCode) Then
+                Exit Do
+            End If
+            bgNextAppendBlockIndex = bgNextAppendBlockIndex + 1
+            bgRecoveredCount = bgRecoveredCount + 1
+        Loop
+        If bgRecoveredCount > 0 Then
+            MV_Log "[BG] Catch-up recovered " & CStr(bgRecoveredCount) & " background step(s)"
+        End If
+        If bgNextAppendBlockIndex < nBg Then
+            MV_Log "[BG][WARN] " & CStr(nBg - bgNextAppendBlockIndex) & " background step(s) could not be recovered"
+        End If
+    End If
 
     fitN = 0
     For i = 1 To nBg
@@ -577,7 +714,7 @@ Private Function RunBackgroundSweepAndFit(ByVal etoiVParams As String, _
             fitN = fitN + 1
 
             If IV_ExtractBlockTempFieldFromFile(bgDataPath, blockIndex, parsedTemp, parsedField) Then
-                If parsedField > BAD_VALUE / 2# Then
+                If MV_IsFinite(parsedField) Then
                     x(fitN) = parsedField
                 Else
                     x(fitN) = bgFieldStart + CDbl(i - 1) * bgStepActual

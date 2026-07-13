@@ -104,31 +104,31 @@ Public Function PostAnalysis_AppendAfterETO(ByVal etoDataPath As String, _
                                             Optional ByVal bgSourceCode As Long = -999999) As Boolean
     Dim ok As Boolean
 
-    ok = PostAnalysis_AppendMergedRow(etoDataPath, _
-                                      MV_PostAnalysisStepIndex, _
-                                      hallMeasuredThisStep, _
-                                      measureCh1, _
-                                      measureCh2, _
-                                      channelsShareBlock, _
-                                      dualBlockOrderCh1First, _
-                                      ch1CurrentColIndex, _
-                                      ch1VoltageColIndex, _
-                                      ch1AveragingTimeColIndex, _
-                                      ch1GainColIndex, _
-                                      ch2CurrentColIndex, _
-                                      ch2VoltageColIndex, _
-                                      ch2AveragingTimeColIndex, _
-                                      ch2GainColIndex, _
-                                      overrideTemp_K, _
-                                      overrideField_Oe, _
-                                      hallVoltage_V, _
-                                      hallField_Oe, _
-                                      correctedField_Oe, _
-                                      bgZeroPre_Oe, _
-                                      bgZeroPost_Oe, _
-                                      bgFitR2, _
-                                      bgFitRMS, _
-                                      bgSourceCode)
+    ok = PostAnalysis_AppendAfterETOBlock(etoDataPath, _
+                                          MV_PostAnalysisStepIndex, _
+                                          hallMeasuredThisStep, _
+                                          measureCh1, _
+                                          measureCh2, _
+                                          channelsShareBlock, _
+                                          dualBlockOrderCh1First, _
+                                          ch1CurrentColIndex, _
+                                          ch1VoltageColIndex, _
+                                          ch1AveragingTimeColIndex, _
+                                          ch1GainColIndex, _
+                                          ch2CurrentColIndex, _
+                                          ch2VoltageColIndex, _
+                                          ch2AveragingTimeColIndex, _
+                                          ch2GainColIndex, _
+                                          overrideTemp_K, _
+                                          overrideField_Oe, _
+                                          hallVoltage_V, _
+                                          hallField_Oe, _
+                                          correctedField_Oe, _
+                                          bgZeroPre_Oe, _
+                                          bgZeroPost_Oe, _
+                                          bgFitR2, _
+                                          bgFitRMS, _
+                                          bgSourceCode)
 
     If Not ok Then
         PostAnalysis_AppendAfterETO = False
@@ -137,6 +137,58 @@ Public Function PostAnalysis_AppendAfterETO(ByVal etoDataPath As String, _
 
     MV_PostAnalysisStepIndex = MV_PostAnalysisStepIndex + 1
     PostAnalysis_AppendAfterETO = True
+End Function
+
+Public Function PostAnalysis_AppendAfterETOBlock(ByVal etoDataPath As String, _
+                                                 ByVal stepIndex As Long, _
+                                                 ByVal hallMeasuredThisStep As Boolean, _
+                                                 ByVal measureCh1 As Boolean, _
+                                                 ByVal measureCh2 As Boolean, _
+                                                 ByVal channelsShareBlock As Boolean, _
+                                                 ByVal dualBlockOrderCh1First As Boolean, _
+                                                 ByVal ch1CurrentColIndex As Long, _
+                                                 ByVal ch1VoltageColIndex As Long, _
+                                                 ByVal ch1AveragingTimeColIndex As Long, _
+                                                 ByVal ch1GainColIndex As Long, _
+                                                 ByVal ch2CurrentColIndex As Long, _
+                                                 ByVal ch2VoltageColIndex As Long, _
+                                                 ByVal ch2AveragingTimeColIndex As Long, _
+                                                 ByVal ch2GainColIndex As Long, _
+                                                 Optional ByVal overrideTemp_K As Double = -9.9E99, _
+                                                 Optional ByVal overrideField_Oe As Double = -9.9E99, _
+                                                 Optional ByVal hallVoltage_V As Double = -9.9E99, _
+                                                 Optional ByVal hallField_Oe As Double = -9.9E99, _
+                                                 Optional ByVal correctedField_Oe As Double = -9.9E99, _
+                                                 Optional ByVal bgZeroPre_Oe As Double = -9.9E99, _
+                                                 Optional ByVal bgZeroPost_Oe As Double = -9.9E99, _
+                                                 Optional ByVal bgFitR2 As Double = -9.9E99, _
+                                                 Optional ByVal bgFitRMS As Double = -9.9E99, _
+                                                 Optional ByVal bgSourceCode As Long = -999999) As Boolean
+    PostAnalysis_AppendAfterETOBlock = PostAnalysis_AppendMergedRow(etoDataPath, _
+                                                                    stepIndex, _
+                                                                    hallMeasuredThisStep, _
+                                                                    measureCh1, _
+                                                                    measureCh2, _
+                                                                    channelsShareBlock, _
+                                                                    dualBlockOrderCh1First, _
+                                                                    ch1CurrentColIndex, _
+                                                                    ch1VoltageColIndex, _
+                                                                    ch1AveragingTimeColIndex, _
+                                                                    ch1GainColIndex, _
+                                                                    ch2CurrentColIndex, _
+                                                                    ch2VoltageColIndex, _
+                                                                    ch2AveragingTimeColIndex, _
+                                                                    ch2GainColIndex, _
+                                                                    overrideTemp_K, _
+                                                                    overrideField_Oe, _
+                                                                    hallVoltage_V, _
+                                                                    hallField_Oe, _
+                                                                    correctedField_Oe, _
+                                                                    bgZeroPre_Oe, _
+                                                                    bgZeroPost_Oe, _
+                                                                    bgFitR2, _
+                                                                    bgFitRMS, _
+                                                                    bgSourceCode)
 End Function
 
 Public Function PostAnalysis_ReplayOldETOScan(ByVal etoDataPath As String, _
