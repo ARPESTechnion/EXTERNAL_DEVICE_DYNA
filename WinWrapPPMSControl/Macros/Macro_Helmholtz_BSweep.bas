@@ -78,11 +78,13 @@ Public Sub Macro_Run_Helmholtz_BSweep()
     Dim K2450_resourceName As String
     Dim Hallbar As String
     Dim BaseFolder As String
+    Dim Append_Output As Boolean
 
     K2600_resourceName = "GPIB0::26::INSTR"
     K2450_resourceName = "GPIB0::18::INSTR"
     Hallbar = "wire2"
     BaseFolder = "C:\QdDynacool\Data\ETO\"
+    Append_Output = False
 
     ' =========================================================
     ' Do not edit below this line
@@ -115,7 +117,8 @@ Public Sub Macro_Run_Helmholtz_BSweep()
         K2600_resourceName, _
         K2450_resourceName, _
         Hallbar, _
-        BaseFolder)
+        BaseFolder, _
+        Append_Output)
 
     MV_Log "[MACRO][BSWEEP] Completed Helmholtz B-sweep loop"
 End Sub

@@ -76,6 +76,7 @@ Public Sub Macro_Run_PPMS_BSweep_HelmIP()
     ' =========================================================
     Dim K2600_resourceName As String      ' K2600 VISA resource
     Dim BaseFolder As String              ' Output folder for ETODF/Merged/Background files
+    Dim Append_Output As Boolean          ' True=reuse existing output names, False=create a new numbered run name
 
     ' =========================================================
     ' Preset values (edit here for your run)
@@ -123,6 +124,7 @@ Public Sub Macro_Run_PPMS_BSweep_HelmIP()
     ' Instrument routing and output directory
     K2600_resourceName = MV_K2600_RESOURCE
     BaseFolder = "C:\QdDynacool\Data\ETO\"
+    Append_Output = False
 
     Debug.Clear
 
@@ -159,7 +161,8 @@ Public Sub Macro_Run_PPMS_BSweep_HelmIP()
         Bg_Field_Rate, _
         Bg_MinPointsForFit, _
         K2600_resourceName, _
-        BaseFolder) 'mvseq:Macro_PPMS_BSweep_HelmIP.seq(1)>0001 Run PPMS BSweep Helm IP
+        BaseFolder, _
+        Append_Output) 'mvseq:Macro_PPMS_BSweep_HelmIP.seq(1)>0001 Run PPMS BSweep Helm IP
 
     MV_Log "[MACRO][PPMS-BSWEEP-HELM-IP] Completed"
 End Sub

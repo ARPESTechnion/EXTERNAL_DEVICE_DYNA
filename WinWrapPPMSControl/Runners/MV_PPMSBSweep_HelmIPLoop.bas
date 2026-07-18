@@ -55,7 +55,8 @@ Public Sub fn_PPMS_BSweep_Helm_IP( _
     ByVal Bg_Field_Rate As Double, _
     ByVal Bg_MinPointsForFit As Long, _
     ByVal K2600_resourceName As String, _
-    ByVal BaseFolder As String)
+    ByVal BaseFolder As String, _
+    Optional ByVal Append_Output As Boolean = False)
 
     Dim ETO_DataFile As String
     Dim Helmholtz_LogFile As String
@@ -65,6 +66,7 @@ Public Sub fn_PPMS_BSweep_Helm_IP( _
     Dim RunSuffix As String
     Dim SweepSuffix As String
     Dim ETOIV_Params As String
+    Dim RunOutputStem As String
 
     Dim N_Temps As Long
     Dim N_IP As Long
@@ -154,9 +156,19 @@ Public Sub fn_PPMS_BSweep_Helm_IP( _
         RunSuffix = "_T_" & NumericTokenNoRound(Measurement_Temperature) & "K" & _
                     "_IP_" & NumericTokenNoRound(InPlane_Helm_Oe) & "G"
 
-        ETO_DataFile = BaseFolder & BaseName & RunSuffix & ".dat"
-        Helmholtz_LogFile = BaseFolder & BaseName & RunSuffix & "_HelmholtzLog.dat"
-        Merged_LogFile = BaseFolder & BaseName & RunSuffix & "_Analyzed.dat"
+        RunOutputStem = ResolveAvailableOutputStem( _
+                    BaseFolder & BaseName & RunSuffix, _
+                    Append_Output, _
+                    ".dat", _
+                    "_HelmholtzLog.dat", _
+                    "_Analyzed.dat", _
+                    "_BG_PRE.dat", _
+                    "_BG_PRE_FitPlot.dat", _
+                    "_BG_POST.dat", _
+                    "_BG_POST_FitPlot.dat")
+        ETO_DataFile = RunOutputStem & ".dat"
+        Helmholtz_LogFile = RunOutputStem & "_HelmholtzLog.dat"
+        Merged_LogFile = RunOutputStem & "_Analyzed.dat"
 
         If Not MV_InitSessionWithPostAnalysis("BSweep_" & RunSuffix, Helmholtz_LogFile, Merged_LogFile) Then
             MV_Log "[SEQ][ERROR] Session init failed for " & RunSuffix
@@ -199,7 +211,7 @@ Public Sub fn_PPMS_BSweep_Helm_IP( _
             preZero_Oe = prevPostZeroByIP(IIP)
             MV_Log "[BG][REUSE] Using POST of previous temperature as PRE for current step. B0=" & CStr(preZero_Oe)
         ElseIf Enable_Background_Pre Then
-            Bg_DataFile = BaseFolder & BaseName & RunSuffix & "_BG_PRE.dat"
+            Bg_DataFile = RunOutputStem & "_BG_PRE.dat"
             preOk = RunBackgroundSweepAndFit( _
                         ETOIV_Params, _
                         Bg_DataFile, _
@@ -352,7 +364,7 @@ Public Sub fn_PPMS_BSweep_Helm_IP( _
         postRms = BAD_VALUE
 
         If Enable_Background_Post Then
-            Bg_DataFile = BaseFolder & BaseName & RunSuffix & "_BG_POST.dat"
+            Bg_DataFile = RunOutputStem & "_BG_POST.dat"
             postOk = RunBackgroundSweepAndFit( _
                         ETOIV_Params, _
                         Bg_DataFile, _
@@ -1159,4 +1171,36 @@ Private Function NumericTokenNoRound(ByVal Value As Double) As String
     If Len(s) = 0 Then s = "0"
 
     NumericTokenNoRound = s
+End Function
+
+Private Function ResolveAvailableOutputStem(ByVal baseStem As String, _
+                                            ByVal appendExisting As Boolean, _
+                                            ParamArray suffixes() As Variant) As String
+    Dim candidateStem As String
+    Dim suffixIndex As Long
+    Dim candidateIndex As Long
+
+    candidateStem = baseStem
+    If appendExisting Then
+        ResolveAvailableOutputStem = candidateStem
+        Exit Function
+    End If
+
+    Do
+        For suffixIndex = LBound(suffixes) To UBound(suffixes)
+            If FileExists(CStr(candidateStem & CStr(suffixes(suffixIndex)))) Then Exit For
+        Next suffixIndex
+
+        If suffixIndex > UBound(suffixes) Then
+            ResolveAvailableOutputStem = candidateStem
+            Exit Function
+        End If
+
+        candidateIndex = candidateIndex + 1
+        candidateStem = baseStem & "_" & Format$(candidateIndex, "000")
+    Loop
+End Function
+
+Private Function FileExists(ByVal filePath As String) As Boolean
+    FileExists = (Len(Dir$(filePath)) > 0)
 End Function

@@ -32,7 +32,8 @@ Public Sub fn_IP_Loop_Helm_Loop_Bsweep( _
     ByVal K2600_resourceName As String, _
     ByVal K2450_resourceName As String, _
     ByVal Hallbar As String, _
-    ByVal BaseFolder As String)
+    ByVal BaseFolder As String, _
+    Optional ByVal Append_Output As Boolean = False)
 
     ' =========================================================
     ' Derived file path variables (set per condition inside the loop)
@@ -41,6 +42,7 @@ Public Sub fn_IP_Loop_Helm_Loop_Bsweep( _
     Dim Helmholtz_LogFile As String
     Dim Merged_LogFile As String
     Dim BaseName As String
+    Dim RunOutputStem As String
 
     ' =========================================================
     ' Derived variables
@@ -139,9 +141,15 @@ Public Sub fn_IP_Loop_Helm_Loop_Bsweep( _
         RunSuffix = "_T_" & NumericTokenNoRound(Measurement_Temperature) & "K" & _
                 "_IP_" & NumericTokenNoRound(In_Plane_Field) & "G"
 
-        ETO_DataFile      = BaseFolder & BaseName & RunSuffix & ".dat"
-        Helmholtz_LogFile = BaseFolder & BaseName & RunSuffix & "_HelmholtzLog.dat"
-        Merged_LogFile    = BaseFolder & BaseName & RunSuffix & "_Analyzed.dat"
+        RunOutputStem = ResolveAvailableOutputStem( _
+                    BaseFolder & BaseName & RunSuffix, _
+                    Append_Output, _
+                    ".dat", _
+                    "_HelmholtzLog.dat", _
+                    "_Analyzed.dat")
+        ETO_DataFile = RunOutputStem & ".dat"
+        Helmholtz_LogFile = RunOutputStem & "_HelmholtzLog.dat"
+        Merged_LogFile = RunOutputStem & "_Analyzed.dat"
 
         ' ---------------------------------------------------------
         ' Session Init for this condition
@@ -349,4 +357,36 @@ Private Function NumericTokenNoRound(ByVal Value As Double) As String
     If Len(s) = 0 Then s = "0"
 
     NumericTokenNoRound = s
+End Function
+
+Private Function ResolveAvailableOutputStem(ByVal baseStem As String, _
+                                            ByVal appendExisting As Boolean, _
+                                            ParamArray suffixes() As Variant) As String
+    Dim candidateStem As String
+    Dim suffixIndex As Long
+    Dim candidateIndex As Long
+
+    candidateStem = baseStem
+    If appendExisting Then
+        ResolveAvailableOutputStem = candidateStem
+        Exit Function
+    End If
+
+    Do
+        For suffixIndex = LBound(suffixes) To UBound(suffixes)
+            If FileExists(CStr(candidateStem & CStr(suffixes(suffixIndex)))) Then Exit For
+        Next suffixIndex
+
+        If suffixIndex > UBound(suffixes) Then
+            ResolveAvailableOutputStem = candidateStem
+            Exit Function
+        End If
+
+        candidateIndex = candidateIndex + 1
+        candidateStem = baseStem & "_" & Format$(candidateIndex, "000")
+    Loop
+End Function
+
+Private Function FileExists(ByVal filePath As String) As Boolean
+    FileExists = (Len(Dir$(filePath)) > 0)
 End Function
