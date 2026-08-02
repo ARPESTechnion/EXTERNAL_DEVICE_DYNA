@@ -289,7 +289,9 @@ Public Function K7001_CloseChannel(ByVal logicalName As String) As Boolean
         Exit Function
     End If
 
-    p1 = K7001_Crosspoint(K7001_ROW_IPLUS, MV_K7001_Maps(idx).OutIPlus)
+    p1 = K7001_Crosspoint(K7001_ROW_IPLUS, MV_K7001_Maps(
+        
+    ).OutIPlus)
     p2 = K7001_Crosspoint(K7001_ROW_VPLUS, MV_K7001_Maps(idx).OutVPlus)
     p3 = K7001_Crosspoint(K7001_ROW_VMINUS, MV_K7001_Maps(idx).OutVMinus)
     p4 = K7001_Crosspoint(K7001_ROW_IMINUS, MV_K7001_Maps(idx).OutIMinus)

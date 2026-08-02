@@ -484,18 +484,15 @@ continuous_measure_lockin [what=PARAMS] [avg=N] [sample_delay=S]
 SECTION 7: COMBINED MEASUREMENTS
 ================================================================================
 
-full_measure <channel> [time_between=S] [hall_current=I] [hall_nplc=N] [hall_compliance=V] [hall_voltage_range=RANGE] [hall_filter=N] [hall_excitation=cycle|keep] [tbm=S] [lockin_what=PARAMS] [lockin_current=I] [lockin_series_resistance=R] [lockin_avg=N] [lockin_start_sens=IDX] [lockin_use_autorange=BOOL] [lockin_use_autophase=BOOL] [lockin_sample_delay=S]
+full_measure [time_between=S] [hall_current=I] [hall_nplc=N] [hall_compliance=V] [hall_voltage_range=RANGE] [hall_filter=N] [hall_excitation=cycle|keep] [tbm=S] [lockin_what=PARAMS] [lockin_current=I] [lockin_series_resistance=R] [lockin_avg=N] [lockin_start_sens=IDX] [lockin_use_autorange=BOOL] [lockin_use_autophase=BOOL] [lockin_sample_delay=S]
   Description: Perform complete Hall + LockIn measurement in one operation
   Sequence:
     1. Measure Hall field (Keithley2450) with optional Hall parameters
-    2. Close specified channel in switch
+    2. Close the active/default configured channel in switch
     3. Wait time_between seconds
     4. Run LockIn measurement (SR830) with optional LockIn parameters
     5. Open all channels
     6. Write single CSV row with all data
-  
-  Required Arguments:
-    channel          - Channel to close: one of "a".."h"
   
   Optional Arguments (Hall measurements):
     hall_current=I   - Measurement current in mA (default: from GUI)
@@ -530,13 +527,12 @@ full_measure <channel> [time_between=S] [hall_current=I] [hall_nplc=N] [hall_com
     - Specify only the parameters you want to override
   
   Examples:
-    full_measure a                                                                    # Use all GUI defaults
-    full_measure c                                                                    # Measure a configured non-default channel
-    full_measure a time_between=0.1                                                 # Just change wait time
-    full_measure a hall_current=1.5 lockin_current=1e-6 lockin_avg=5                # Override Hall and LockIn current
-    full_measure a hall_excitation=keep                                              # Keep Hall source on between calls
-    full_measure b hall_voltage_range=10V lockin_use_autorange=false lockin_start_sens=15 # Custom ranges and sensitivity
-    full_measure a time_between=0.05 hall_nplc=10 lockin_avg=20 lockin_sample_delay=0.1   # Comprehensive parameter override
+    full_measure                                                                      # Use all GUI defaults
+    full_measure time_between=0.1                                                    # Just change wait time
+    full_measure hall_current=1.5 lockin_current=1e-6 lockin_avg=5                   # Override Hall and LockIn current
+    full_measure hall_excitation=keep                                                 # Keep Hall source on between calls
+    full_measure hall_voltage_range=10V lockin_use_autorange=false lockin_start_sens=15 # Custom ranges and sensitivity
+    full_measure time_between=0.05 hall_nplc=10 lockin_avg=20 lockin_sample_delay=0.1   # Comprehensive parameter override
 
 continuous_full_measure [time_between=S] [hall_nplc=N] [hall_compliance=V] [hall_voltage_range=RANGE] [hall_filter=N] [lockin_what=PARAMS] [lockin_avg=N] [lockin_use_autorange=BOOL] [lockin_use_autophase=BOOL] [lockin_sample_delay=S]
   Description: Continuous full Hall + LockIn measurement in one operation (single CSV row)

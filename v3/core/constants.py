@@ -14,6 +14,8 @@ from __future__ import annotations
 KEITHLEY2600_ADDRESS = "GPIB0::26::INSTR"
 KEITHLEY2450_ADDRESS = "GPIB0::18::INSTR"
 LOCKIN_ADDRESS = "GPIB0::8::INSTR"
+STRAIN_RP100_ADDRESS = "ASRL3::INSTR"
+STRAIN_METER_ADDRESS = "GPIB0::28::INSTR"
 SWITCH_BACKEND = "keithley7001"  # "my_switch" | "keithley7001"
 SWITCH_ADDRESS_MY = "USB0::0x0957::0x0507::MY56482243::INSTR"
 SWITCH_ADDRESS_7001 = "GPIB0::7::INSTR"
@@ -32,6 +34,7 @@ INST_KEITHLEY2450 = "keithley2450"
 INST_LOCKIN = "lockin"
 INST_SWITCH = "switch"
 INST_DYNA = "dyna"
+INST_STRAIN = "strain"
 
 ALL_INSTRUMENTS = (
     INST_KEITHLEY2600,
@@ -39,6 +42,7 @@ ALL_INSTRUMENTS = (
     INST_LOCKIN,
     INST_SWITCH,
     INST_DYNA,
+    INST_STRAIN,
 )
 
 # Switch matrix routing/label capacity by backend.
@@ -99,6 +103,11 @@ CSV_FIELDNAMES: list[str] = [
     "Hall_Voltage_Error(V)",
     "Hall_Field(G)",
     "Hall_Field_Error(G)",
+    "Strain_Voltage_Ch1(V)",
+    "Strain_Voltage_Ch2(V)",
+    "Strain_Capacitance(pF)",
+    "Strain_Loss",
+    "Strain_Force",
     "Channel",
     "LockIn_X(V)",
     "LockIn_X_Error(V)",
@@ -140,6 +149,11 @@ DATA_KEY_TO_CSV: dict[str, str] = {
     "Hall Voltage Error":       "Hall_Voltage_Error(V)",
     "Hall Field":               "Hall_Field(G)",
     "Hall Field Error":         "Hall_Field_Error(G)",
+    "Strain Voltage Ch1":       "Strain_Voltage_Ch1(V)",
+    "Strain Voltage Ch2":       "Strain_Voltage_Ch2(V)",
+    "Strain Capacitance":       "Strain_Capacitance(pF)",
+    "Strain Loss":              "Strain_Loss",
+    "Strain Force":             "Strain_Force",
     "Channel":                  "Channel",
     "LockIn_X":                 "LockIn_X(V)",
     "LockIn_X_Error":           "LockIn_X_Error(V)",

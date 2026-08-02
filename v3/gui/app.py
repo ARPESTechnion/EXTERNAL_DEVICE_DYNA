@@ -36,6 +36,7 @@ from v3.core.constants import (
     INST_KEITHLEY2450,
     INST_KEITHLEY2600,
     INST_LOCKIN,
+    INST_STRAIN,
     INST_SWITCH,
     KEITHLEY2450_ADDRESS,
     KEITHLEY2600_ADDRESS,
@@ -73,8 +74,10 @@ from v3.core.ui_events import (
     W_LED_HALL,
     W_LED_HELMHOLTZ,
     W_LED_LOCKIN,
+    W_LED_STRAIN,
     W_LED_SWITCH,
     W_LOCKIN_CONNECTED,
+    W_STRAIN_CONNECTED,
     W_SWITCH_CONNECTED,
 )
 
@@ -83,10 +86,12 @@ from v3.gui.dyna_tab import DynaTab
 from v3.gui.hall_tab import HallTab
 from v3.gui.helmholtz_tab import HelmholtzTab
 from v3.gui.lockin_tab import LockInTab
+from v3.gui.strain_tab import StrainTab
 from v3.gui.results_tab import ResultsTab
 from v3.gui.switch_tab import SwitchTab
 from v3.gui.components import NotificationToast
 from v3.gui.theme import apply_theme
+from v3.core.strain import build_strain_controller
 
 logger = logging.getLogger(__name__)
 
@@ -96,6 +101,7 @@ _KEY_TO_BUS: dict[str, str] = {
     "hall": INST_KEITHLEY2450,
     "dyna": INST_DYNA,
     "lockin": INST_LOCKIN,
+    "strain": INST_STRAIN,
     "switch": INST_SWITCH,
 }
 
@@ -105,6 +111,7 @@ _KEY_TO_LED: dict[str, str] = {
     "hall": W_LED_HALL,
     "dyna": W_LED_DYNA,
     "lockin": W_LED_LOCKIN,
+    "strain": W_LED_STRAIN,
     "switch": W_LED_SWITCH,
 }
 
@@ -114,6 +121,7 @@ _KEY_TO_CONN: dict[str, str] = {
     "hall": W_HALL_CONNECTED,
     "dyna": W_DYNA_CONNECTED,
     "lockin": W_LOCKIN_CONNECTED,
+    "strain": W_STRAIN_CONNECTED,
     "switch": W_SWITCH_CONNECTED,
 }
 
@@ -190,6 +198,7 @@ class MeasureApp:
             ui_bus=self.ui_bus,
             calibration=self.calibration,
         )
+        self.strain = build_strain_controller(use_mockup=use_mockup)
         self.engine = ExperimentEngine(
             ui_bus=self.ui_bus,
             on_abort_cleanup=self._abort_cleanup,
@@ -286,6 +295,7 @@ class MeasureApp:
         self._lockin_frame = self._create_scrollable_tab("LockIn")
         self._hall_frame = self._create_scrollable_tab("Hall bar")
         self._switch_frame = self._create_scrollable_tab("Switch")
+        self._strain_frame = self._create_scrollable_tab("Strain")
 
         # Create tab instances
         self.results_tab = ResultsTab(self._results_frame, self)
@@ -294,6 +304,7 @@ class MeasureApp:
         self.lockin_tab = LockInTab(self._lockin_frame, self)
         self.hall_tab = HallTab(self._hall_frame, self)
         self.switch_tab = SwitchTab(self._switch_frame, self)
+        self.strain_tab = StrainTab(self._strain_frame, self)
 
         self._all_tabs = [
             self.results_tab,
@@ -302,6 +313,7 @@ class MeasureApp:
             self.lockin_tab,
             self.hall_tab,
             self.switch_tab,
+            self.strain_tab,
         ]
 
         # Build widgets in every tab
@@ -329,13 +341,13 @@ class MeasureApp:
         required_height = self.root.winfo_reqheight()
         screen_width = self.root.winfo_screenwidth()
         screen_height = self.root.winfo_screenheight()
-        default_width = int(screen_width * 0.85)
-        default_height = int(screen_height * 0.80)
-        max_width = int(screen_width * 0.97)
-        max_height = int(screen_height * 0.90)
+        default_width = int(screen_width * 0.92)
+        default_height = int(screen_height * 0.88)
+        max_width = int(screen_width * 0.98)
+        max_height = int(screen_height * 0.94)
         window_width = min(max(required_width + 10, default_width), max_width)
         window_height = min(max(required_height + 10, default_height), max_height)
-        self.root.minsize(820, 560)
+        self.root.minsize(1100, 720)
         pos_x = max(0, (screen_width - window_width) // 2)
         pos_y = max(0, (screen_height - window_height) // 2)
         self.root.geometry(f"{window_width}x{window_height}+{pos_x}+{pos_y}")
@@ -502,6 +514,7 @@ class MeasureApp:
             "hall": self._hall_frame,
             "dyna": self._dyna_frame,
             "lockin": self._lockin_frame,
+            "strain": self._strain_frame,
             "switch": self._switch_frame,
         }
         tab_map = {
@@ -509,6 +522,7 @@ class MeasureApp:
             "hall": self.hall_tab,
             "dyna": self.dyna_tab,
             "lockin": self.lockin_tab,
+            "strain": self.strain_tab,
             "switch": self.switch_tab,
         }
         root = frame_map.get(key)
@@ -586,6 +600,7 @@ class MeasureApp:
                 "hall": self._connect_hall,
                 "dyna": self._connect_dyna,
                 "lockin": self._connect_lockin,
+                "strain": self._connect_strain,
                 "switch": self._connect_switch,
             }
             success = handlers[key]()
@@ -611,6 +626,7 @@ class MeasureApp:
                 "hall": self._disconnect_hall,
                 "dyna": self._disconnect_dyna,
                 "lockin": self._disconnect_lockin,
+                "strain": self._disconnect_strain,
                 "switch": self._disconnect_switch,
             }
             handlers[key]()
@@ -725,6 +741,19 @@ class MeasureApp:
             inst.initialize_default_state(reset=False)
         self.bus.connect(INST_LOCKIN, inst)
         return True
+
+    def _connect_strain(self) -> bool:
+        self.strain.connect()
+        self.bus.connect(INST_STRAIN, self.strain)
+        return True
+
+    def _disconnect_strain(self) -> None:
+        old = self.bus.disconnect(INST_STRAIN)
+        if old is not None:
+            try:
+                old.disconnect()
+            except Exception:
+                logger.exception("Strain cleanup failed")
 
     def _disconnect_lockin(self) -> None:
         old = self.bus.disconnect(INST_LOCKIN)
@@ -1279,9 +1308,33 @@ class MeasureApp:
             finally:
                 self.instrument_connected["helmholtz"] = False
 
+        # Disconnect strain via dedicated path so RP100 outputs are driven to 0
+        # before session teardown, even if connection flags got out of sync.
+        strain_should_disconnect = bool(self.instrument_connected.get("strain"))
+        if not strain_should_disconnect:
+            try:
+                strain_should_disconnect = bool(self.bus.is_connected(INST_STRAIN))
+            except Exception:
+                strain_should_disconnect = False
+        if not strain_should_disconnect:
+            try:
+                strain_should_disconnect = bool(
+                    getattr(self.strain, "connected", False) or getattr(self.strain, "pzt_cntrl_active", False)
+                )
+            except Exception:
+                strain_should_disconnect = False
+
+        if strain_should_disconnect:
+            try:
+                self._disconnect_strain()
+            except Exception:  # noqa: BLE001
+                logger.exception("Strain dedicated shutdown disconnect failed")
+            finally:
+                self.instrument_connected["strain"] = False
+
         # Disconnect low-level objects directly
         for inst_key, bus_name in _KEY_TO_BUS.items():
-            if inst_key == "helmholtz":
+            if inst_key in {"helmholtz", "strain"}:
                 continue
             if not self.instrument_connected.get(inst_key):
                 continue

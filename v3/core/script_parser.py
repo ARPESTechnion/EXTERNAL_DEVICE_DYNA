@@ -93,6 +93,7 @@ LOOP_COMMANDS = frozenset({
     "sweep_dyna_temp",
     "scan_helmholtz_field",
     "sweep_helmholtz_field",
+    "scan_strain_voltage",
     "scan_ppms_field_and_fix_hall",
     "time_sweep",
     "for_loop",
@@ -108,6 +109,7 @@ VALID_COMMANDS = frozenset({
     "set_dyna_field",
     "set_dyna_temp",
     "set_helmholtz_field",
+    "apply_strain",
     "wait_for",
     "run_saved_script",
     "measure_hall_field",
@@ -121,6 +123,7 @@ VALID_COMMANDS = frozenset({
     "full_measure",
     "continuous_full_measure",
     "set_ppms_field_and_fix_hall",
+    "scan_strain_voltage",
     "scan_ppms_field_and_fix_hall",
     "auto_gain",
     "auto_phase",
@@ -146,6 +149,8 @@ INSTRUMENT_REQUIREMENTS: dict[str, list[str]] = {
     "sweep_dyna_field": ["dyna"],
     "sweep_dyna_temp": ["dyna"],
     "set_helmholtz_field": ["helmholtz"],
+    "apply_strain": ["strain"],
+    "scan_strain_voltage": ["strain"],
     "scan_helmholtz_field": ["helmholtz"],
     "sweep_helmholtz_field": ["helmholtz"],
     "wait_for": [],  # depends on event type
@@ -179,6 +184,8 @@ MIN_POSITIONAL: dict[str, int] = {
     "set_dyna_field": 3,      # field rate approach
     "set_dyna_temp": 3,       # temp rate approach
     "set_helmholtz_field": 2, # field rate
+    "apply_strain": 2,        # ch1 ch2
+    "scan_strain_voltage": 3, # start end step
     "scan_dyna_field": 5,     # start end step rate approach
     "scan_dyna_temp": 5,      # start end step rate approach
     "sweep_dyna_field": 3,    # start end rate
@@ -194,7 +201,7 @@ MIN_POSITIONAL: dict[str, int] = {
     "set_lockin_current": 1,  # current_A
     "set_ppms_field_and_fix_hall": 2, # field_Oe target_hall_G
     "scan_ppms_field_and_fix_hall": 4, # start end step target_hall_G
-    "full_measure": 1,        # channel
+    "full_measure": 0,
     "continuous_full_measure": 0,
     "run_saved_script": 1,    # filename
     "wait_for": 2,            # event(s) + additional_time
@@ -222,15 +229,17 @@ ALLOWED_KWARGS: dict[str, set[str]] = {
         "compliance", "nplc", "auto_range", "settle_time", "repetitions",
         "keep_output", "ramp_to_start", "reset_to_zero",
     },
+    "apply_strain": {"dwell_s"},
+    "scan_strain_voltage": {"dwell_s"},
     "enable_hall_output": {
         "current", "compliance_v",
     },
     "measure_lockin": {
-        "channel", "what", "current", "series_resistance", "avg", "start_sens",
+        "what", "current", "series_resistance", "avg", "start_sens",
         "use_autorange", "use_autophase", "sample_delay",
     },
     "continuous_measure_lockin": {
-        "channel", "what", "avg", "sample_delay",
+        "what", "avg", "sample_delay",
     },
     "full_measure": {
         "time_between",
@@ -518,6 +527,8 @@ class ScriptValidator:
             "set_dyna_field": [0, 1],      # field, rate
             "set_dyna_temp": [0, 1],       # temp, rate
             "set_helmholtz_field": [0, 1],  # field, rate
+            "apply_strain": [0, 1],
+            "scan_strain_voltage": [0, 1, 2],
             "scan_dyna_field": [0, 1, 2, 3],
             "scan_dyna_temp": [0, 1, 2, 3],
             "scan_helmholtz_field": [0, 1, 2, 3],
@@ -746,12 +757,11 @@ class ScriptValidator:
                     message="'set_lockin_sensitivity' must be an integer index in range 0..26",
                 ))
 
-        elif cmd.name == "full_measure" and len(cmd.args) >= 1:
-            ch = cmd.args[0].strip().lower()
-            if ch not in _CHANNEL_SET:
+        elif cmd.name == "full_measure":
+            if cmd.args:
                 errors.append(ValidationError(
                     line_number=cmd.line_number,
-                    message=f"'{cmd.name}' argument 1 must be channel name ({_CHANNEL_LIST_TEXT})",
+                    message="'full_measure' takes no positional arguments",
                 ))
             self._validate_full_measure_kwargs(cmd, errors)
 
@@ -811,9 +821,19 @@ class ScriptValidator:
                     ))
 
         elif cmd.name == "measure_lockin":
+            if cmd.args:
+                errors.append(ValidationError(
+                    line_number=cmd.line_number,
+                    message="'measure_lockin' takes no positional arguments",
+                ))
             self._validate_lockin_measure_kwargs(cmd, errors, continuous=False)
 
         elif cmd.name == "continuous_measure_lockin":
+            if cmd.args:
+                errors.append(ValidationError(
+                    line_number=cmd.line_number,
+                    message="'continuous_measure_lockin' takes no positional arguments",
+                ))
             self._validate_lockin_measure_kwargs(cmd, errors, continuous=True)
 
         elif cmd.name == "measure_iv_curve":

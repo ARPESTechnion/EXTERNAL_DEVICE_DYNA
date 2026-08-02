@@ -262,6 +262,43 @@ COMMAND_DOCS: dict[str, dict] = {
         ),
     },
 
+    "apply_strain": {
+        "description": (
+            "Applies a pair of RP100 voltages, checks them against the current temperature limit, "
+            "then reads capacitance, loss, and derived force from the AH2550A."
+        ),
+        "positional": [
+            _pos("ch1_voltage", "float", "V", "any", "Voltage applied to RP100 channel 1"),
+            _pos("ch2_voltage", "float", "V", "any", "Voltage applied to RP100 channel 2"),
+        ],
+        "kwargs": [
+            _kw("dwell_s", "float", "10", ">= 0", "Wait after setting the voltages before reading the bridge"),
+        ],
+        "example": (
+            "apply_strain 12 -12\n"
+            "apply_strain 20 -20 dwell_s=5"
+        ),
+    },
+
+    "scan_strain_voltage": {
+        "description": (
+            "Scans a strain-voltage range and runs the indented body at each generated voltage pair. "
+            "The helper uses generate_voltage_list(v0, vf, step)."
+        ),
+        "positional": [
+            _pos("start", "float", "V", "any", "First voltage used for the generated ch1/ch2 pairs"),
+            _pos("end", "float", "V", "any", "Last voltage used for the generated ch1/ch2 pairs"),
+            _pos("step", "float", "V", "> 0", "Step size used by generate_voltage_list"),
+        ],
+        "kwargs": [
+            _kw("dwell_s", "float", "10", ">= 0", "Wait after each applied strain pair before reading"),
+        ],
+        "example": (
+            "scan_strain_voltage 0 20 2\n"
+            "  measure_lockin avg=10"
+        ),
+    },
+
     "scan_helmholtz_field": {
         "description": "Steps the Helmholtz field from start to end, running the body at each step.",
         "positional": [
@@ -464,12 +501,10 @@ COMMAND_DOCS: dict[str, dict] = {
 
     "full_measure": {
         "description": (
-            "Performs a combined Hall + Lock-In measurement on the given channel. "
+            "Performs a combined Hall + Lock-In measurement on the active channel. "
             "Sources the Hall current, reads Hall voltage, then reads Lock-In X/Y/R/θ."
         ),
-        "positional": [
-            _pos("channel", "str", "", "a–j", "Switch channel to route (a, b, c, …)"),
-        ],
+        "positional": [],
         "kwargs": [
             _kw("time_between",         "float", "0",     ">= 0 s",     "Delay between Hall and Lock-In reads"),
             _kw("hall_current",         "float", "1e-3",  "A",          "Hall source current"),
@@ -489,9 +524,9 @@ COMMAND_DOCS: dict[str, dict] = {
             _kw("lockin_sample_delay",  "float", "0.05",  ">= 0 s",     "Delay before reading Lock-In"),
         ],
         "example": (
-            "full_measure a\n"
-            "full_measure b hall_excitation=keep hall_nplc=10 lockin_avg=20\n"
-            "full_measure a time_between=0.1 hall_filter=20 lockin_use_autophase=false"
+            "full_measure\n"
+            "full_measure hall_excitation=keep hall_nplc=10 lockin_avg=20\n"
+            "full_measure time_between=0.1 hall_filter=20 lockin_use_autophase=false"
         ),
     },
 
@@ -524,7 +559,6 @@ COMMAND_DOCS: dict[str, dict] = {
         "description": "Reads X, Y, R, and/or θ from the SR830 Lock-In amplifier and records one data point.",
         "positional": [],
         "kwargs": [
-            _kw("channel",          "str",   "active",   "a–j",               "Logical switch channel to label the measurement"),
             _kw("what",             "str",   "X,Y,R,Theta","X / Y / R / Theta","Quantities to read (comma-separated)"),
             _kw("current",          "float", "app",      "A",                  "Lock-In output current (0 = off)"),
             _kw("series_resistance","float", "app",      "Ω",                  "Calibration series resistance"),
@@ -545,7 +579,6 @@ COMMAND_DOCS: dict[str, dict] = {
         "description": "Like measure_lockin, intended for use inside time_sweep / for_loop. Faster: skips autorange/autophase.",
         "positional": [],
         "kwargs": [
-            _kw("channel",      "str",   "active", "a–j",  "Logical channel label"),
             _kw("what",         "str",   "X,Y,R,Theta","csv","Quantities to read"),
             _kw("avg",          "int",   "app",    ">= 1", "Averages per reading"),
             _kw("sample_delay", "float", "0.05",   ">= 0 s","Delay before reading"),

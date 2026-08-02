@@ -16,7 +16,7 @@ import time
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from v3.core.constants import HELMHOLTZ_MAX_CURRENT_A, INST_LOCKIN, INST_SWITCH
+from v3.core.constants import HELMHOLTZ_MAX_CURRENT_A, INST_DYNA, INST_LOCKIN, INST_STRAIN, INST_SWITCH
 from v3.core.experiment_engine import ExperimentEngine, StopRequested
 from v3.core.measurements import (
     MeasurementContext,
@@ -34,6 +34,7 @@ from v3.core.measurements import (
     measure_hall_continuous,
     measure_lockin,
     open_all_channels,
+    # Strain helpers live in v3.core.strain, not measurements.py.
     set_dyna_field,
     set_dyna_temp,
     set_lockin_current,
@@ -44,12 +45,14 @@ from v3.core.measurements import (
     wait_for_events,
 )
 from v3.core.script_parser import INSTRUMENT_REQUIREMENTS, LOOP_COMMANDS, ParsedCommand
+from v3.core.strain import generate_voltage_list
 from v3.core.ui_events import (
     W_DYNA_SETPOINT,
     W_HALL_RESULT,
     W_HELMHOLTZ_SETPOINT,
     W_IV_PROGRESS,
     W_LED_HALL,
+    W_LED_STRAIN,
     W_LOCKIN_CHANNEL,
     W_LED_LOCKIN,
     W_LOCKIN_OUTPUT_VOLTAGE,
@@ -66,8 +69,15 @@ from v3.core.ui_events import (
     W_LOCKIN_Y,
     W_LOCKIN_Y_ERROR,
     W_RESULTS_NEW_POINT,
+    W_STRAIN_CAPACITANCE,
+    W_STRAIN_FORCE,
+    W_STRAIN_LOSS,
+    W_STRAIN_STATUS,
+    W_STRAIN_VOLTAGE_CH1,
+    W_STRAIN_VOLTAGE_CH2,
     W_SWITCH_STATUS,
 )
+from v3.core.strain import generate_voltage_list
 
 if TYPE_CHECKING:
     from v3.gui.app import MeasureApp
@@ -423,6 +433,110 @@ def _post_hall_result_events(ctx: MeasurementContext, app: "MeasureApp", result:
     )
 
 
+def _post_strain_result_events(ctx: MeasurementContext, result: dict[str, object]) -> None:
+    """Publish strain values so Results/Strain panels mirror scripted measurements."""
+
+    def _num(value: object) -> float | None:
+        try:
+            v = float(value)
+            if math.isnan(v) or math.isinf(v):
+                return None
+            return v
+        except Exception:
+            return None
+
+    ch1 = _num(result.get("Strain Voltage Ch1"))
+    ch2 = _num(result.get("Strain Voltage Ch2"))
+    cap = _num(result.get("Strain Capacitance"))
+    loss = _num(result.get("Strain Loss"))
+    force = _num(result.get("Strain Force"))
+
+    if ch1 is not None:
+        ctx.ui_bus.post(W_STRAIN_VOLTAGE_CH1, ch1)
+    if ch2 is not None:
+        ctx.ui_bus.post(W_STRAIN_VOLTAGE_CH2, ch2)
+    if cap is not None:
+        ctx.ui_bus.post(W_STRAIN_CAPACITANCE, cap)
+    if loss is not None:
+        ctx.ui_bus.post(W_STRAIN_LOSS, loss)
+    if force is not None:
+        ctx.ui_bus.post(W_STRAIN_FORCE, force)
+    ctx.ui_bus.post(W_STRAIN_STATUS, "Strain measurement completed")
+
+
+def _build_strain_result_row(ctx: MeasurementContext, *, ch1: float, ch2: float, cap: float | None, loss: float | None, force: float | None) -> dict[str, object]:
+    temp = ctx.get_temp()
+    try:
+        temp_value = float(temp)
+        if math.isnan(temp_value) or math.isinf(temp_value):
+            temp_value = float("nan")
+    except Exception:
+        temp_value = float("nan")
+    return {
+        "Time": ctx.data_mgr.elapsed_time(),
+        "Temp": temp_value,
+        "Strain Voltage Ch1": ch1,
+        "Strain Voltage Ch2": ch2,
+        "Strain Capacitance": cap,
+        "Strain Loss": loss,
+        "Strain Force": force,
+    }
+
+
+def _row_overlay_stack(engine: ExperimentEngine) -> list[dict[str, object]]:
+    stack = getattr(engine, "_row_overlay_stack", None)
+    if isinstance(stack, list):
+        return stack
+    stack = []
+    setattr(engine, "_row_overlay_stack", stack)
+    return stack
+
+
+def _compose_row_with_overlays(engine: ExperimentEngine, row: dict[str, object]) -> dict[str, object]:
+    composed: dict[str, object] = {}
+    for overlay in _row_overlay_stack(engine):
+        composed.update(overlay)
+    composed.update(row)
+    return composed
+
+
+def _bump_rows_written(engine: ExperimentEngine, amount: int) -> None:
+    current = int(getattr(engine, "_rows_written", 0))
+    setattr(engine, "_rows_written", current + max(0, int(amount)))
+
+
+def _write_row(
+    engine: ExperimentEngine,
+    ctx: MeasurementContext,
+    row: dict[str, object],
+    *,
+    measurement_type: str,
+    post_results_event: bool = True,
+) -> dict[str, object]:
+    merged = _compose_row_with_overlays(engine, row)
+    ctx.data_mgr.write_row(merged, measurement_type=measurement_type)
+    _bump_rows_written(engine, 1)
+    if post_results_event:
+        ctx.ui_bus.post(W_RESULTS_NEW_POINT, True)
+    return merged
+
+
+def _write_rows(
+    engine: ExperimentEngine,
+    ctx: MeasurementContext,
+    rows: list[dict[str, object]],
+    *,
+    measurement_type: str,
+) -> int:
+    stack = _row_overlay_stack(engine)
+    merged_rows = [_compose_row_with_overlays(engine, row) for row in rows] if stack else rows
+    wrote = int(ctx.data_mgr.write_rows(merged_rows, measurement_type=measurement_type))
+    _bump_rows_written(engine, wrote)
+    if wrote > 0:
+        ctx.ui_bus.post(W_RESULTS_NEW_POINT, True)
+    return wrote
+
+
 def _post_helmholtz_setpoint(app: "MeasureApp", field_g: float, rate_mA_s: float) -> None:
     """Sync Helmholtz tab setpoint widgets to script-issued commands."""
     if not hasattr(app, "ui_bus"):
@@ -508,6 +622,42 @@ def _confirm_dyna_cooling_or_abort(
     )
     engine.request_stop()
     raise StopRequested()
+
+
+def _dyna_temp_already_stable(ctx: MeasurementContext, target_temp_k: float) -> bool:
+    """Return True when PPMS already reports a stable temperature at target."""
+    try:
+        _err, temp, status_num, _status_name = ctx.bus.execute(INST_DYNA, "get_temperature")
+        if int(status_num) != 1:
+            return False
+        current_temp_k = _round_to(float(temp), _DYNA_TEMP_RES_K)
+        target_temp_k = _round_to(float(target_temp_k), _DYNA_TEMP_RES_K)
+    except Exception:
+        return False
+    return current_temp_k == target_temp_k
+
+
+def _set_initial_dyna_temp_if_needed(
+    ctx: MeasurementContext,
+    *,
+    target_temp_k: float,
+    rate_k_min: float,
+    approach: str,
+) -> bool:
+    """Set and wait only when the PPMS is not already stable at the target temperature."""
+    _post_dyna_setpoint(
+        ctx,
+        temp_k=target_temp_k,
+        temp_rate_k_min=rate_k_min,
+        temp_mode=approach,
+    )
+    if _dyna_temp_already_stable(ctx, target_temp_k):
+        ctx.ui_bus.post_log(
+            f"Temperature already stable at {target_temp_k:g} K; skipping initial set."
+        )
+        return False
+    set_dyna_temp(ctx, target_temp_k, rate_k_min, approach)
+    return True
 
 
 def _measure_hall_with_gui_settings(ctx: MeasurementContext, app: "MeasureApp") -> dict[str, object]:
@@ -702,14 +852,77 @@ def _dispatch(
             app.helmholtz.ramp_to_target(engine.stop_event)
             ctx.ui_bus.post_log(f"Helmholtz → {field_g:.2f} G (done)")
 
+        elif name == "apply_strain":
+            ch1 = float(args[0])
+            ch2 = float(args[1])
+            dwell_default = float(getattr(getattr(app, "strain_tab", None), "dwell_s", 10.0).get()) if hasattr(getattr(app, "strain_tab", None), "dwell_s") else 10.0
+            dwell_s = cmd.get_float("dwell_s", dwell_default)
+
+            ctx.ui_bus.post(W_LED_STRAIN, True)
+            ctx.ui_bus.post(W_STRAIN_STATUS, f"Applying strain: Ch1={ch1:.3f} V, Ch2={ch2:.3f} V")
+            try:
+                cap, loss, force = ctx.bus.execute(
+                    INST_STRAIN,
+                    "apply_strain",
+                    ch1,
+                    ch2,
+                    sleeptime=dwell_s,
+                    temperature_k=app.current_temp,
+                )
+                result = _build_strain_result_row(ctx, ch1=ch1, ch2=ch2, cap=cap, loss=loss, force=force)
+                result = _write_row(engine, ctx, result, measurement_type="Strain")
+                _post_strain_result_events(ctx, result)
+                ctx.ui_bus.post_log(
+                    f"Strain applied: Ch1={ch1:.3f} V, Ch2={ch2:.3f} V, cap={cap}, loss={loss}, force={force}"
+                )
+            finally:
+                ctx.ui_bus.post(W_LED_STRAIN, False)
+
+        elif name == "scan_strain_voltage":
+            start = float(args[0])
+            end = float(args[1])
+            step = float(args[2])
+            dwell_default = float(getattr(getattr(app, "strain_tab", None), "dwell_s", 10.0).get()) if hasattr(getattr(app, "strain_tab", None), "dwell_s") else 10.0
+            dwell_s = cmd.get_float("dwell_s", dwell_default)
+
+            ctx.ui_bus.post(W_STRAIN_STATUS, f"Scanning strain voltage: {start:.3f} → {end:.3f} step {step:.3f}")
+            ctx.ui_bus.post(W_LED_STRAIN, True)
+            try:
+                pairs = generate_voltage_list(start, end, step)
+                for ch1, ch2 in pairs:
+                    engine.check_stop()
+                    engine.check_pause()
+                    cap, loss, force = ctx.bus.execute(
+                        INST_STRAIN,
+                        "apply_strain",
+                        ch1,
+                        ch2,
+                        sleeptime=dwell_s,
+                        temperature_k=app.current_temp,
+                    )
+                    result = _build_strain_result_row(ctx, ch1=ch1, ch2=ch2, cap=cap, loss=loss, force=force)
+                    _post_strain_result_events(ctx, result)
+                    if cmd.children:
+                        before_rows = int(getattr(engine, "_rows_written", 0))
+                        overlays = _row_overlay_stack(engine)
+                        overlays.append(result)
+                        try:
+                            _run_children(engine, ctx, cmd.children, app, parent_line=cmd.line_number)
+                        finally:
+                            overlays.pop()
+                        after_rows = int(getattr(engine, "_rows_written", 0))
+                        if after_rows == before_rows:
+                            _write_row(engine, ctx, result, measurement_type="Strain")
+                    else:
+                        _write_row(engine, ctx, result, measurement_type="Strain")
+                ctx.ui_bus.post_log(f"Strain scan recorded {len(pairs)} points")
+            finally:
+                ctx.ui_bus.post(W_LED_STRAIN, False)
+
         # ==============================================================
         # Measurement commands
         # ==============================================================
         elif name == "measure_lockin":
-            channel = cmd.get_str("channel", app.active_channel or "a")
-            if channel in app.channels:
-                app.active_channel = channel
-
             avg = cmd.get_int("avg", int(app.lockin_tab.lockin_averaging.get()))
             what = cmd.get_tuple("what", ("X", "Y", "R", "Theta"))
             current = cmd.get_float("current", app.lockin_tab.lockin_output_current.get())
@@ -736,16 +949,11 @@ def _dispatch(
                 filter_slope_idx=filter_idx,
                 frequency=app.lockin_tab.lockin_frequency.get(),
             )
-            ctx.data_mgr.write_row(result, measurement_type="LockIn")
+            result = _write_row(engine, ctx, result, measurement_type="LockIn")
             _post_lockin_result_events(ctx, app, result)
             ctx.ui_bus.post_log("LockIn measurement recorded")
-            ctx.ui_bus.post(W_RESULTS_NEW_POINT, True)
 
         elif name == "continuous_measure_lockin":
-            channel = cmd.get_str("channel", app.active_channel or "a")
-            if channel in app.channels:
-                app.active_channel = channel
-
             avg = cmd.get_int("avg", int(app.lockin_tab.lockin_averaging.get()))
             what = cmd.get_tuple("what", ("X", "Y", "R", "Theta"))
             sample_delay = cmd.get_float("sample_delay", 0.05)
@@ -761,10 +969,9 @@ def _dispatch(
                 frequency=app.lockin_tab.lockin_frequency.get(),
                 tau_idx=tau_idx,
             )
-            ctx.data_mgr.write_row(result, measurement_type="LockIn")
+            result = _write_row(engine, ctx, result, measurement_type="LockIn")
             _post_lockin_result_events(ctx, app, result)
             ctx.ui_bus.post_log("LockIn continuous measurement recorded")
-            ctx.ui_bus.post(W_RESULTS_NEW_POINT, True)
 
         elif name == "measure_hall_field":
             current_mA = cmd.get_float("current", app.hall_tab.k2450_current.get())
@@ -788,10 +995,9 @@ def _dispatch(
                 filter_count=filter_count,
                 tbm=tbm,
             )
-            ctx.data_mgr.write_row(result, measurement_type="Hall")
+            result = _write_row(engine, ctx, result, measurement_type="Hall")
             _post_hall_result_events(ctx, app, result)
             ctx.ui_bus.post_log("Hall measurement recorded")
-            ctx.ui_bus.post(W_RESULTS_NEW_POINT, True)
 
         elif name == "measure_resistance":
             current_default_a = float(app.hall_tab.k2450_resistance_current_mA.get()) / 1000.0
@@ -826,9 +1032,8 @@ def _dispatch(
                 )
             finally:
                 ctx.ui_bus.post(W_LED_HALL, False)
-            ctx.data_mgr.write_row(result, measurement_type="Resistance")
+            _write_row(engine, ctx, result, measurement_type="Resistance")
             ctx.ui_bus.post_log("Resistance measurement recorded")
-            ctx.ui_bus.post(W_RESULTS_NEW_POINT, True)
 
         elif name == "measure_iv_curve":
             t0 = time.perf_counter()
@@ -966,9 +1171,7 @@ def _dispatch(
                             "estimated_total_s": estimated_total_s,
                         },
                     )
-            wrote = ctx.data_mgr.write_rows(result["points"], measurement_type="IV")
-            if wrote > 0:
-                ctx.ui_bus.post(W_RESULTS_NEW_POINT, True)
+            wrote = _write_rows(engine, ctx, result["points"], measurement_type="IV")
             elapsed_s = max(0.0, time.perf_counter() - t0)
             point_count = int(result.get("point_count", 0))
             ctx.ui_bus.post(
@@ -1010,10 +1213,9 @@ def _dispatch(
                 filter_count=filter_count,
                 tbm=tbm,
             )
-            ctx.data_mgr.write_row(result, measurement_type="Hall")
+            result = _write_row(engine, ctx, result, measurement_type="Hall")
             _post_hall_result_events(ctx, app, result)
             ctx.ui_bus.post_log("Hall continuous measurement recorded")
-            ctx.ui_bus.post(W_RESULTS_NEW_POINT, True)
 
         elif name == "enable_hall_output":
             current_mA = cmd.get_float("current", app.hall_tab.k2450_current.get())
@@ -1032,9 +1234,12 @@ def _dispatch(
             ctx.ui_bus.post_log("Hall source disabled")
 
         elif name == "full_measure":
-            channel = args[0] if args else (app.channels[0] if app.channels else "a")
-            if channel in app.channels:
-                app.active_channel = channel
+            channel = app.active_channel if app.active_channel in app.channels else None
+            if channel is None:
+                channel = app.channels[0] if app.channels else None
+            if channel is None:
+                raise RuntimeError("No switch channel configured for full_measure")
+            app.active_channel = channel
 
             hall_voltage_range_raw = cmd.get_str("hall_voltage_range", app.hall_tab.k2450_voltage_range.get())
             hall_voltage_range, hall_auto_range = _parse_voltage_range(
@@ -1091,7 +1296,7 @@ def _dispatch(
 
             closed_switch = False
             try:
-                _close_active_channel(ctx, app, str(channel))
+                _close_active_channel(ctx, app, channel)
                 closed_switch = True
                 _post_switch_summary(ctx, app)
 
@@ -1118,11 +1323,10 @@ def _dispatch(
                     _post_switch_summary(ctx, app)
 
             result = {**hall_data, **lockin_data}
-            ctx.data_mgr.write_row(result, measurement_type="Full")
+            result = _write_row(engine, ctx, result, measurement_type="Full")
             _post_hall_result_events(ctx, app, result)
             _post_lockin_result_events(ctx, app, result)
             ctx.ui_bus.post_log("Full measurement recorded")
-            ctx.ui_bus.post(W_RESULTS_NEW_POINT, True)
 
         elif name == "continuous_full_measure":
             hall_voltage_range_raw = cmd.get_str("hall_voltage_range", app.hall_tab.k2450_voltage_range.get())
@@ -1192,12 +1396,11 @@ def _dispatch(
                 )
 
             result = {**hall_data, **lockin_data}
-            ctx.data_mgr.write_row(result, measurement_type="Full")
+            result = _write_row(engine, ctx, result, measurement_type="Full")
             _post_hall_result_events(ctx, app, result)
             _post_lockin_result_events(ctx, app, result)
             _post_switch_summary(ctx, app)
             ctx.ui_bus.post_log("Continuous full measurement recorded")
-            ctx.ui_bus.post(W_RESULTS_NEW_POINT, True)
 
         elif name == "set_ppms_field_and_fix_hall":
             target_ppms_oe = float(args[0])
@@ -1456,12 +1659,22 @@ def _run_loop(
                 target_temp_k=min(values),
                 command_name=name,
             )
-        for val in values:
+        for index, val in enumerate(values):
             engine.check_stop()
             engine.check_pause()
-            _post_dyna_setpoint(ctx, temp_k=val, temp_rate_k_min=rate, temp_mode=approach)
-            set_dyna_temp(ctx, val, rate, approach)
-            wait_for_events(ctx, engine.stop_event, ["temp"], additional_time=0)
+            if index == 0:
+                did_set = _set_initial_dyna_temp_if_needed(
+                    ctx,
+                    target_temp_k=val,
+                    rate_k_min=rate,
+                    approach=approach,
+                )
+                if did_set:
+                    wait_for_events(ctx, engine.stop_event, ["temp"], additional_time=0)
+            else:
+                _post_dyna_setpoint(ctx, temp_k=val, temp_rate_k_min=rate, temp_mode=approach)
+                set_dyna_temp(ctx, val, rate, approach)
+                wait_for_events(ctx, engine.stop_event, ["temp"], additional_time=0)
             _run_children(engine, ctx, cmd.children, app, parent_line=cmd.line_number)
 
     elif name == "sweep_dyna_field":
@@ -1500,9 +1713,14 @@ def _run_loop(
             command_name=name,
         )
 
-        _post_dyna_setpoint(ctx, temp_k=start, temp_rate_k_min=rate, temp_mode="fast_settle")
-        set_dyna_temp(ctx, start, rate, "fast_settle")
-        wait_for_events(ctx, engine.stop_event, ["temp"], additional_time=0)
+        did_set = _set_initial_dyna_temp_if_needed(
+            ctx,
+            target_temp_k=start,
+            rate_k_min=rate,
+            approach="fast_settle",
+        )
+        if did_set:
+            wait_for_events(ctx, engine.stop_event, ["temp"], additional_time=0)
         _run_children(engine, ctx, cmd.children, app, parent_line=cmd.line_number)
 
         _post_dyna_setpoint(ctx, temp_k=end, temp_rate_k_min=rate, temp_mode="fast_settle")

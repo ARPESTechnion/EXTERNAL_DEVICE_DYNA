@@ -56,6 +56,14 @@ from v3.core.ui_events import (
     W_SWITCH_STATUS,
     W_HALL_RESULT,
     W_HALL_SOURCE_ENABLED,
+    W_LED_STRAIN,
+    W_STRAIN_CAPACITANCE,
+    W_STRAIN_CONNECTED,
+    W_STRAIN_FORCE,
+    W_STRAIN_LOSS,
+    W_STRAIN_STATUS,
+    W_STRAIN_VOLTAGE_CH1,
+    W_STRAIN_VOLTAGE_CH2,
 )
 from v3.gui.base_tab import BaseTab, make_led, set_led
 from v3.gui.command_docs import COMMAND_DOCS
@@ -87,6 +95,10 @@ class ResultsTab(BaseTab):
         super().__init__(parent, app)
         self._switch_led_after_id: str | None = None
         self._hall_led_after_id: str | None = None
+        self._strain_connected: bool = False
+        self._strain_active: bool = False
+        self._strain_ch1_value: float | None = None
+        self._strain_ch2_value: float | None = None
         self._dyna_temp_value: float | None = None
         self._dyna_field_value: float | None = None
         self._dyna_chamber_value: int | None = None
@@ -155,6 +167,7 @@ class ResultsTab(BaseTab):
         self.fit_enabled_g2 = tk.BooleanVar(value=False)
         self.fit_model_g1 = tk.StringVar(value="Linear")
         self.fit_model_g2 = tk.StringVar(value="Linear")
+        self.color_by_force_var = tk.BooleanVar(value=False)
         self.link_x_axis_var = tk.BooleanVar(value=False)
         self._xlink_guard = False
         self._last_rendered_graph_data: dict[int, dict[str, Any]] = {1: {}, 2: {}}
@@ -906,6 +919,12 @@ class ResultsTab(BaseTab):
             variable=self.link_x_axis_var,
             command=self._on_link_x_axis_toggled,
         ).pack(side="left")
+        ttk.Checkbutton(
+            link_row,
+            text="Color by Force",
+            variable=self.color_by_force_var,
+            command=lambda: self._schedule_plot_refresh(force=True),
+        ).pack(side="left", padx=(14, 0))
 
         iv_row = ttk.LabelFrame(parent, text="Data Plot Range")
         iv_row.pack(fill="x", padx=5, pady=(2, 4))
@@ -965,7 +984,8 @@ class ResultsTab(BaseTab):
         indicator_row.pack(fill="x", padx=SPACING["sm"], pady=SPACING["xs"])
         indicator_row.add_indicator("lockin", "LockIn", with_separator=True)
         indicator_row.add_indicator("hall", "Hall Bar", with_separator=True)
-        indicator_row.add_indicator("switch", "Switch", with_separator=False)
+        indicator_row.add_indicator("switch", "Switch", with_separator=True)
+        indicator_row.add_indicator("strain", "Strain", with_separator=False)
         self.activity_leds = indicator_row.leds
 
         ttk.Separator(parent, orient="horizontal").pack(fill="x", padx=SPACING["sm"], pady=SPACING["sm"])
@@ -1054,6 +1074,27 @@ class ResultsTab(BaseTab):
         self.results_hall_resistance = hall["resistance"]
         self.results_hall_current = hall["current"]
 
+        # Switch
+        sw = _make_section(status_grid, "switch", "Switch", [
+            ("status", "  Status: N/A", "#006600"),
+        ], 2, 0, 2)
+        self.results_switch_status = sw["status"]
+
+        # Strain
+        strain = _make_section(status_grid, "strain", "Strain Control", [
+            ("channels", "  Ch1/Ch2: N/A / N/A", "#003388"),
+            ("cap", "  Capacitance: N/A", "#006600"),
+            ("loss", "  Loss: N/A", "#663366"),
+            ("force", "  Force: N/A", "#884400"),
+        ], 3, 0, 2)
+        self.results_strain_channels = strain["channels"]
+        # Keep aliases for existing popup bindings and any legacy references.
+        self.results_strain_ch1 = self.results_strain_channels
+        self.results_strain_ch2 = self.results_strain_channels
+        self.results_strain_capacitance = strain["cap"]
+        self.results_strain_loss = strain["loss"]
+        self.results_strain_force = strain["force"]
+
         # Lock-In
         lockin = _make_section(status_grid, "lockin", "Lock-In", [
             ("x", "  X: N/A", "#663366"),
@@ -1067,12 +1108,6 @@ class ResultsTab(BaseTab):
         self.results_lockin_r = lockin["r"]
         self.results_lockin_phase = lockin["phase"]
         self.results_lockin_resistance = lockin["resistance"]
-
-        # Switch
-        sw = _make_section(status_grid, "switch", "Switch", [
-            ("status", "  Status: N/A", "#006600"),
-        ], 2, 0, 2)
-        self.results_switch_status = sw["status"]
 
         self._bind_results_popup_shortcuts()
 
@@ -1100,6 +1135,13 @@ class ResultsTab(BaseTab):
         self._bind_double_click(self.results_hall_field, self._open_hall_popup)
         self._bind_double_click(self.results_hall_resistance, self._open_hall_popup)
         self._bind_double_click(self.results_hall_current, self._open_hall_popup)
+
+        # Strain
+        self._bind_double_click(self.results_strain_ch1, self._open_strain_popup)
+        self._bind_double_click(self.results_strain_ch2, self._open_strain_popup)
+        self._bind_double_click(self.results_strain_capacitance, self._open_strain_popup)
+        self._bind_double_click(self.results_strain_loss, self._open_strain_popup)
+        self._bind_double_click(self.results_strain_force, self._open_strain_popup)
 
         # Switch
         self._bind_double_click(self.results_switch_status, self._open_switch_popup)
@@ -1183,6 +1225,9 @@ class ResultsTab(BaseTab):
 
     def _open_hall_popup(self) -> None:
         self._open_control_popup("hall", "Hall Bar Quick Control", self._build_hall_popup, min_w=490, min_h=300)
+
+    def _open_strain_popup(self) -> None:
+        self._open_control_popup("strain", "Strain Quick Control", self._build_strain_popup, min_w=470, min_h=260)
 
     def _open_switch_popup(self) -> None:
         self._open_control_popup("switch", "Switch Quick Control", self._build_switch_popup, min_w=600, min_h=280)
@@ -1648,6 +1693,37 @@ class ResultsTab(BaseTab):
         ).pack(fill="x", padx=6, pady=(6, 2))
         ttk.Label(popup_iv_prog, textvariable=hall.iv_progress_text).pack(anchor="w", padx=6, pady=(0, 6))
 
+    def _build_strain_popup(self, parent: ttk.Frame) -> None:
+        strain = self.app.strain_tab
+
+        conn = ttk.LabelFrame(parent, text="Connection")
+        conn.pack(fill="x", padx=2, pady=2)
+        ttk.Label(conn, text="Use the main Strain tab to connect or disconnect.").pack(anchor="w", padx=6, pady=(4, 2))
+
+        ctrl = ttk.LabelFrame(parent, text="Apply Strain")
+        ctrl.pack(fill="x", padx=2, pady=2)
+        ttk.Label(ctrl, text="Ch1 Voltage (V):").grid(row=0, column=0, sticky="w", padx=5, pady=2)
+        ttk.Entry(ctrl, textvariable=strain.ch1_voltage, width=10).grid(row=0, column=1, padx=5, pady=2)
+        ttk.Label(ctrl, text="Ch2 Voltage (V):").grid(row=1, column=0, sticky="w", padx=5, pady=2)
+        ttk.Entry(ctrl, textvariable=strain.ch2_voltage, width=10).grid(row=1, column=1, padx=5, pady=2)
+        ttk.Button(ctrl, text="Apply", command=strain._on_apply_strain).grid(row=2, column=0, columnspan=2, pady=6)
+
+        scan = ttk.LabelFrame(parent, text="Scan Voltage")
+        scan.pack(fill="x", padx=2, pady=2)
+        ttk.Label(scan, text="Start (V):").grid(row=0, column=0, sticky="w", padx=5, pady=2)
+        ttk.Entry(scan, textvariable=strain.scan_start, width=10).grid(row=0, column=1, padx=5, pady=2)
+        ttk.Label(scan, text="Stop (V):").grid(row=1, column=0, sticky="w", padx=5, pady=2)
+        ttk.Entry(scan, textvariable=strain.scan_end, width=10).grid(row=1, column=1, padx=5, pady=2)
+        ttk.Label(scan, text="Step (V):").grid(row=2, column=0, sticky="w", padx=5, pady=2)
+        ttk.Entry(scan, textvariable=strain.scan_step, width=10).grid(row=2, column=1, padx=5, pady=2)
+        ttk.Button(scan, text="Scan", command=strain._on_scan_strain).grid(row=3, column=0, columnspan=2, pady=6)
+
+        status = ttk.LabelFrame(parent, text="Readouts")
+        status.pack(fill="x", padx=2, pady=2)
+        ttk.Label(status, text=f"Ch1 input: {strain.ch1_voltage.get():.3f} V").pack(anchor="w", padx=6, pady=(4, 2))
+        ttk.Label(status, text=f"Ch2 input: {strain.ch2_voltage.get():.3f} V").pack(anchor="w", padx=6, pady=2)
+        ttk.Label(status, text=f"Dwell: {strain.dwell_s.get():.1f} s").pack(anchor="w", padx=6, pady=(2, 4))
+
     def _build_switch_popup(self, parent: ttk.Frame) -> None:
         switch = self.app.switch_tab
 
@@ -1783,9 +1859,11 @@ class ResultsTab(BaseTab):
             y_label = yvar.get()
             x_label_display = x_label.replace("_", " ")
             y_label_display = y_label.replace("_", " ")
+            x_key = self._resolve_plot_key(x_label)
             y_key = self._resolve_plot_key(y_label)
             style = style_var.get()
             color = self._resolve_plot_color(color_var.get())
+            color_by_force = bool(self.color_by_force_var.get())
             derivative_enabled = bool(derivative_var.get())
             smoothing_enabled = bool(smooth_var.get())
             smoothing_window = self._normalize_smoothing_window(smooth_win_var)
@@ -1795,8 +1873,8 @@ class ResultsTab(BaseTab):
             linestyle = "-" if "Line" in style else "None"
 
             has_error_data = self._graph_has_error_data(results, y_key, selected_channels)
-            self._set_errorbar_control_state(graph_index, has_error_data and not derivative_enabled)
-            show_errorbars = bool(err_var.get()) and has_error_data and not derivative_enabled
+            self._set_errorbar_control_state(graph_index, has_error_data and not derivative_enabled and not color_by_force)
+            show_errorbars = bool(err_var.get()) and has_error_data and not derivative_enabled and not color_by_force
 
             plotted_series = 0
             graph_series: list[dict[str, Any]] = []
@@ -1807,7 +1885,7 @@ class ResultsTab(BaseTab):
                 render_channels = [selected_channels[0]]
             for channel in render_channels:
                 include_generic = not (len(selected_channels) > 1 and channel is not None)
-                xs, ys, yerrs = self._collect_series_data(results, x_key, y_key, channel, include_generic=include_generic)
+                xs, ys, yerrs, forces = self._collect_series_data(results, x_key, y_key, channel, include_generic=include_generic)
                 if len(xs) < 1:
                     continue
 
@@ -1825,8 +1903,64 @@ class ResultsTab(BaseTab):
                 series_color = self._channel_colors.get(channel, color) if (len(selected_channels) > 1 and channel is not None) else color
                 label = f"Ch {channel.upper()}" if channel is not None else "Global"
                 yerr_plot = [math.nan if e is None else e for e in yerrs] if show_errorbars else None
+                force_points = [f for f in forces if f is not None]
+                use_force_colors = bool(color_by_force and not derivative_enabled and force_points)
 
-                if show_errorbars and yerr_plot and any(not math.isnan(v) for v in yerr_plot):
+                if use_force_colors:
+                    # Draw a connecting line first (optional), then color points by force.
+                    if linestyle != "None":
+                        ax.plot(
+                            xs,
+                            ys,
+                            linestyle=linestyle,
+                            linewidth=1.0,
+                            color=series_color,
+                            alpha=0.35,
+                        )
+
+                    valid_x: list[float] = []
+                    valid_y: list[float] = []
+                    valid_f: list[float] = []
+                    invalid_x: list[float] = []
+                    invalid_y: list[float] = []
+                    for x_val, y_val, f_val in zip(xs, ys, forces):
+                        if f_val is None:
+                            invalid_x.append(x_val)
+                            invalid_y.append(y_val)
+                        else:
+                            valid_x.append(x_val)
+                            valid_y.append(y_val)
+                            valid_f.append(float(f_val))
+
+                    if valid_x:
+                        vmin = min(valid_f)
+                        vmax = max(valid_f)
+                        if abs(vmax - vmin) < 1e-12:
+                            vmin -= 1e-9
+                            vmax += 1e-9
+                        ax.scatter(
+                            valid_x,
+                            valid_y,
+                            c=valid_f,
+                            cmap="bwr",
+                            vmin=vmin,
+                            vmax=vmax,
+                            s=16,
+                            marker=(marker or "o"),
+                            label=label,
+                        )
+                    if invalid_x:
+                        ax.scatter(
+                            invalid_x,
+                            invalid_y,
+                            color=series_color,
+                            s=14,
+                            marker=(marker or "o"),
+                            alpha=0.6,
+                            label=None,
+                        )
+
+                elif show_errorbars and yerr_plot and any(not math.isnan(v) for v in yerr_plot):
                     ax.errorbar(
                         xs,
                         ys,
@@ -2028,10 +2162,11 @@ class ResultsTab(BaseTab):
         channel: str | None,
         *,
         include_generic: bool,
-    ) -> tuple[list[float], list[float], list[float | None]]:
+    ) -> tuple[list[float], list[float], list[float | None], list[float | None]]:
         xs: list[float] = []
         ys: list[float] = []
         yerrs: list[float | None] = []
+        forces: list[float | None] = []
         err_key = self._error_key_for_y_key(y_key)
 
         for row in results:
@@ -2058,8 +2193,10 @@ class ResultsTab(BaseTab):
                 err_val = self._row_value_for_channel(row, err_key, channel)
                 err_num = self._to_numeric(err_val)
             yerrs.append(err_num)
+            force_val = self._row_value_for_channel(row, "Strain Force", channel)
+            forces.append(self._to_numeric(force_val))
 
-        return xs, ys, yerrs
+        return xs, ys, yerrs, forces
 
     def _graph_has_error_data(self, results: list[dict[str, Any]], y_key: str, channels: list[str]) -> bool:
         err_key = self._error_key_for_y_key(y_key)
@@ -2607,7 +2744,7 @@ class ResultsTab(BaseTab):
             return "Lock-In"
         if "channel" in name or "switch" in name:
             return "Switch"
-        return "Other"
+        return "Strain"
 
     def _command_usage(self, name: str) -> str:
         positional_names_map: dict[str, list[str]] = {
@@ -2630,7 +2767,7 @@ class ResultsTab(BaseTab):
             "set_lockin_current": ["current_A"],
             "set_ppms_field_and_fix_hall": ["field_Oe", "target_hall_G"],
             "scan_ppms_field_and_fix_hall": ["start_Oe", "end_Oe", "step_Oe", "target_hall_G"],
-            "full_measure": ["channel"],
+            "full_measure": [],
             "continuous_full_measure": [],
             "run_saved_script": ["full_path_and_filename"],
             "close_channel": ["channel"],
@@ -2672,7 +2809,7 @@ class ResultsTab(BaseTab):
             "set_lockin_current": ["current_A"],
             "set_ppms_field_and_fix_hall": ["field_Oe", "target_hall_G"],
             "scan_ppms_field_and_fix_hall": ["start_Oe", "end_Oe", "step_Oe", "target_hall_G"],
-            "full_measure": ["channel"],
+            "full_measure": [],
             "continuous_full_measure": [],
             "run_saved_script": ["full_path_and_filename"],
             "close_channel": ["channel"],
@@ -3103,6 +3240,47 @@ class ResultsTab(BaseTab):
                 self.results_hall_voltage.configure(text=f"  V: {v:.6e} V")
                 self.results_hall_field.configure(text=f"  B: {f:.2f} G")
                 self._blink_hall_led()
+        elif widget_id == W_STRAIN_CONNECTED:
+            self._strain_connected = bool(value)
+            if not self._strain_connected:
+                self._strain_active = False
+            self._update_strain_leds()
+        elif widget_id == W_STRAIN_STATUS:
+            self._append_log(f"Strain: {value}")
+        elif widget_id == W_STRAIN_VOLTAGE_CH1:
+            if value is None:
+                self._strain_ch1_value = None
+            else:
+                self._strain_ch1_value = float(value)
+            ch1_text = "N/A" if self._strain_ch1_value is None else f"{self._strain_ch1_value:.4f} V"
+            ch2_text = "N/A" if self._strain_ch2_value is None else f"{self._strain_ch2_value:.4f} V"
+            self.results_strain_channels.configure(text=f"  Ch1/Ch2: {ch1_text} / {ch2_text}")
+        elif widget_id == W_STRAIN_VOLTAGE_CH2:
+            if value is None:
+                self._strain_ch2_value = None
+            else:
+                self._strain_ch2_value = float(value)
+            ch1_text = "N/A" if self._strain_ch1_value is None else f"{self._strain_ch1_value:.4f} V"
+            ch2_text = "N/A" if self._strain_ch2_value is None else f"{self._strain_ch2_value:.4f} V"
+            self.results_strain_channels.configure(text=f"  Ch1/Ch2: {ch1_text} / {ch2_text}")
+        elif widget_id == W_STRAIN_CAPACITANCE:
+            if value is None:
+                self.results_strain_capacitance.configure(text="  Capacitance: N/A")
+            else:
+                self.results_strain_capacitance.configure(text=f"  Capacitance: {float(value):.6e}")
+        elif widget_id == W_STRAIN_LOSS:
+            if value is None:
+                self.results_strain_loss.configure(text="  Loss: N/A")
+            else:
+                self.results_strain_loss.configure(text=f"  Loss: {float(value):.6f}")
+        elif widget_id == W_STRAIN_FORCE:
+            if value is None:
+                self.results_strain_force.configure(text="  Force: N/A")
+            else:
+                self.results_strain_force.configure(text=f"  Force: {float(value):.6f}")
+        elif widget_id == W_LED_STRAIN:
+            self._strain_active = bool(value)
+            self._update_strain_leds()
         # --- New data point → auto-refresh plot ---
         elif widget_id == W_RESULTS_NEW_POINT:
             self._refresh_hall_sample_status_from_results()
@@ -3141,12 +3319,20 @@ class ResultsTab(BaseTab):
     def on_instrument_connected(self, name: str) -> None:
         if name in self.conn_leds:
             set_led(self.conn_leds[name], True)
+        if name == "strain":
+            self._strain_connected = True
+            self._strain_active = False
+            self._update_strain_leds()
 
     def on_instrument_disconnected(self, name: str) -> None:
         if name in self.conn_leds:
             set_led(self.conn_leds[name], False)
         if name == "hall":
             set_led(self.activity_leds["hall"], False)
+        if name == "strain":
+            self._strain_connected = False
+            self._strain_active = False
+            self._update_strain_leds()
         if name == "dyna":
             self._dyna_temp_value = None
             self._dyna_field_value = None
@@ -3234,6 +3420,28 @@ class ResultsTab(BaseTab):
             else ""
         )
         self.results_helmholtz_field.configure(text=f"  Field: {field_text} ({state}){rate_suffix}")
+
+    def _update_strain_leds(self) -> None:
+        conn_led = self.conn_leds.get("strain")
+        act_led = self.activity_leds.get("strain")
+        if conn_led is None or act_led is None:
+            return
+
+        if not self._strain_connected:
+            red = COLORS["led_off"]
+            conn_led.configure(fg=red)
+            act_led.configure(fg=red)
+            return
+
+        if self._strain_active:
+            green = COLORS["led_on"]
+            conn_led.configure(fg=green)
+            act_led.configure(fg=green)
+            return
+
+        yellow = COLORS["accent_warn"]
+        conn_led.configure(fg=yellow)
+        act_led.configure(fg=yellow)
 
     # ------------------------------------------------------------------
     # Script button handlers

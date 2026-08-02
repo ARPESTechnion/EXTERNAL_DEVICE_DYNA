@@ -86,8 +86,8 @@ class TestScriptParser(unittest.TestCase):
         self.assertEqual(cmds[0].kwargs["mode"], "current")
 
     def test_parse_mixed_args_kwargs(self):
-        cmds = self.parser.parse("full_measure a hall_current=1.0\n")
-        self.assertEqual(cmds[0].args, ["a"])
+        cmds = self.parser.parse("full_measure hall_current=1.0\n")
+        self.assertEqual(cmds[0].args, [])
         self.assertEqual(cmds[0].kwargs["hall_current"], "1.0")
 
     def test_skip_comments(self):
@@ -121,7 +121,7 @@ class TestScriptParser(unittest.TestCase):
             "scan_dyna_field 0 1000 100 10 linear\n"
             "    measure_lockin\n"
             "scan_dyna_temp 300 400 10 5 fast\n"
-            "    full_measure a\n"
+            "    full_measure\n"
         )
         cmds = self.parser.parse(script)
         self.assertEqual(len(cmds), 2)
@@ -462,19 +462,19 @@ class TestScriptValidator(unittest.TestCase):
         errors = self.validator.validate(cmds)
         self.assertTrue(any("not a number" in e.message for e in errors))
 
-    def test_full_measure_channel_validation(self):
-        cmds = self.parser.parse("full_measure z\n")
+    def test_full_measure_rejects_positional_args(self):
+        cmds = self.parser.parse("full_measure a\n")
         errors = self.validator.validate(cmds)
-        self.assertTrue(any("must be channel name" in e.message for e in errors))
+        self.assertTrue(any("takes no positional arguments" in e.message for e in errors))
 
     def test_full_measure_hall_excitation_validation(self):
-        cmds = self.parser.parse("full_measure a hall_excitation=toggle\n")
+        cmds = self.parser.parse("full_measure hall_excitation=toggle\n")
         errors = self.validator.validate(cmds)
         self.assertTrue(any("hall_excitation" in e.message for e in errors))
 
     def test_full_measure_accepts_hall_excitation_keep(self):
         cmds = self.parser.parse(
-            "full_measure a time_between=0.1 hall_current=1.5 hall_nplc=10 hall_compliance=2 "
+            "full_measure time_between=0.1 hall_current=1.5 hall_nplc=10 hall_compliance=2 "
             "hall_voltage_range=10V hall_filter=5 hall_excitation=keep tbm=0.2 "
             "lockin_what=X,Y,R lockin_current=1e-6 lockin_series_resistance=1000 "
             "lockin_avg=20 lockin_start_sens=10 lockin_use_autorange=true "
@@ -485,9 +485,19 @@ class TestScriptValidator(unittest.TestCase):
         self.assertEqual(len(hard_errors), 0)
 
     def test_full_measure_rejects_deprecated_current_alias(self):
-        cmds = self.parser.parse("full_measure a current=1e-6\n")
+        cmds = self.parser.parse("full_measure current=1e-6\n")
         errors = self.validator.validate(cmds)
         self.assertTrue(any("unknown" in e.message and "current" in e.message for e in errors))
+
+    def test_measure_lockin_rejects_channel_kwarg(self):
+        cmds = self.parser.parse("measure_lockin channel=a\n")
+        errors = self.validator.validate(cmds)
+        self.assertTrue(any("unknown" in e.message and "channel" in e.message for e in errors))
+
+    def test_continuous_measure_lockin_rejects_channel_kwarg(self):
+        cmds = self.parser.parse("continuous_measure_lockin channel=b\n")
+        errors = self.validator.validate(cmds)
+        self.assertTrue(any("unknown" in e.message and "channel" in e.message for e in errors))
 
     def test_continuous_full_measure_rejects_positional_args(self):
         cmds = self.parser.parse("continuous_full_measure a\n")
@@ -595,7 +605,7 @@ wait_for temp 10
 # Scan Helmholtz field
 scan_helmholtz_field 0 500 50 10
     measure_lockin current=0.001 avg=20
-    full_measure a hall_current=1.0
+    full_measure hall_current=1.0
 
 # Final measurement
 auto_gain

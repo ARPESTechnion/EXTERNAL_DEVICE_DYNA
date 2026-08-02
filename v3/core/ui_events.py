@@ -152,6 +152,15 @@ W_HALL_RESULT = "hall_result"
 W_HALL_CONNECTED = "hall_connected"
 W_HALL_SOURCE_ENABLED = "hall_source_enabled"
 
+# --- Strain (RP100 / AH2550A) tab ---
+W_STRAIN_CONNECTED = "strain_connected"
+W_STRAIN_STATUS = "strain_status"
+W_STRAIN_VOLTAGE_CH1 = "strain_voltage_ch1"
+W_STRAIN_VOLTAGE_CH2 = "strain_voltage_ch2"
+W_STRAIN_CAPACITANCE = "strain_capacitance"
+W_STRAIN_LOSS = "strain_loss"
+W_STRAIN_FORCE = "strain_force"
+
 # --- Switch tab ---
 W_SWITCH_STATUS = "switch_status"
 W_SWITCH_CONNECTED = "switch_connected"
@@ -162,6 +171,7 @@ W_LED_HALL = "led_hall"
 W_LED_SWITCH = "led_switch"
 W_LED_HELMHOLTZ = "led_helmholtz"
 W_LED_DYNA = "led_dyna"
+W_LED_STRAIN = "led_strain"
 
 # --- Results tab ---
 W_RESULTS_NEW_POINT = "results_new_point"

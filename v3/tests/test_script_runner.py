@@ -107,6 +107,81 @@ class TestScriptRunnerHelmholtzSweep(unittest.TestCase):
         self.assertAlmostEqual(app.helmholtz._actual, 10.0, places=6)
 
 
+class _DummyLoopApp:
+    instrument_connected = {"dyna": True}
+
+
+class TestScriptRunnerDynaTemperatureLoops(unittest.TestCase):
+    @patch("v3.gui.script_runner._run_children")
+    @patch("v3.gui.script_runner.wait_for_events")
+    @patch("v3.gui.script_runner.set_dyna_temp")
+    @patch("v3.gui.script_runner._confirm_dyna_cooling_or_abort")
+    def test_scan_dyna_temp_skips_initial_set_when_already_stable(
+        self,
+        _mock_confirm,
+        mock_set_dyna_temp,
+        mock_wait_for_events,
+        mock_run_children,
+    ) -> None:
+        engine = _DummyEngine()
+        ctx = MagicMock()
+        ctx.ui_bus = UIEventBus()
+        ctx.bus.execute.side_effect = [
+            (0, "10", 1, "Stable"),
+        ]
+        app = _DummyLoopApp()
+
+        cmd = ParsedCommand(
+            name="scan_dyna_temp",
+            args=["10", "10", "1", "5", "fast_settle"],
+            kwargs={},
+            children=[],
+            line_number=1,
+            raw="scan_dyna_temp 10 10 1 5 fast_settle",
+        )
+
+        _run_loop(engine, ctx, cmd, app)
+
+        mock_set_dyna_temp.assert_not_called()
+        mock_wait_for_events.assert_not_called()
+        mock_run_children.assert_called_once()
+
+    @patch("v3.gui.script_runner._run_children")
+    @patch("v3.gui.script_runner.wait_for_events")
+    @patch("v3.gui.script_runner.set_dyna_temp")
+    @patch("v3.gui.script_runner._confirm_dyna_cooling_or_abort")
+    def test_sweep_dyna_temp_skips_initial_set_when_already_stable(
+        self,
+        _mock_confirm,
+        mock_set_dyna_temp,
+        mock_wait_for_events,
+        mock_run_children,
+    ) -> None:
+        engine = _DummyEngine()
+        ctx = MagicMock()
+        ctx.ui_bus = UIEventBus()
+        ctx.bus.execute.side_effect = [
+            (0, "10", 1, "Stable"),
+            (0, "20", 1, "Stable"),
+        ]
+        app = _DummyLoopApp()
+
+        cmd = ParsedCommand(
+            name="sweep_dyna_temp",
+            args=["10", "20", "5"],
+            kwargs={},
+            children=[],
+            line_number=1,
+            raw="sweep_dyna_temp 10 20 5",
+        )
+
+        _run_loop(engine, ctx, cmd, app)
+
+        mock_set_dyna_temp.assert_called_once_with(ctx, 20.0, 5.0, "fast_settle")
+        mock_wait_for_events.assert_not_called()
+        self.assertEqual(mock_run_children.call_count, 2)
+
+
 class TestScriptRunnerHelpers(unittest.TestCase):
     def test_seconds_to_tau_index(self) -> None:
         self.assertEqual(_seconds_to_tau_index(0.3), 9)
@@ -252,7 +327,7 @@ class TestScriptRunnerFullMeasure(unittest.TestCase):
         mock_measure_hall.return_value = {"Hall Voltage": 1.0}
         mock_measure_lockin.return_value = {"LockIn_X_a": 2.0}
 
-        cmd = ParsedCommand(name="full_measure", args=["a"], kwargs={})
+        cmd = ParsedCommand(name="full_measure", args=[], kwargs={})
         _dispatch(engine, ctx, cmd, app)
 
         mock_measure_hall.assert_called_once()
@@ -285,7 +360,7 @@ class TestScriptRunnerFullMeasure(unittest.TestCase):
         mock_measure_hall_continuous.return_value = {"Hall Voltage": 1.0}
         mock_measure_lockin.return_value = {"LockIn_X_a": 2.0}
 
-        cmd = ParsedCommand(name="full_measure", args=["a"], kwargs={"hall_excitation": "keep"})
+        cmd = ParsedCommand(name="full_measure", args=[], kwargs={"hall_excitation": "keep"})
         _dispatch(engine, ctx, cmd, app)
 
         mock_measure_hall.assert_not_called()
